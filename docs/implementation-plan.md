@@ -8,7 +8,7 @@
 
 ## Current status
 
-現在 repository に存在する executable code は`kudo help`と`kudo version`の CLI bootstrap だけである。Issue/Review protocol と target architecture は文書化されているが、次は未実装である。
+現在 repository に実装済みなのは、`kudo help`/`kudo version`の CLI bootstrap と、Milestone 0 の Compose 開発基盤（multi-stage Dockerfile、PostgreSQL 18.4 付き開発用 Compose、container 内 check / integration test 入口）である。Issue/Review protocol と target architecture は文書化されているが、次は未実装である。
 
 - Issue Contract parser と canonical digest
 - PostgreSQL schema、Operation queue、lease、inbox/outbox
@@ -16,7 +16,7 @@
 - Artifact Store と Run workspace
 - Codex/Claude provider adapter
 - Issue Worker / Review Worker / Controller
-- Dockerfile、Compose application、migration、health/operations
+- production Compose topology（role service、migration、health/operations）
 
 target document が完成形を定義していることと、code が完成していることを混同しない。
 

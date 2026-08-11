@@ -84,10 +84,10 @@ services:
   postgres:
     image: postgres:18.4
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
 ```
 
-この snippet は topology を示す仕様例であり、そのまま実行可能であることを主張しない。実際のimage referenceにはdigestを追加する。healthcheck、secret、network、read-only root filesystem、resource limit、backupは実装時のcompose fileに必須である。
+この snippet は topology を示す仕様例であり、そのまま実行可能であることを主張しない。実際のimage referenceにはdigestを追加する。healthcheck、secret、network、read-only root filesystem、resource limit、backupは実装時のcompose fileに必須である。PostgreSQL 18 の official image は PGDATA を`/var/lib/postgresql/18/<dir>`に置き`VOLUME /var/lib/postgresql`を宣言するため、named volume は`/var/lib/postgresql`全体へ mount する。`/var/lib/postgresql/data`を mount すると実データが anonymous volume へ落ちる。
 
 ## Images and toolchains
 

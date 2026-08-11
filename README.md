@@ -33,11 +33,19 @@ artifact は content-addressed な named volume、Issue Worker の workspace は
 
 ## Repository status
 
-文書は完成形の product/runtime specification を定義しています。現在の code は CLI bootstrap の段階で、Compose stack と workflow 本体は未実装です。実装順序と全体の完了条件は [Implementation plan](docs/implementation-plan.md) を正とします。
+文書は完成形の product/runtime specification を定義しています。現在の code は CLI bootstrap と Milestone 0 の Compose 開発基盤（build/test image、PostgreSQL、integration test 入口）まで実装済みで、workflow 本体は未実装です。実装順序と全体の完了条件は [Implementation plan](docs/implementation-plan.md) を正とします。
 
 ## Development
 
-Go 1.26.5 と [mise](https://mise.jdx.dev/) を使用します。現時点で利用できる開発 command は次のとおりです。
+正式な開発・テスト入口は Docker Compose です。host へ Go / PostgreSQL を install せず、build と check を実行できます。手順の詳細は [Development environment](docs/development.md) を参照してください。
+
+```sh
+cp .env.example .env
+docker compose run --build --rm check        # container 内で mise run check
+docker compose run --build --rm integration  # PostgreSQL integration test
+```
+
+host で直接開発する場合は Go 1.26.5 と [mise](https://mise.jdx.dev/) を使用します。
 
 ```sh
 mise install
