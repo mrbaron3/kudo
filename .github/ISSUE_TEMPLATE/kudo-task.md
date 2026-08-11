@@ -1,0 +1,81 @@
+---
+name: Kudo task
+about: Kudo が実行可能な task Issue
+title: ""
+labels: ""
+assignees: ""
+---
+
+## Contract
+
+<!-- 全sectionを確定してから readiness を ready に変更する。 -->
+
+```yaml
+schema: kudo.issue/v1alpha1
+kind: task
+readiness: draft
+# 親Epicがなければnull。親本文は暗黙に実装contextへ入りません。
+parent: null
+dependsOn: []
+acceptanceCriteriaIds:
+  - AC-1
+authorityRefs: []
+```
+
+## Outcome
+
+<!-- 完了後に外部から観測できる結果を書く。実装方法は書かない。 -->
+
+## Authority and Inputs
+
+<!-- 正とする仕様・文書・Issueと、矛盾時の優先順位を書く。依存成果物はmain上のpathを指す。 -->
+
+## Scope
+
+### Included
+
+-
+
+### Excluded
+
+-
+
+## Deliverables
+
+<!-- 作成・変更する成果物と、その外部から観測できる役割を書く。 -->
+
+-
+
+## Acceptance Criteria
+
+### AC-1
+
+- Given:
+- When:
+- Then:
+
+## Verification and Evidence
+
+<!-- 必須の検証command、期待結果、残る外部・headed境界、完了時に残す証跡を書く。 -->
+
+-
+
+## Constraints and Invariants
+
+-
+
+## Decision Authority
+
+<!-- Task内で決めてよい事項、ADR/別Issueが必要な事項、人間判断が必要な事項を分ける。 -->
+
+- このIssue内で決めてよい:
+- ADRまたは別Issueが必要:
+- 人間判断が必要:
+
+## Stop and Escalation Conditions
+
+-
+
+## Advisory Hints
+
+-

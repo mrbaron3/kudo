@@ -1,0 +1,222 @@
+# Issue Contract v1alpha1
+
+## Purpose
+
+GitHub Issueを、人とKudoの双方が解釈できる実行契約として扱う。Kudoが実行するtaskは、repositoryとIssue番号だけを起点に、実装に必要なauthority、scope、完了条件、検証方法を明示的に解決できなければならない。
+
+「Issue単体で実装可能」とは、Issue本文へ全資料を複製することではない。Task Issue自身が実行境界を完結させ、必要な外部contextを安定したreferenceとして列挙していることを意味する。Controllerが会話履歴や独自の要約で不足を補ってはならない。
+
+Issue WorkerはTask開始時にGitHubからIssueを直接取得する。取得した本文と解決済みreferenceのdigestは、実行対象を証明するIssue RevisionとContext Manifestとして固定する。これらはIssueの代替となる別の正本ではなく、実際に参照した版の証拠である。
+
+## Executability
+
+Kudoがclaimできるのは、Contract blockが`schema: kudo.issue/v1alpha1`、`kind: task`、`readiness: ready`を満たし、依存関係とcontext referenceをすべて解決できるIssueだけである。Issue番号とrepositoryはGitHub event envelopeまたは明示的なIssue referenceを正とし、body内に自己申告させない。
+
+次のH2 sectionを、この順序でそれぞれ1回だけ含める。
+
+1. `Contract`
+2. `Outcome`
+3. `Authority and Inputs`
+4. `Scope`
+5. `Deliverables`
+6. `Acceptance Criteria`
+7. `Verification and Evidence`
+8. `Constraints and Invariants`
+9. `Decision Authority`
+10. `Stop and Escalation Conditions`
+
+`Advisory Hints`は任意であり、使う場合は最後に置く。Issue comment、Project field、label、会話履歴は、上記契約へ明示的に取り込まれない限り実装authorityではない。
+
+## Contract block
+
+`Contract` sectionには、YAML fenced blockを1つ置く。
+
+```yaml
+schema: kudo.issue/v1alpha1
+kind: task
+readiness: ready
+parent: github://owner/repository/issues/100
+dependsOn:
+  - github://owner/repository/issues/101
+acceptanceCriteriaIds:
+  - AC-1
+authorityRefs:
+  - docs/architecture.md
+```
+
+親を持たないtaskは、`parent: null`を明示する。
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `schema` | yes | このcontractのversion |
+| `kind` | yes | 初期版では`task`のみ実行可能 |
+| `readiness` | yes | `draft`、`ready`、`blocked`。実行可能なのは`ready`のみ |
+| `parent` | yes | 直接の親Issue reference。親がなければ`null` |
+| `dependsOn` | yes | 先に完了し、成果物がclaim対象baseへ統合済みである必要があるIssue references。空配列可 |
+| `acceptanceCriteriaIds` | yes | このTask自身の`Acceptance Criteria`に定義するID。1件以上 |
+| `authorityRefs` | yes | 実装時に読むrepository内pathまたはGitHub Issueのsource-of-truth references。空配列可 |
+
+未知のfield、重複key、不正なenum、重複reference、解決不能なreferenceはclaim rejectionとする。将来のschema追加を暗黙に解釈しない。
+
+初期版では`parent`、`dependsOn`、GitHub Issue形式の`authorityRefs`をTaskと同じrepositoryに限定する。cross-repository hierarchyまたはdependencyは別の設計判断なしに解釈しない。
+
+`acceptanceCriteriaIds`の各IDはTask自身の`Acceptance Criteria` sectionに一度だけ存在し、section内の全criterion IDがこの配列に列挙されなければならない。
+
+## Hierarchy and reference semantics
+
+### Task Issue
+
+Task Issueが唯一の実行単位である。1 Task Issueは、初期版では1 run、1 worktree、1 branch、1 reviewable PRに対応する。EpicやInitiative自体には実装PRを作らない。
+
+Taskは、自身のOutcome、Scope、Deliverables、Acceptance Criteria、Verification、Constraints、Decision Authority、停止条件を完結させる。親Issueの本文を暗黙に継承して、Taskに欠けた情報を補ってはならない。
+
+### Parent Issue
+
+`parent`は成果scope、progress、traceabilityを表す。親の全本文、Acceptance、comment、他の子IssueをTask sessionへ自動的に投入しない。Epicの進捗はsub-issueの完了状態から計算できるが、Epic自体を実装Taskとして扱わない。
+
+親Issueが`kudo.issue/v1alpha1`を実装する必要はない。Kudoは親の存在とrelationship identityを検証するが、親をclaimしたり、親本文の独自formatを実装契約として解釈したりしない。
+
+親の横断的な制約がTaskへ適用される場合は、Taskの`Constraints and Invariants`へ明記するか、親Issueを`authorityRefs`へ明示して`Authority and Inputs`で適用範囲と優先順位を書く。Initiative等の上位Issueも、Taskが`authorityRefs`へ列挙しない限り再帰的に継承しない。
+
+### Dependencies
+
+`dependsOn`は実行順序のgateであり、依存Issueの会話履歴や作業sessionを引き継ぐ指定ではない。claim時には各依存がcompletedで、その成果物が選択したbase commitへ統合済みであることを検証する。未merge branch、draft PR、provider session内だけに存在する成果物を入力とみなさない。
+
+二つのready Task Issue間に`dependsOn` edgeがなければ、同じparentまたはrepositoryに属していても互いを待たずにclaimできる。parent、phase、Issue番号順、Epic内の記載順から暗黙のdependencyを作らない。
+
+dependency completion identityには、少なくともIssue reference、completed state、baseへ統合されたcommit identityを含める。linked PRまたは明示的なcompletion artifactからbase統合を証明できない場合、Issueがclosedであることだけをcompletedとして推測しない。
+
+依存成果物を実装入力として読む必要がある場合、Taskはbase commit上のpathを`authorityRefs`または`Authority and Inputs`で指定する。依存Issue本文全体を暗黙のcontextにしない。依存Issue本文そのものがauthorityなら、そのIssue referenceも`authorityRefs`へ明示する。
+
+### Authority references
+
+初期版の`authorityRefs`は、対象repository内のrelative pathと、同じrepositoryの`github://.../issues/<number>`だけを許可する。repository-relative referenceはclaim対象base commitで解決し、content digestを記録する。GitHub Issue referenceはIssue本文を直接取得してbody digestを記録する。cross-repository reference、mutableな一般URL、versionを固定できないreferenceは実装authorityとして扱わない。
+
+`Authority and Inputs`で実装authorityとして列挙するreferenceは、`parent`または`dependsOn`でrelationshipだけを参照する場合を除き、すべて`authorityRefs`にも列挙する。Contract blockにないreferenceをproseから推測して取得しない。referenceが存在しない、またはAuthorityの優先順位が曖昧な場合はclaimを拒否する。
+
+GitHub native sub-issueまたはdependency relationshipをadapterが取得できる場合、Contract blockの`parent`および`dependsOn`と一致しなければならない。二つの表現が競合した場合に片方を推測で採用しない。
+
+`Enables`、priority、phase、Project status等はroutingや人間向け計画に利用できるが、初期Issue Contractの実装入力ではない。
+
+## Section semantics
+
+### Outcome
+
+完了後に利用者または外部systemから観測できる結果を書く。ファイル名、関数名、利用library、実装手順だけでOutcomeを代用しない。
+
+### Authority and Inputs
+
+正とするIssue、仕様、schema、documentと、矛盾した場合の優先順位を書く。依存taskが生成した成果物を使う場合は、Issueの会話ではなくbase commit上の成果物を指す。
+
+### Scope
+
+IncludedとExcludedを分け、変更してよいsystem boundaryを示す。親Epicのscopeを参照するだけでTask固有の境界を省略しない。
+
+### Deliverables
+
+作成または変更する成果物と、外部から確認できる役割を書く。内部構造を過度に固定する必要はないが、何が完成すればTaskの成果物が揃うかを判断できなければならない。
+
+### Acceptance Criteria
+
+各criterionはIssue内で一意かつ変更されないIDを持ち、Given / When / Thenで観測可能な振る舞いを定義する。内部実装だけを確認するcriterionは不可とする。
+
+### Verification and Evidence
+
+完了を証明するcommand、test surface、artifact、外部境界を記載する。実装者が選べる内部手順と、必須の検証入口を区別する。実行不能なcommandや取得不能な証跡を必須化しない。
+
+### Constraints and Invariants
+
+security、compatibility、data integrity、performance、authority ownershipなど、全criterionにまたがる不変条件を書く。
+
+### Decision Authority
+
+Issue WorkerがTask内で決めてよい事項、別のADRやIssueを必要とする事項、人間判断が必要な事項を分ける。実装詳細をすべて事前指定するのではなく、安全に前進できる裁量の境界を与える。
+
+### Stop and Escalation Conditions
+
+不足authority、仕様矛盾、危険なmutation、必要なcredential不足、Issueまたは参照先の変更など、自動実行を止める条件を書く。停止は失敗を隠して推測で続行することを意味しない。
+
+### Advisory Hints
+
+非拘束の実装上の助言を書く。Authority、Acceptance Criteria、Constraintsと競合するhintは無効であり、Workerはhintを根拠に契約を拡張しない。
+
+## Claim and context resolution
+
+claim operationはrepository identityとIssue numberを入力にし、次を行う。
+
+1. Issue WorkerがIssueをGitHubから直接取得する
+2. bodyをstrictにparseし、取得したbody bytesのdigestを計算する
+3. native relationshipとContract blockを照合する
+4. parent identity、dependency completion、authority referenceを解決する
+5. base commitを固定し、referenceごとのdigestを計算する
+6. Issue RevisionとContext Manifestをimmutable artifactとして保存する
+7. model-bearing Worker Operationを開始する直前にIssueを再取得し、revision一致を検証する
+
+### Issue Revision
+
+Issue Revisionは、Workerが直接取得したTask Issueの版を表す。
+
+```yaml
+schema: kudo.issue-revision/v1alpha1
+issue: github://owner/repository/issues/42
+bodyDigest: sha256:<digest>
+contractDigest: sha256:<digest>
+```
+
+`bodyDigest`はGitHub APIから取得したbody文字列を追加の改行・空白正規化なしにUTF-8でencodeしたbytesへ計算する。body bytes自体も同じdigestでcontent-addressed artifactとして保存する。`contractDigest`はstrict parse後のfieldとsectionをcanonical表現へ変換して計算し、canonicalizationはfixtureで固定する。
+
+Issue Revisionのidentityに取得時刻、delivery ID、run IDを含めない。同じIssue bodyとcontractは再取得時にも同じidentityを持たなければならない。
+
+### Context Manifest
+
+Context Manifestは、Issue Revisionから解決した実装入力のclosureを表す。
+
+```yaml
+schema: kudo.context-manifest/v1alpha1
+issueRevision: sha256:<digest>
+baseSha: <git-commit-sha>
+parent: github://owner/repository/issues/100
+dependencies:
+  - issue: github://owner/repository/issues/101
+    completionDigest: sha256:<digest>
+authorityRefs:
+  - ref: docs/architecture.md
+    contentDigest: sha256:<digest>
+```
+
+親を持たない場合は`parent: null`、依存またはauthority referenceがない場合は空配列を使う。配列順はIssue Contractの宣言順を保ち、重複を許可しない。
+
+Context ManifestにはIssue本文、authority本文、会話履歴を複製しない。各contentはdigestから取得できるimmutable artifactとして保存する。parent本文は`authorityRefs`にも指定された場合だけcontent artifactへ含める。
+
+Context Manifestのidentityにrun ID、claim timestamp、workspace path、provider session IDを含めない。同じIssue Revision、base SHA、relationship、dependency completion、authority contentは同じmanifest identityを持たなければならない。
+
+claim成功時に、少なくとも次を固定する。
+
+- repository identityとIssue number
+- Issueのrevision identity、取得したbody、body digest
+- base commit SHA
+- parent identity
+- dependency identities、completion identities、baseへの統合確認
+- 解決済みauthority referencesとcontent digests
+- Task自身のAcceptance Criteria IDs
+- Context Manifest digest
+- run IDとclaim timestamp
+
+Issue RevisionはWorkerへ渡す要約ではない。model sessionは取得したIssue本文そのものと、Context Manifestが明示する入力を読む。Controllerが契約内容を自然言語で再解釈してpromptへ置き換えてはならない。
+
+実行中にIssue本文、dependency completion、base commit、authority referenceの内容が変わった場合は、進行中runへ暗黙に取り込まない。現在入力との不一致をstaleとして記録し、新しいclaimまたは人間判断へ戻す。実装入力ではない親Issue本文の編集だけではrunをstaleにしない。
+
+## Claim rejection
+
+少なくとも次を構造化されたclaim rejectionとして区別する。
+
+- contractの構文またはsemantic rule違反
+- `readiness`が`ready`でない
+- 必須contextの欠落
+- `acceptanceCriteriaIds`とTask本文のcriterionが一致しない
+- dependencyが未完了またはbaseへ未統合
+- native relationshipとContract blockの不一致
+- Authorityの矛盾または優先順位不足
+- claim中のIssueまたはreference変更
+
+GitHub API timeout、rate limit、network error等はclaim rejectionへ変換せず、transport failureとして扱う。
