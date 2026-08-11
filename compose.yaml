@@ -1,0 +1,80 @@
+# Kudo 開発用 Docker Compose application（Milestone 0）。
+#
+# - 開発・テストの正式な実行入口。host へ Go / PostgreSQL を install しない
+# - PostgreSQL port は既定で host へ公開しない（必要時のみ compose.debug.yaml を重ねる）
+# - Docker socket / Docker-in-Docker は使用しない
+# - 後続 milestone は同じ project へ controller / issue-worker / review-worker / migrate
+#   service を追加し、network `internal` と volume `postgres-data` の naming を継続利用する。
+#   外部公開用の `ingress` network は Controller 実装時に追加する
+name: kudo
+
+# check / integration が共有する開発/テスト image 設定
+x-kudo-dev: &kudo-dev
+  build:
+    context: .
+    target: dev
+  image: kudo-dev
+  # ソースは read-only で mount し、書き込みは Go cache の named volume だけに限定する
+  volumes:
+    - .:/workspace:ro
+    - go-build-cache:/home/kudo/.cache/go-build
+    - go-mod-cache:/home/kudo/go/pkg/mod
+  networks:
+    - internal
+  # run 専用 service。`docker compose up` では起動しない
+  profiles:
+    - check
+
+services:
+  postgres:
+    # tag と digest は必ず同時に更新する
+    # （取得例: docker buildx imagetools inspect postgres:18.4）
+    image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+    environment:
+      POSTGRES_USER: ${KUDO_POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${KUDO_POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${KUDO_POSTGRES_DB:?}
+    healthcheck:
+      # TCP 経由で確認する。初回初期化中の一時 server は socket でしか listen しないため、
+      # host 指定なしの pg_isready では本 server 起動前に healthy 判定されてしまう
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    volumes:
+      # PostgreSQL 18 の official image は PGDATA を /var/lib/postgresql/18/<dir> に置くため、
+      # /var/lib/postgresql/data ではなく /var/lib/postgresql 全体を named volume にする
+      - postgres-data:/var/lib/postgresql
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # container 内で `mise run check` を実行する標準 check 入口
+  # 使い方: docker compose run --build --rm check
+  check:
+    <<: *kudo-dev
+    command: ["mise", "run", "check"]
+
+  # internal network 経由で PostgreSQL へ接続する integration test 入口
+  # 使い方: docker compose run --build --rm integration
+  integration:
+    <<: *kudo-dev
+    command: ["mise", "run", "test:integration"]
+    environment:
+      # 開発 stack 内部専用の非機密接続情報。TLS は internal network 内のため無効にする
+      KUDO_TEST_DATABASE_URL: postgres://${KUDO_POSTGRES_USER:?}:${KUDO_POSTGRES_PASSWORD:?}@postgres:5432/${KUDO_POSTGRES_DB:?}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  # service 間の内部通信用 network。PostgreSQL はここ以外へ参加しない
+  internal:
+
+volumes:
+  # durable workflow state（backup 対象。docs/runtime-platform.md の naming と一致）
+  postgres-data:
+  # 開発用 Go cache（破棄して再生成できる）
+  go-build-cache:
+  go-mod-cache:

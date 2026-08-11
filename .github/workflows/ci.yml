@@ -35,3 +35,67 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  # linux/amd64 と linux/arm64 の両方で image build と smoke test を行う
+  container-image:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build runtime image
+        run: docker build --target runtime --tag kudo:ci .
+
+      - name: Smoke test runtime image as non-root
+        shell: bash
+        run: |
+          docker run --rm kudo:ci help
+          docker run --rm kudo:ci version
+          user="$(docker inspect --format '{{.Config.User}}' kudo:ci)"
+          if [[ "$user" != "nonroot:nonroot" ]]; then
+            echo "unexpected runtime user: $user"
+            exit 1
+          fi
+
+      - name: Build dev image
+        run: docker build --target dev --tag kudo-dev:ci .
+
+      - name: Smoke test CLI in dev image
+        run: docker run --rm kudo-dev:ci kudo help
+
+      - name: Run required checks inside dev image (no bind mount, no network dependency)
+        run: docker run --rm --network=none kudo-dev:ci mise run check
+
+  # Compose 基盤の検証: config、PostgreSQL healthcheck、container 内 check、integration test
+  compose-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare non-secret environment file
+        run: cp .env.example .env
+
+      - name: Validate compose configuration
+        run: docker compose config --quiet
+
+      - name: Start PostgreSQL and wait for healthcheck
+        run: docker compose up --detach --wait postgres
+
+      - name: Run required checks in the check service
+        run: docker compose run --build --rm check
+
+      - name: Run PostgreSQL integration tests
+        run: docker compose run --rm integration
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile check down --volumes

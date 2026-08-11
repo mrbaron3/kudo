@@ -8,6 +8,7 @@ Kudo の文書は、目標、振る舞い、技術構造、外部 protocol、実
 | Product | [End-to-end workflow](workflow.md) | Issue 受付から PR handoff までの状態遷移と TDD/review loop |
 | Architecture | [Architecture](architecture.md) | Controller / Worker の責務、権限、永続化、並行性、Go package 境界 |
 | Operations | [Runtime platform](runtime-platform.md) | Compose topology、PostgreSQL、volume、secret、recovery、運用要件 |
+| Operations | [Development environment](development.md) | Compose 開発基盤の初期設定と標準 command |
 | Integration | [GitHub routing policy](github-routing.md) | candidate 条件、webhook/polling、label lifecycle |
 | Protocol | [Issue Contract](contracts/issue-contract-v1alpha1.md) | 人間が記述する Task Issue の機械可読 contract |
 | Protocol | [Worker Operation Protocol](contracts/operation-protocol-v1alpha1.md) | Controller から Issue Worker への durable Operation / Result |

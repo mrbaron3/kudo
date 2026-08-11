@@ -1,0 +1,33 @@
+# build context を build/test に必要な最小のソースへ限定する。
+# secret（.env）と VCS metadata は image へ持ち込まない。
+.git/
+.gitignore
+.github/
+.claude/
+.editorconfig
+.dockerignore
+Dockerfile
+compose.yaml
+compose.debug.yaml
+
+# 文書は image の入力にしない
+docs/
+README.md
+AGENTS.md
+CLAUDE.md
+
+# secret と local 状態
+.env
+.env.*
+.kudo/
+
+# build 生成物
+bin/
+dist/
+coverage.out
+*.test
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
