@@ -26,6 +26,8 @@ Use deterministic unit tests with fakes at GitHub, process, clock, filesystem, m
 - Allow dependency-free ready Issues to run concurrently in isolated Runs. Scope claims and execution leases to an Issue or Run; do not serialize the repository with a global lock.
 - Prefer one Go module and one deployable binary until measured constraints justify another boundary.
 - Prefer the Go standard library. Add dependencies only at explicit boundaries and explain why.
+- Use Docker Compose as the canonical runtime. Run the same binary as separate Controller, Issue Worker, Review Worker, and migration containers, with PostgreSQL as authoritative workflow state and queue.
+- Do not mount the Docker socket or the Issue Worker workspace into Controller or Review Worker containers. Artifact sharing must remain content-addressed and immutable.
 
 ## Contract discipline
 

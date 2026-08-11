@@ -1,34 +1,43 @@
 # Kudo
 
-Kudo は、実装前に test validity を独立レビューする、軽量な TDD issue-to-PR automation です。
+Kudo は、人間が定型の GitHub Issue を用意すると、独立した test validity review を挟んだ TDD で実装し、人間がレビューできる Pull Request まで届ける issue-to-PR runtime です。
 
-現在は greenfield bootstrap の段階です。Servo の実装を移植するのではなく、検証に必要な最小の契約から Go で作り直します。
+目標はデモ用の最小ループではありません。Webhook の欠落、process 再起動、provider failure、複数 Issue の同時実行を前提に、実行状態と証跡を復元できる単一ホスト向けの運用可能なシステムを作ります。
 
-## Runtime model
+## Product flow
 
-Kudo の初期ランタイムには、次の3つの論理コンポーネントがあります。
+1. 人間が [Issue Contract](docs/contracts/issue-contract-v1alpha1.md) に従って Task Issue を記述し、`mrbaron3`を assign して`ai-ready`を付ける。
+2. Controller が GitHub webhook または定期 polling から同じ Issue reconciliation を起動する。
+3. Issue Worker が現在の Issue と参照先を検証して claim し、Controller が Issue を`ai-in-progress`へ投影する。
+4. 新規 provider session がテストを先に作り、対象機能が未実装であることを示す RED 証跡を固定する。
+5. Review Worker の新規 read-only session が Issue と immutable artifact を読み、test validity を判定する。指摘があれば、新規の修正 session へ versioned finding を返す。
+6. 承認済みテストを入力に、新規 implementation session が GREEN、refactor、規定の検証を完了する。
+7. Review Worker が最終成果を独立レビューし、approve 後に Issue Worker だけが Pull Request を作成する。
+8. Issue を`ai-review-waiting`へ投影し、人間の Pull Request review へ引き渡す。
 
-- Issue Worker: readyなTask Issueを直接取得して検証・claimし、テスト作成、RED証跡、実装、GREEN証跡、PR作成を担う
-- Review Worker: immutable artifact を読み、test validity と最終実装を独立にレビューする
-- Controller: 状態遷移、再試行、artifact の受け渡しを決定論的に制御する
+各 model-bearing Operation は必ず fresh session で実行します。同じ Run の worktree を引き継ぐ場合も、前 session の transcript や private memory は渡さず、Issue Revision、commit、artifact、Review Result だけを明示的に handoff します。
 
-Controllerは品質を採点しません。品質上のverdictはReview Workerが所有します。また、これらは当初から別serviceにせず、1つのGo binary内の明確な境界として実装します。ただし、modelを使うWorker Operationごとに新しいprovider sessionを作り、Worker間またはOperation間でconversation transcriptを共有しません。
+## Runtime
 
-## Initial scope
+正式な実行基盤は Docker Compose です。同じ Go binary を役割別 container として起動します。
 
-最初のvertical sliceは、1 Task Issue / 1 worktree / 1 branch / 1 PRのend-to-endを対象にします。Task IssueはEpicのsub-issueでも構いませんが、自身の実行境界を完結させます。実運用では、dependencyのないready Task Issueをそれぞれ独立したRunとして同時並行に実行できます。
+- `controller`: webhook、60秒ごとの fallback polling、state transition、Operation dispatch、GitHub status projection
+- `issue-worker`: test/implementation session、command、worktree、branch、Pull Request mutation の唯一の所有者
+- `review-worker`: immutable input と独立 checkout だけを読む reviewer
+- `postgres`: Run、Operation queue、lease、inbox/outbox、artifact metadata の正本
+- `migrate`: schema migration を行う one-shot job
 
-1. Issue Contract を検証する
-2. Issue Worker がテストと RED 証跡を作る
-3. Review Worker が test validity を判定する
-4. approve 後に Issue Worker が実装と GREEN 証跡を作る
-5. PR を作成し、Review Worker が最終実装を判定する
+artifact は content-addressed な named volume、Issue Worker の workspace は専用 named volume に保存します。Controller と Review Worker は implementation worktree を mount しません。Container へ Docker socket を渡さず、provider CLI は各 Worker container 内の child process として実行します。
 
-評価ハーネス、pass@k、複数候補の比較、OTel 上の分析機能、merge/deploy は初期スコープ外です。
+詳細は [Runtime platform](docs/runtime-platform.md) と [Compose 採用 ADR](docs/decisions/0001-compose-runtime.md) を参照してください。
+
+## Repository status
+
+文書は完成形の product/runtime specification を定義しています。現在の code は CLI bootstrap の段階で、Compose stack と workflow 本体は未実装です。実装順序と全体の完了条件は [Implementation plan](docs/implementation-plan.md) を正とします。
 
 ## Development
 
-Go 1.26.5 と [mise](https://mise.jdx.dev/) を使用します。
+Go 1.26.5 と [mise](https://mise.jdx.dev/) を使用します。現時点で利用できる開発 command は次のとおりです。
 
 ```sh
 mise install
@@ -38,10 +47,17 @@ go run ./cmd/kudo help
 
 ## Documents
 
+文書の役割と優先順位は [Documentation map](docs/README.md) にまとめています。
+
 - [Product vision](docs/vision.md)
+- [End-to-end workflow](docs/workflow.md)
 - [Architecture](docs/architecture.md)
+- [Runtime platform](docs/runtime-platform.md)
+- [GitHub routing policy](docs/github-routing.md)
 - [Implementation plan](docs/implementation-plan.md)
 - [Issue Contract](docs/contracts/issue-contract-v1alpha1.md)
+- [Worker Operation Protocol](docs/contracts/operation-protocol-v1alpha1.md)
 - [Implementation–Review Protocol](docs/contracts/review-protocol-v1alpha1.md)
+- [Compose 採用 ADR](docs/decisions/0001-compose-runtime.md)
 - [Servo からの移行判断](docs/migration-from-servo.md)
 - [保留中の評価ハーネス](docs/deferred/evaluation-harness.md)

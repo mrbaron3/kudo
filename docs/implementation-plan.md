@@ -1,77 +1,252 @@
 # Implementation plan
 
-## Approach
+## Target
 
-外部接続なしで検証できるcoreから、1つずつvertical sliceを広げる。各incrementは、次のincrementへ進む前に決定論的なunit testと明示的なfailure behaviorを持つ。
+本計画は bootstrap demo ではなく、[Product vision](vision.md) の completion criteria を満たす Compose-deployed issue-to-PR runtime を完成させるための delivery order を定義する。
 
-## Increment 1 — Issue Contract and context resolution
+各 milestone は外部 adapter を後回しにするだけの layer 実装ではなく、可能な範囲で一つの recovery/idempotency behavior を end-to-end に証明する。fast deterministic test を先に実行し、live GitHub/provider test は opt-in として最後に重ねる。
 
-repository identityとIssue numberを入力にし、Issue Reader越しにIssueを直接取得して、validated Issue Revision、Context Manifest、または構造化されたclaim rejectionを返す。
+## Current status
 
-- fixed section、YAML block、required fieldをstrictにparseする
-- unknown field、duplicate key、不正enum、欠落ACを拒否する
-- Issue identityをevent envelopeから付与し、body内の自己申告に依存しない
-- parent identity、dependency completion、authority referenceを明示的に解決する
-- native relationshipとContract blockの不一致を拒否する
-- Issue Revision、base SHA、Context ManifestとSHA-256 digestを生成する
-- Epic配下のready Task、blocked dependency、欠落contextをfixtureで固定する
+現在 repository に存在する executable code は`kudo help`と`kudo version`の CLI bootstrap だけである。Issue/Review protocol と target architecture は文書化されているが、次は未実装である。
 
-Issue Reader、relationship resolver、repository content readerはfakeを使う。このincrementではlive GitHub API、filesystem watcher、model providerへ接続しない。
+- Issue Contract parser と canonical digest
+- PostgreSQL schema、Operation queue、lease、inbox/outbox
+- GitHub webhook/poller/reconciliation
+- Artifact Store と Run workspace
+- Codex/Claude provider adapter
+- Issue Worker / Review Worker / Controller
+- Dockerfile、Compose application、migration、health/operations
 
-## Increment 2 — Artifact and review protocol
+target document が完成形を定義していることと、code が完成していることを混同しない。
 
-byte列をcontent-addressedに保存し、Issue Revision / Context Manifest / Review Request / Resultを検証できるようにする。
+## Delivery rules
 
-- atomic writeとdigest verification
-- manifest内のmissing/corrupt artifact検出
-- request identityとresult binding
-- changed head/artifactによるstaleness判定
-- transport failureとquality verdictの型レベルでの分離
+- protocol、parser、fixture、test を同じ change で更新する。
+- pure transition、fake boundary、targeted test を先に実装し、network/process/container test を後から追加する。
+- PostgreSQL、GitHub、process、clock、filesystem、provider、telemetry は interface と deterministic fake を持つ。
+- transport/execution failure と quality verdict を別 type として保つ。
+- model-bearing Operation は常に fresh session factory を通す。
+- 一つの milestone の temporary shortcut を target architecture として文書化しない。
+- Milestone 0以降の実装とintegration testは、host固有のdaemonではなくCompose基盤で再現できる状態を維持する。
+- 各 milestone の merge 前に`mise run check`を通す。
 
-最初はtemporary directoryを使うfilesystem implementationとin-memory fakeで十分とする。
+## Milestone 0 — Containerized development foundation
 
-## Increment 3 — Controller
+機能実装より先に、Go applicationとPostgreSQLを同じCompose contractでbuild・testできる開発基盤を作る。未実装のController/Workerをdummy processとして常駐させず、以後のmilestoneが継続利用するimage、network、volume、configuration boundaryを固定する。
 
-pure state transition functionと、idempotentなcommand execution boundaryを作る。
+### Milestone 0 deliverables
 
-- eventと現在stateから、許可された次actionだけを返す
-- duplicate deliveryをno-opにする
-- Issue dependency graphから全ready candidateを決定し、dependencyのないIssueをglobal lockなしでclaimできる
-- claim leaseはIssueRef、execution leaseはRun IDへscopeし、同じIssueの二重実行だけを防ぐ
-- dependency cycleをclaim rejectionとし、capacity待ちをdependency blockedと混同しない
-- retry可能なtransport failureと `needs_human` を分ける
-- test validity approveなしにimplementationへ進めない
-- final approveなしにcompletedへ進めない
+- 現在の単一`kudo` binaryとtestをbuildできるreproducible multi-stage Dockerfile
+- non-root development/test imageと`.dockerignore`
+- PostgreSQL 18.4をdigest pinしたdevelopment`compose.yaml`
+- application/test service、PostgreSQL healthcheck、named volume、internal network
+- local/test overrideとnon-secret example configuration
+- container内で`mise run check`とPostgreSQL integration testを実行する標準command
+- Docker socket/Docker-in-Dockerを必要としないbuild/test path
 
-clock、ID generator、lease、storeはinterface越しに注入する。
+### Milestone 0 exit criteria
 
-## Increment 4 — Local end-to-end slice
+- cleanなCompose-capable hostでimageをbuildし、PostgreSQLがhealthyになる。
+- hostへGo、PostgreSQL、Kudo daemonを直接installせず、container内で`mise run check`が成功する。
+- PostgreSQL portをhostへ常時公開せず、test serviceから接続できる。
+- image、volume、network、configuration nameが後続のproduction Composeへ拡張可能で、throwawayの別構成になっていない。
+- macOS `linux/arm64`で検証し、`linux/amd64` buildを壊さないDockerfileになっている。
 
-fixture repository、fake Issue Reader、fake workersを使い、IssueRefからReview Resultまでをprocess内で実行する。実際のGitHubやmodel providerより先に、artifact lineageとrecoveryをE2Eで証明する。
+## Milestone 1 — Protocol core
 
-同一processであってもmodel-bearing Worker Operationごとに新しいsession identityが作られ、前Operationのconversation memoryを入力にしないことをfake session factoryで検証する。
+IssueRef から Task の execution context と review identity を決定論的に構築できる pure core を作る。
 
-dependencyのない2 Issueが同時にactive Runとなり、3つ目のdependent Issueは先行Runのcompletionとbase統合まで開始しないことをfixtureで検証する。
+### Milestone 1 deliverables
 
-## Increment 5 — GitHub and worker adapters
+- `kudo.issue/v1alpha1`の fixed section と YAML block の strict parser
+- unknown/duplicate field、不正 enum、欠落/重複 AC、曖昧 authority の validation
+- Issue Revision と Context Manifest の canonical encoding と SHA-256 identity
+- Execution Policy snapshot と Operation envelope/result の canonical identity
+- Review Request / Result / Artifact Manifest の validation と staleness rule
+- claim/review/transport error taxonomy
+- fixture corpus と canonicalization golden test
 
-最後に外部境界を1つずつ接続する。
+### Milestone 1 exit criteria
 
-1. GitHub Issue event取得とclaim表示
-2. worktree / branch lifecycle
-3. Operationごとにfresh sessionを作るtest authoring providerとRED command runner
-4. isolated Review Worker
-5. Operationごとにfresh sessionを作るimplementation providerとGREEN command runner
-6. PR create/updateとfinal review trigger
+- 同じ input は常に同じ digest になり、whitespace と ordering rule が fixture で固定される。
+- changed Issue body、authority content、Execution Policy、head SHA、artifact bytes が以前の review を stale にする。
+- malformed contract、human decision、transport failure、review finding が混同されない。
+- GitHub/network/filesystem/provider なしで全 behavior を unit test できる。
 
-watcherはrun-once handlerを呼ぶだけにし、polling自体へbusiness logicを置かない。live integration testはopt-inにし、core behaviorの唯一の検証手段にしない。
+## Milestone 2 — Durable control plane
 
-## Bootstrap exit criteria
+PostgreSQL に authoritative Run state、Operation queue、lease、inbox/outbox を実装し、crash 後も state machine を回復できるようにする。
 
-現在のrepository準備は、次を満たした時点で完了とする。
+### Milestone 2 deliverables
 
-- Go module、CLI entrypoint、required checksが動く
-- runtime boundariesとdeferred scopeが文書化されている
-- Issue / Review contract baselineとGitHub templateがある
-- Servo由来の採用・非採用項目が追跡できる
-- Increment 1を既存実装へ依存せず開始できる
+- versioned SQL migration と`kudo migrate up`
+- Run aggregate と pure transition function
+- Run version の optimistic concurrency control
+- 1 IssueRef に active Run 最大一つの database constraint
+- role/kind ごとの Operation queue、attempt、lease、heartbeat、reaper
+- delivery inbox と transactional status outbox
+- retry class、backoff、jitter、clock injection
+- PostgreSQL integration test 用 disposable Compose profile
+
+### Milestone 2 exit criteria
+
+- transition と次 Operation/outbox が一つの transaction で commit される。
+- duplicate event と concurrent claim が一つの active Run だけを作る。
+- Worker crash を模した lease expiry 後、別 attempt が同じ logical Operation を取得する。
+- dependency のない Run は並行に進み、repository global lock を使わない。
+- PostgreSQL restart 後に process-local memory なしで queue/state を復元できる。
+
+## Milestone 3 — GitHub discovery and claim
+
+Webhook と必須 polling fallback を同じ`ReconcileIssue`へ接続し、実行可能な Issue を durable claim する。
+
+### Milestone 3 deliverables
+
+- GitHub App authentication と role-scoped installation token
+- `POST /webhooks/github`の raw-body signature verification、payload limit、delivery inbox
+- startup reconciliation と既定60秒 polling、pagination、rate-limit handling
+- candidate filter: open、non-PR、assignee`mrbaron3`、label`ai-ready`
+- live Issue Reader、native relationship、dependency、repository content resolver
+- Issue/Run scoped claim lease と active Run validation
+- status outbox consumer と4 label lifecycle
+- `healthz`、`readyz`、structured log
+
+### Milestone 3 exit criteria
+
+- webhook を意図的に捨てても、polling が Issue を発見して同じ Run を作る。
+- duplicate/遅延/順不同 webhook と poll overlap が二重 Run を作らない。
+- candidate 外、dependency/capacity 待ち、contract rejection、transport failure が仕様どおり区別される。
+- claim commit 後に projection process を停止・再開しても、最終 label set が一貫する。
+- live GitHub test がなくても fake API で pagination、rate limit、mutation retry を検証できる。
+
+## Milestone 4 — Artifact, workspace, and process runtime
+
+Worker が provider と repository command を安全に実行し、session 間を immutable artifact で handoff できる基盤を作る。
+
+### Milestone 4 deliverables
+
+- named volume 向け content-addressed Artifact Store
+- atomic write、digest/length verification、orphan detection
+- Run scoped clone/worktree/branch/checkpoint lifecycle
+- child process supervisor、process-group cancellation、timeout、bounded output、secret redaction
+- fresh session factory と operation-scoped temp/config directory
+- Codex headless adapter と Claude headless adapter
+- Issue/Review provider設定からimmutable Execution Policyを固定するresolver
+- provider structured output schema と invalid response handling
+- Issue/Review role ごとの credential/filesystem policy
+
+### Milestone 4 exit criteria
+
+- 同一 digest の異なる bytes を拒否し、corrupt/missing artifact を検出する。
+- model Operation を連続実行しても session ID、transcript、private state が再利用されない。
+- timeout/crash 後の attempt が commit/artifact から再構築され、以前の process を resume しない。
+- Review runtime は Issue workspace path を受け取らず、head SHA から別 checkout を作る。
+- fake process/provider を使う deterministic test と、opt-in CLI smoke test の両方がある。
+
+## Milestone 5 — RED and test review loop
+
+Issue claim から test validity approval までの完全な TDD 前半を実装する。
+
+### Milestone 5 deliverables
+
+- `author_tests`と`revise_tests` Issue Operation
+- Acceptance Criteria と test plan/test case の traceability
+- test-only checkpoint と RED command evidence
+- infrastructure failure と expected RED の classifier
+- `test_validity` Review Request/Result handler
+- `request_changes` finding の fresh revision session handoff
+- `needs_human` comment と escalation/resumption
+
+### Milestone 5 exit criteria
+
+- expected failure の RED が固定されるまで review request を作らない。
+- reviewer は Issue Revision、artifact、read-only checkout だけで verdict を返す。
+- `request_changes`後は同じ worktree の新しい provider session が修正し、新しい request digest で再 review する。
+- test approval なしに implementation Operation を enqueue できない。
+- Issue edit、test head change、artifact change が approval を stale にする。
+
+## Milestone 6 — GREEN, refactor, final review, and PR
+
+承認済み test から implementation を完成させ、人間 review 用 PR へ handoff する。
+
+### Milestone 6 deliverables
+
+- `implement`と`repair_implementation` Issue Operation
+- GREEN、refactor 後 verification、repository required checks の evidence
+- test mutation detection と test review gate への rollback
+- `final_implementation` Review Request/Result handler
+- approved head binding と stale review prevention
+- idempotent branch push、PR create/update
+- required PR body validator と `.github/pull_request_template.md` integration
+- `ai-review-waiting` projection
+
+### Milestone 6 exit criteria
+
+- implementation は approved test validity digest を入力に持つ。
+- refactor 後に同じ test/check を再実行し、evidence を最終 head に bind する。
+- final`request_changes`は fresh repair session に渡り、head change 後に必ず再 review する。
+- final approval と required checks がない head では PR を作れない。
+- crash が PR create response の前後どちらで起きても PR は一つだけになり、Run は`awaiting_human_review`へ収束する。
+- PR body が Issue、AC、RED/GREEN、二つの review、checks、risk、Run/base/head を参照する。
+
+## Milestone 7 — Production Compose deployment and operations
+
+Milestone 0のCompose基盤を、完成したController/Worker use caseを実行するproduction topologyへ拡張し、[Runtime platform](runtime-platform.md)の全serviceと運用contractを満たす。
+
+### Milestone 7 deliverables
+
+- `kudo controller`、`kudo worker issue`、`kudo worker review`、`kudo migrate up`のrole command
+- controller imageとprovider CLI/toolchainを含むworker image flavor
+- `linux/arm64` / `linux/amd64` production image buildとSBOM/provenance
+- Milestone 0の`compose.yaml`を拡張するproduction profile
+- Controller、Issue Worker、Review Worker、PostgreSQL、migration service
+- healthcheck、dependency ordering、restart policy、resource limit、read-only root filesystem
+- Compose secrets、GitHub App/provider credential setup
+- PostgreSQL/artifact backup と restore command/runbook
+- graceful shutdown と lease drain
+- GHCR publish と pinned image update procedure
+
+### Milestone 7 exit criteria
+
+- clean host で documented setup から stack が起動し、health/readiness が green になる。
+- Milestone 0で確立したbuild/test commandとvolume/configuration contractがproduction profileでも維持される。
+- host に Kudo daemon または provider GUI/session を必要としない。
+- Controller/Review container から Issue workspace が見えず、Review credential で write API を実行できない。
+- PostgreSQL/application restart、Worker kill、volume restore の recovery test が通る。
+- Docker socket がどの service にも mount されていない。
+- pinned image と migration/rollback boundary が release note で追跡できる。
+
+## Milestone 8 — Product acceptance and hardening
+
+個別 component の完成ではなく、実運用に近い failure matrix で product completion を確認する。
+
+### Automated acceptance matrix
+
+- happy path: Issue -> RED -> test approve -> GREEN/refactor -> final approve -> PR ->`ai-review-waiting`
+- test and final`request_changes`の複数 loop
+- `needs_human`、人間修正、`ai-ready`再付与、safe resume/supersede
+- webhook loss、duplicate、reorder、invalid signature、poll overlap
+- GitHub/provider/PostgreSQL の timeout、rate limit、temporary outage
+- Controller/Worker kill と expired lease recovery
+- artifact corruption、workspace loss、Issue/head/authority staleness
+- dependency graph、cycle、base 未統合、複数 independent Run
+- PR/label/comment mutation の ambiguous response と idempotent recovery
+
+### Live verification
+
+dedicated test repository と provider sandbox credential を使う opt-in suite で、GitHub webhook、polling、branch/PR、Codex/Claude CLI の実 boundary を検証する。課金、外部 mutation、cleanup 対象を明示し、通常の`mise run check`には含めない。
+
+headless test で同等の confidence が得られる部分は先に headless で検証する。GitHub delivery、provider CLI lifecycle、macOS container runtime のような vendor boundary は fake だけを実機証明として扱わず、残る live verification を release checklist に記録する。
+
+## Product-wide exit criteria
+
+全 milestone 完了に加え、次が成立して初めて Kudo runtime を完成扱いにする。
+
+- [Product vision](vision.md) の completion criteria を自動 evidence へ対応付けられる。
+- [End-to-end workflow](workflow.md) の全 transition、retry、escalation が実装されている。
+- [Runtime platform](runtime-platform.md) の deployment、security、backup/recovery contract が検証されている。
+- versioned contract と migration に backward/forward compatibility policy がある。
+- operator が Run/Operation/attempt/outbox を診断し、安全に retry できる runbook がある。
+- live integration が opt-in でも、core correctness は deterministic tests だけで再現できる。
+- merge/deploy、pass@k、multi-candidate evaluation を runtime completion と混同していない。

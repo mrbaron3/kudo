@@ -10,7 +10,7 @@ Issue WorkerはTask開始時にGitHubからIssueを直接取得する。取得�
 
 ## Executability
 
-Kudoがclaimできるのは、Contract blockが`schema: kudo.issue/v1alpha1`、`kind: task`、`readiness: ready`を満たし、依存関係とcontext referenceをすべて解決できるIssueだけである。Issue番号とrepositoryはGitHub event envelopeまたは明示的なIssue referenceを正とし、body内に自己申告させない。
+Kudoがclaimできるのは、[GitHub routing policy](../github-routing.md)のcandidate条件を満たしたうえで、Contract blockが`schema: kudo.issue/v1alpha1`、`kind: task`、`readiness: ready`を満たし、依存関係とcontext referenceをすべて解決できるIssueだけである。Issue番号とrepositoryはGitHub APIまたは検証済みevent envelopeのidentityを正とし、body内に自己申告させない。
 
 次のH2 sectionを、この順序でそれぞれ1回だけ含める。
 
@@ -49,7 +49,7 @@ authorityRefs:
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `schema` | yes | このcontractのversion |
-| `kind` | yes | 初期版では`task`のみ実行可能 |
+| `kind` | yes | v1alpha1では`task`のみ実行可能 |
 | `readiness` | yes | `draft`、`ready`、`blocked`。実行可能なのは`ready`のみ |
 | `parent` | yes | 直接の親Issue reference。親がなければ`null` |
 | `dependsOn` | yes | 先に完了し、成果物がclaim対象baseへ統合済みである必要があるIssue references。空配列可 |
@@ -58,7 +58,7 @@ authorityRefs:
 
 未知のfield、重複key、不正なenum、重複reference、解決不能なreferenceはclaim rejectionとする。将来のschema追加を暗黙に解釈しない。
 
-初期版では`parent`、`dependsOn`、GitHub Issue形式の`authorityRefs`をTaskと同じrepositoryに限定する。cross-repository hierarchyまたはdependencyは別の設計判断なしに解釈しない。
+v1alpha1では`parent`、`dependsOn`、GitHub Issue形式の`authorityRefs`をTaskと同じrepositoryに限定する。cross-repository hierarchyまたはdependencyは別の設計判断なしに解釈しない。
 
 `acceptanceCriteriaIds`の各IDはTask自身の`Acceptance Criteria` sectionに一度だけ存在し、section内の全criterion IDがこの配列に列挙されなければならない。
 
@@ -66,7 +66,7 @@ authorityRefs:
 
 ### Task Issue
 
-Task Issueが唯一の実行単位である。1 Task Issueは、初期版では1 run、1 worktree、1 branch、1 reviewable PRに対応する。EpicやInitiative自体には実装PRを作らない。
+Task Issueが唯一の実行単位である。1 Task IssueにactiveなRunは最大1つであり、成功したRunは1専用worktree、1branch、1reviewable PRに対応する。staleまたはsuperseded Runの履歴は残してよいが、同時に複数Runをwriterとして動かさない。EpicやInitiative自体には実装PRを作らない。
 
 Taskは、自身のOutcome、Scope、Deliverables、Acceptance Criteria、Verification、Constraints、Decision Authority、停止条件を完結させる。親Issueの本文を暗黙に継承して、Taskに欠けた情報を補ってはならない。
 
@@ -90,13 +90,13 @@ dependency completion identityには、少なくともIssue reference、complete
 
 ### Authority references
 
-初期版の`authorityRefs`は、対象repository内のrelative pathと、同じrepositoryの`github://.../issues/<number>`だけを許可する。repository-relative referenceはclaim対象base commitで解決し、content digestを記録する。GitHub Issue referenceはIssue本文を直接取得してbody digestを記録する。cross-repository reference、mutableな一般URL、versionを固定できないreferenceは実装authorityとして扱わない。
+v1alpha1の`authorityRefs`は、対象repository内のrelative pathと、同じrepositoryの`github://.../issues/<number>`だけを許可する。repository-relative referenceはclaim対象base commitで解決し、content digestを記録する。GitHub Issue referenceはIssue本文を直接取得してbody digestを記録する。cross-repository reference、mutableな一般URL、versionを固定できないreferenceは実装authorityとして扱わない。
 
 `Authority and Inputs`で実装authorityとして列挙するreferenceは、`parent`または`dependsOn`でrelationshipだけを参照する場合を除き、すべて`authorityRefs`にも列挙する。Contract blockにないreferenceをproseから推測して取得しない。referenceが存在しない、またはAuthorityの優先順位が曖昧な場合はclaimを拒否する。
 
 GitHub native sub-issueまたはdependency relationshipをadapterが取得できる場合、Contract blockの`parent`および`dependsOn`と一致しなければならない。二つの表現が競合した場合に片方を推測で採用しない。
 
-`Enables`、priority、phase、Project status等はroutingや人間向け計画に利用できるが、初期Issue Contractの実装入力ではない。
+`Enables`、priority、phase、Project status、assignee、label等はroutingや人間向け計画に利用できるが、v1alpha1 Issue Contractの実装入力ではない。
 
 ## Section semantics
 

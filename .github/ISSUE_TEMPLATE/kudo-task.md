@@ -3,12 +3,12 @@ name: Kudo task
 about: Kudo が実行可能な task Issue
 title: ""
 labels: ""
-assignees: ""
+assignees: "mrbaron3"
 ---
 
 ## Contract
 
-<!-- 全sectionを確定してから readiness を ready に変更する。 -->
+<!-- 全sectionを確定してreadinessをreadyに変更し、mrbaron3がassignされていることを確認した後、最後に実行依頼としてai-ready labelを付ける。 -->
 
 ```yaml
 schema: kudo.issue/v1alpha1
