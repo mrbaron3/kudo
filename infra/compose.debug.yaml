@@ -1,7 +1,7 @@
 # デバッグ用の opt-in override。通常運用では PostgreSQL port を host へ公開しない。
 #
 # 使い方:
-#   docker compose -f compose.yaml -f compose.debug.yaml up --detach --wait postgres
+#   docker compose -f compose.yaml -f infra/compose.debug.yaml up --detach --wait postgres
 #   psql "postgres://<KUDO_POSTGRES_USER>:<KUDO_POSTGRES_PASSWORD>@127.0.0.1:5432/<KUDO_POSTGRES_DB>"
 services:
   postgres:

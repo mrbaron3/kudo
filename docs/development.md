@@ -44,10 +44,12 @@ mise run compose:integration
 
 ## Image build と smoke test
 
+container build 定義は `infra/` に置く（`infra/Dockerfile` と `infra/compose.debug.yaml`）。現在は全 role が同一 binary を使う一つのビルドグラフのため multi-stage の単一 Dockerfile とし、内容の異なる image（provider CLI 入り worker flavor 等）が実体化する Milestone 7 で `infra/` 配下を image ごとに分割する。build context は Go module root（repository root）のままにする。
+
 runtime image（binary と CA 証明書のみ、nonroot）:
 
 ```sh
-docker build --target runtime --tag kudo:local .
+docker build --file infra/Dockerfile --target runtime --tag kudo:local .
 docker run --rm kudo:local help
 docker run --rm kudo:local version
 ```
@@ -55,7 +57,7 @@ docker run --rm kudo:local version
 development/test image（Go toolchain と mise、non-root user `kudo`）:
 
 ```sh
-docker build --target dev --tag kudo-dev:local .
+docker build --file infra/Dockerfile --target dev --tag kudo-dev:local .
 docker run --rm kudo-dev:local kudo help
 docker run --rm --network=none kudo-dev:local mise run check
 ```
@@ -65,7 +67,7 @@ dev image はソースと module cache を内蔵しているため、bind mount 
 multi-platform build の検証（macOS の `linux/arm64` と CI の `linux/amd64` を壊さない）:
 
 ```sh
-docker buildx build --platform linux/amd64,linux/arm64 --target runtime .
+docker buildx build --file infra/Dockerfile --platform linux/amd64,linux/arm64 --target runtime .
 ```
 
 ## PostgreSQL への接続（デバッグ）
@@ -73,7 +75,7 @@ docker buildx build --platform linux/amd64,linux/arm64 --target runtime .
 既定で PostgreSQL の port は host へ公開しない。手元の psql などで直接見たいときだけ debug override を重ねる。
 
 ```sh
-docker compose -f compose.yaml -f compose.debug.yaml up --detach --wait postgres
+docker compose -f compose.yaml -f infra/compose.debug.yaml up --detach --wait postgres
 psql "postgres://kudo:kudo-dev-password@127.0.0.1:5432/kudo"
 ```
 
@@ -92,11 +94,11 @@ test は internal network 経由で `postgres:5432` へ接続し、server versio
 
 | 固定対象 | 場所 | 更新方法 |
 | --- | --- | --- |
-| `golang:1.26.5-trixie` | `Dockerfile` の `GO_IMAGE` | `docker buildx imagetools inspect golang:<tag>` で digest を取得し、tag と digest を同時更新する |
-| `gcr.io/distroless/static-debian12:nonroot` | `Dockerfile` の `RUNTIME_IMAGE` | 同上 |
+| `golang:1.26.5-trixie` | `infra/Dockerfile` の `GO_IMAGE` | `docker buildx imagetools inspect golang:<tag>` で digest を取得し、tag と digest を同時更新する |
+| `gcr.io/distroless/static-debian12:nonroot` | `infra/Dockerfile` の `RUNTIME_IMAGE` | 同上 |
 | `postgres:18.4` | `compose.yaml` の `postgres.image` | 同上。あわせて [Runtime platform](runtime-platform.md) の version 記述、本書の 18.4 記述、`test/integration/postgres_test.go` の server_version assertion を整合させる |
-| mise | `Dockerfile` の `MISE_VERSION` / `MISE_SHA256_LINUX_*` | release の `SHASUMS256.txt` から linux-x64 / linux-arm64 の sha256 を取得して同時更新する |
-| Go toolchain（host） | `mise.toml` の `[tools]` | `Dockerfile` の `GO_IMAGE` と同じ version に保つ |
+| mise | `infra/Dockerfile` の `MISE_VERSION` / `MISE_SHA256_LINUX_*` | release の `SHASUMS256.txt` から linux-x64 / linux-arm64 の sha256 を取得して同時更新する |
+| Go toolchain（host） | `mise.toml` の `[tools]` | `infra/Dockerfile` の `GO_IMAGE` と同じ version に保つ |
 
 `GOTOOLCHAIN=local` を設定しているため、go.mod と image の Go version がずれた場合は暗黙 download せず失敗する。
 

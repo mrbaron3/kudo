@@ -6,9 +6,8 @@
 .claude/
 .editorconfig
 .dockerignore
-Dockerfile
+infra/
 compose.yaml
-compose.debug.yaml
 
 # 文書は image の入力にしない
 docs/

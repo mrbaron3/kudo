@@ -1,7 +1,7 @@
 # Kudo 開発用 Docker Compose application（Milestone 0）。
 #
 # - 開発・テストの正式な実行入口。host へ Go / PostgreSQL を install しない
-# - PostgreSQL port は既定で host へ公開しない（必要時のみ compose.debug.yaml を重ねる）
+# - PostgreSQL port は既定で host へ公開しない（必要時のみ infra/compose.debug.yaml を重ねる）
 # - Docker socket / Docker-in-Docker は使用しない
 # - 後続 milestone は同じ project へ controller / issue-worker / review-worker / migrate
 #   service を追加し、network `internal` と volume `postgres-data` の naming を継続利用する。
@@ -12,6 +12,7 @@ name: kudo
 x-kudo-dev: &kudo-dev
   build:
     context: .
+    dockerfile: infra/Dockerfile
     target: dev
   image: kudo-dev
   # ソースは read-only で mount し、書き込みは Go cache の named volume だけに限定する

@@ -51,7 +51,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build runtime image
-        run: docker build --target runtime --tag kudo:ci .
+        run: docker build --file infra/Dockerfile --target runtime --tag kudo:ci .
 
       - name: Smoke test runtime image as non-root
         shell: bash
@@ -65,7 +65,7 @@ jobs:
           fi
 
       - name: Build dev image
-        run: docker build --target dev --tag kudo-dev:ci .
+        run: docker build --file infra/Dockerfile --target dev --tag kudo-dev:ci .
 
       - name: Smoke test CLI in dev image
         run: docker run --rm kudo-dev:ci kudo help
