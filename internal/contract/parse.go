@@ -1,0 +1,175 @@
+package contract
+
+// H2 section の canonical な title。この順序でそれぞれ 1 回だけ現れる。
+const (
+	sectionContract           = "Contract"
+	sectionOutcome            = "Outcome"
+	sectionAuthorityAndInputs = "Authority and Inputs"
+	sectionScope              = "Scope"
+	sectionDeliverables       = "Deliverables"
+	sectionAcceptanceCriteria = "Acceptance Criteria"
+	sectionVerification       = "Verification and Evidence"
+	sectionConstraints        = "Constraints and Invariants"
+	sectionDecisionAuthority  = "Decision Authority"
+	sectionStopConditions     = "Stop and Escalation Conditions"
+	sectionAdvisoryHints      = "Advisory Hints"
+)
+
+var requiredSections = []string{
+	sectionContract,
+	sectionOutcome,
+	sectionAuthorityAndInputs,
+	sectionScope,
+	sectionDeliverables,
+	sectionAcceptanceCriteria,
+	sectionVerification,
+	sectionConstraints,
+	sectionDecisionAuthority,
+	sectionStopConditions,
+}
+
+// sectionOrder は canonical な並び順を表す。Advisory Hints は任意だが最後に置く。
+var sectionOrder = func() map[string]int {
+	m := make(map[string]int, len(requiredSections)+1)
+	for i, t := range requiredSections {
+		m[t] = i
+	}
+	m[sectionAdvisoryHints] = len(requiredSections)
+	return m
+}()
+
+// Parse は GitHub Issue 本文を kudo.issue/v1alpha1 として strict に解釈する。
+//
+// self には Issue が属する repository の identity を渡す。本文には repository を
+// 自己申告させないため、この値は GitHub API または検証済み event envelope を正とする。
+//
+// 返り値は、検証エラーが 1 件でもあれば task が nil になり、エラーが無ければ
+// 完全に typed な Task が返る。エラーは本文の記述順で安定しており、同じ入力は
+// 常に同じ結果を返す。
+func Parse(body string, self RepositoryRef) (*Task, []ValidationError) {
+	if self.Owner == "" || self.Name == "" {
+		return nil, []ValidationError{{
+			Code:    CodeRepositoryRefInvalid,
+			Message: "repository identity（owner / name）を明示的に渡す",
+		}}
+	}
+
+	var errs []ValidationError
+	lines := splitLines(body)
+
+	preamble, sections, scanErrs := scanSections(lines)
+	errs = append(errs, scanErrs...)
+
+	// 最初の H2 より前には空行と comment 以外を置かない
+	for _, l := range contentLines(preamble) {
+		errs = append(errs, ValidationError{
+			Code:    CodePreambleContent,
+			Line:    l.num,
+			Message: "本文は `## Contract` から開始する",
+		})
+	}
+
+	// H2 section の集合・重複・順序
+	firstSeen := map[string]*rawSection{}
+	counted := map[string]bool{}
+	prevOrder := -1
+	for i := range sections {
+		sec := &sections[i]
+		order, known := sectionOrder[sec.title]
+		if !known {
+			errs = append(errs, ValidationError{
+				Code:    CodeSectionUnknown,
+				Line:    sec.line,
+				Section: sec.title,
+				Message: "未知の section `" + sec.title + "` は許可しない",
+			})
+			continue
+		}
+		if firstSeen[sec.title] != nil {
+			errs = append(errs, ValidationError{
+				Code:    CodeSectionDuplicate,
+				Line:    sec.line,
+				Section: sec.title,
+				Message: "section `" + sec.title + "` が重複している",
+			})
+			continue
+		}
+		firstSeen[sec.title] = sec
+		if order <= prevOrder {
+			errs = append(errs, ValidationError{
+				Code:    CodeSectionOutOfOrder,
+				Line:    sec.line,
+				Section: sec.title,
+				Message: "section `" + sec.title + "` の位置が規定の順序と一致しない",
+			})
+		} else {
+			prevOrder = order
+		}
+		if !counted[sec.title] {
+			counted[sec.title] = true
+			if len(contentLines(sec.lines)) == 0 {
+				errs = append(errs, ValidationError{
+					Code:    CodeSectionEmpty,
+					Line:    sec.line,
+					Section: sec.title,
+					Message: "section `" + sec.title + "` に内容が無い",
+				})
+			}
+		}
+	}
+	for _, title := range requiredSections {
+		if firstSeen[title] == nil {
+			errs = append(errs, ValidationError{
+				Code:    CodeSectionMissing,
+				Section: title,
+				Message: "required section `" + title + "` が無い",
+			})
+		}
+	}
+
+	// Contract block の strict parse と semantic validation
+	var contract Contract
+	var contractOK bool
+	if sec := firstSeen[sectionContract]; sec != nil {
+		block, blockLine, found, blockErrs := extractContractBlock(*sec)
+		errs = append(errs, blockErrs...)
+		if found {
+			entries, yamlErrs := parseYAMLBlock(block)
+			errs = append(errs, yamlErrs...)
+			var buildErrs []ValidationError
+			contract, buildErrs = buildContract(entries, blockLine, self)
+			errs = append(errs, buildErrs...)
+			contractOK = len(yamlErrs) == 0 && len(buildErrs) == 0
+		}
+	}
+
+	// Acceptance Criteria の対応検証
+	var criteria []rawCriterion
+	if sec := firstSeen[sectionAcceptanceCriteria]; sec != nil {
+		criteria = scanCriteria(sec.lines)
+		if contractOK {
+			errs = append(errs, validateCriteria(contract.AcceptanceCriteriaIDs, criteria)...)
+		}
+	}
+
+	if len(errs) > 0 {
+		return nil, errs
+	}
+
+	task := &Task{Contract: contract}
+	for _, sec := range sections {
+		task.Sections = append(task.Sections, Section{
+			Title:   sec.title,
+			Line:    sec.line,
+			Content: joinLines(sec.lines),
+		})
+	}
+	for _, cr := range criteria {
+		task.AcceptanceCriteria = append(task.AcceptanceCriteria, Criterion{
+			ID:   cr.id,
+			Line: cr.line,
+			Body: joinLines(cr.lines),
+		})
+	}
+	return task, nil
+}
