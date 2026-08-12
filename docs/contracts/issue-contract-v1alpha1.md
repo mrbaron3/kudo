@@ -24,7 +24,16 @@ Kudoがclaimできるのは、[GitHub routing policy](../github-routing.md)のca
 8. `Decision Authority`
 9. `Stop and Escalation Conditions`
 
-`Advisory Hints`は任意であり、使う場合は最後に置く。required sectionは空にできない。HTML commentだけのsectionは内容が無いものとして扱い、claim rejectionとする（`Advisory Hints`は空でもよい）。人とKudoが同じ契約を読むため、HTML commentと可視内容を同一行に混在させない。Issue comment、Project field、label、会話履歴は、上記契約へ明示的に取り込まれない限り実装authorityではない。
+`Advisory Hints`は任意であり、使う場合は最後に置く。required sectionは空にできない。HTML commentだけのsectionは内容が無いものとして扱い、claim rejectionとする（`Advisory Hints`は空でもよい）。Issue comment、Project field、label、会話履歴は、上記契約へ明示的に取り込まれない限り実装authorityではない。
+
+### 本文の書き方
+
+人が読む描画とKudoのparseで解釈が分かれないように、本文の構造は次の規則に従う。Kudoは描画を推測して補わず、解釈が一意に定まらない書き方をclaim rejectionとする。
+
+- heading、code fence、HTML commentは列0から書く。1〜3 space indentしたこれらのmarkerは、GitHubでは前後の文脈によりheadingにもcode blockにもなるため受理しない。
+- code fenceはbacktickまたはtildeを3個以上使って開き、同じ文字を同じ長さ以上並べたinfo stringを持たない列0の行だけが閉じる。
+- HTML commentは行全体がcommentである行だけに書く。可視内容と同一行に混在させない。
+- inline code span（backtickで囲んだ範囲）内の`<!--`はHTML commentではなく、通常の本文として扱う。
 
 ## Contract block
 

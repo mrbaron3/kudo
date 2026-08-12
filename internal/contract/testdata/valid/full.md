@@ -81,10 +81,11 @@ mise run check
 ## Constraints and Invariants
 
 - 不変条件
+- HTML comment（`<!-- x -->`）は code span 内なら混在ではない
 
-  ```
+```
 ## Fenced Fake
-  ```
+```
 
 ~~~text
 ## Tilde Fake

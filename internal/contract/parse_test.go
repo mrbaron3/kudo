@@ -171,22 +171,32 @@ type expectedError struct {
 // で固定する。順序と位置の固定は AC-3（決定性）と deliverable（field/section 位置を
 // 保持する validation result）の検証を兼ねる。
 var invalidExpectations = map[string][]expectedError{
-	"invalid/preamble.md":          {{CodePreambleContent, "", 1}},
-	"invalid/section-missing.md":   {{CodeSectionMissing, "", 0}},
-	"invalid/section-duplicate.md": {{CodeSectionDuplicate, "", 32}},
-	"invalid/section-order.md":     {{CodeSectionOutOfOrder, "", 22}},
-	"invalid/section-unknown.md":   {{CodeSectionUnknown, "", 56}},
+	"invalid/ac-criterion-duplicate.md": {{CodeACCriterionDuplicate, "", 40}},
+	"invalid/ac-id-duplicate.md":        {{CodeACIDDuplicate, "acceptanceCriteriaIds", 11}},
+	"invalid/ac-ids-empty.md":           {{CodeACIDsEmpty, "acceptanceCriteriaIds", 9}},
+	"invalid/ac-mismatch.md": {
+		{CodeACCriterionMissing, "acceptanceCriteriaIds", 33},
+		{CodeACCriterionUnlisted, "", 41},
+	},
 	"invalid/advisory-not-last.md": {
 		{CodeSectionOutOfOrder, "", 52},
 		{CodeSectionOutOfOrder, "", 56},
 	},
-	"invalid/section-empty.md": {{CodeSectionEmpty, "", 14}},
-	// 行頭側（line 16）と行末側（line 30）の混在を両方拒否する
 	"invalid/comment-ambiguous.md": {
-		{CodeSectionEmpty, "", 14},
 		{CodeCommentAmbiguous, "", 16},
-		{CodeSectionEmpty, "", 28},
 		{CodeCommentAmbiguous, "", 30},
+	},
+	"invalid/contract-block-duplicate.md": {{CodeContractBlockDuplicate, "", 14}},
+	"invalid/contract-block-missing.md": {
+		{CodeSectionEmpty, "", 1},
+		{CodeContractBlockMissing, "", 1},
+	},
+	"invalid/contract-extra-content.md": {{CodeContractExtraContent, "", 14}},
+	"invalid/contract-fence-info.md":    {{CodeContractBlockMissing, "", 3}},
+	"invalid/enum-invalid.md": {
+		{CodeEnumInvalid, "schema", 4},
+		{CodeEnumInvalid, "kind", 5},
+		{CodeEnumInvalid, "readiness", 6},
 	},
 	"invalid/fence-unclosed.md": {
 		{CodeSectionMissing, "", 0},
@@ -194,44 +204,18 @@ var invalidExpectations = map[string][]expectedError{
 		{CodeSectionMissing, "", 0},
 		{CodeFenceUnclosed, "", 42},
 	},
-	"invalid/contract-block-missing.md": {
-		{CodeSectionEmpty, "", 1},
-		{CodeContractBlockMissing, "", 1},
-	},
-	"invalid/contract-block-duplicate.md": {{CodeContractBlockDuplicate, "", 14}},
-	"invalid/contract-extra-content.md":   {{CodeContractExtraContent, "", 14}},
-	"invalid/contract-fence-info.md":      {{CodeContractBlockMissing, "", 3}},
-	"invalid/yaml-syntax.md": {
-		{CodeFieldMissing, "kind", 3},
-		{CodeYAMLSyntax, "", 5},
-	},
-	"invalid/yaml-syntax-more.md": {
-		{CodeFieldMissing, "readiness", 3},
-		{CodeYAMLSyntax, "", 6},
-		{CodeYAMLSyntax, "dependsOn", 8},
-		{CodeYAMLSyntax, "", 9},
-	},
-	"invalid/yaml-duplicate-key.md": {{CodeYAMLDuplicateKey, "readiness", 7}},
-	"invalid/yaml-unknown-field.md": {{CodeYAMLUnknownField, "priority", 12}},
-	"invalid/field-missing.md":      {{CodeFieldMissing, "dependsOn", 3}},
+	"invalid/field-missing.md": {{CodeFieldMissing, "dependsOn", 3}},
 	"invalid/field-type.md": {
 		{CodeFieldType, "schema", 4},
 		{CodeFieldType, "dependsOn", 9},
 		{CodeFieldType, "acceptanceCriteriaIds", 10},
 	},
-	"invalid/enum-invalid.md": {
-		{CodeEnumInvalid, "schema", 4},
-		{CodeEnumInvalid, "kind", 5},
-		{CodeEnumInvalid, "readiness", 6},
+	"invalid/indented-fence.md": {
+		{CodeIndentedMarker, "", 44},
+		{CodeIndentedMarker, "", 46},
 	},
-	"invalid/ref-invalid.md": {
-		{CodeRefInvalid, "parent", 7},
-		{CodeRefInvalid, "dependsOn", 9},
-		{CodeRefInvalid, "dependsOn", 10},
-		{CodeRefInvalid, "dependsOn", 11},
-		{CodeRefInvalid, "authorityRefs", 15},
-		{CodeRefInvalid, "authorityRefs", 16},
-	},
+	"invalid/indented-marker.md": {{CodeIndentedMarker, "", 56}},
+	"invalid/preamble.md":        {{CodePreambleContent, "", 1}},
 	"invalid/ref-cross-repo.md": {
 		{CodeRefCrossRepository, "parent", 7},
 		{CodeRefCrossRepository, "dependsOn", 9},
@@ -241,13 +225,31 @@ var invalidExpectations = map[string][]expectedError{
 		{CodeRefDuplicate, "authorityRefs", 15},
 		{CodeRefDuplicate, "authorityRefs", 17},
 	},
-	"invalid/ac-ids-empty.md":           {{CodeACIDsEmpty, "acceptanceCriteriaIds", 9}},
-	"invalid/ac-id-duplicate.md":        {{CodeACIDDuplicate, "acceptanceCriteriaIds", 11}},
-	"invalid/ac-criterion-duplicate.md": {{CodeACCriterionDuplicate, "", 40}},
-	"invalid/ac-mismatch.md": {
-		{CodeACCriterionMissing, "acceptanceCriteriaIds", 33},
-		{CodeACCriterionUnlisted, "", 41},
+	"invalid/ref-invalid.md": {
+		{CodeRefInvalid, "parent", 7},
+		{CodeRefInvalid, "dependsOn", 9},
+		{CodeRefInvalid, "dependsOn", 10},
+		{CodeRefInvalid, "dependsOn", 11},
+		{CodeRefInvalid, "authorityRefs", 15},
+		{CodeRefInvalid, "authorityRefs", 16},
 	},
+	"invalid/section-duplicate.md":  {{CodeSectionDuplicate, "", 32}},
+	"invalid/section-empty.md":      {{CodeSectionEmpty, "", 14}},
+	"invalid/section-missing.md":    {{CodeSectionMissing, "", 0}},
+	"invalid/section-order.md":      {{CodeSectionOutOfOrder, "", 22}},
+	"invalid/section-unknown.md":    {{CodeSectionUnknown, "", 56}},
+	"invalid/yaml-duplicate-key.md": {{CodeYAMLDuplicateKey, "readiness", 7}},
+	"invalid/yaml-syntax-more.md": {
+		{CodeFieldMissing, "readiness", 3},
+		{CodeYAMLSyntax, "", 6},
+		{CodeYAMLSyntax, "dependsOn", 8},
+		{CodeYAMLSyntax, "", 9},
+	},
+	"invalid/yaml-syntax.md": {
+		{CodeFieldMissing, "kind", 3},
+		{CodeYAMLSyntax, "", 5},
+	},
+	"invalid/yaml-unknown-field.md": {{CodeYAMLUnknownField, "priority", 12}},
 }
 
 func TestParseInvalidFixtures(t *testing.T) {

@@ -7,11 +7,17 @@ import "strings"
 // Issue #9 Constraints）。認識するのは行頭の H2/H3 heading、code fence、
 // 行頭で始まる HTML comment のみである。
 //
-// fence と comment の判定は「人と Kudo の双方が同じ契約を読む」ために GitHub の描画と
-// 一致させる。fence は CommonMark の最小規則（backtick または tilde 3 個以上、閉 fence は
-// 開 fence と同じ文字・同じ長さ以上で info string なし、3 space までの indent）に従う。
-// comment と可視内容を同一行へ混在させた行は、描画とparseの解釈差を残さないため
-// 位置にかかわらず error として拒否する。
+// 「人と Kudo の双方が同じ契約を読む」ことを、GitHub の描画を完全に再現するのではなく
+// 解釈が一意に定まる本文だけを受理することで担保する。CommonMark で描画結果が
+// 文脈（list、indent、lazy continuation）に依存する書き方は、推測して受理せず
+// error として拒否する。
+//
+//   - heading と fence marker は列 0 に置く。1〜3 space indent した marker らしき行は
+//     GitHub では文脈次第で heading にも code block にもなるため拒否する
+//   - fence は backtick または tilde 3 個以上で開き、同じ文字・同じ長さ以上で
+//     info string を持たない列 0 の行だけが閉じる
+//   - HTML comment は行全体が comment の行だけを許可する。可視内容と混在する行は拒否する
+//   - inline code span（backtick で囲んだ範囲）内の `<!--` は comment ではない
 
 // bodyLine は正規化済みの 1 行を表す。GitHub API の body は CRLF を含むため、
 // 行分割時に行末の \r だけを取り除く。それ以外の空白は保持する。
@@ -39,31 +45,97 @@ const (
 	classFenceClose
 	classComment
 	classCommentAmbiguous
+	classIndentedMarker
 )
 
-// fenceMarker は行が fence marker（backtick または tilde 3 個以上、3 space までの
-// indent）で始まるかを判定し、fence 文字・個数・info string を返す。
-func fenceMarker(text string) (char byte, count int, info string, ok bool) {
-	i := 0
-	for i < 3 && i < len(text) && text[i] == ' ' {
-		i++
+// indentWidth は行頭の space 数を返す。
+func indentWidth(text string) int {
+	n := 0
+	for n < len(text) && text[n] == ' ' {
+		n++
 	}
-	if i >= len(text) || (text[i] != '`' && text[i] != '~') {
+	return n
+}
+
+// fenceMarker は列 0 から始まる fence marker（backtick または tilde 3 個以上）を判定し、
+// fence 文字・個数・info string を返す。
+func fenceMarker(text string) (char byte, count int, info string, ok bool) {
+	if len(text) == 0 || (text[0] != '`' && text[0] != '~') {
 		return 0, 0, "", false
 	}
-	c := text[i]
-	j := i
+	c := text[0]
+	j := 0
 	for j < len(text) && text[j] == c {
 		j++
 	}
-	if j-i < 3 {
+	if j < 3 {
 		return 0, 0, "", false
 	}
-	return c, j - i, strings.TrimSpace(text[j:]), true
+	return c, j, strings.TrimSpace(text[j:]), true
 }
 
-// consumeComments は文字列から閉じた `<!-- ... -->` の対を繰り返し取り除き、
-// comment の外に残る可視文字列と、閉じない comment が開いたままかを返す。
+// indentedMarker は 1〜3 space indent された heading / fence marker かを判定する。
+// GitHub ではこの indent 幅の marker が文脈次第で heading にも code block にもなるため、
+// 解釈を推測せず拒否する。4 space 以上は GitHub でも block marker にならないため対象外。
+func indentedMarker(text string) bool {
+	n := indentWidth(text)
+	if n < 1 || n > 3 {
+		return false
+	}
+	rest := text[n:]
+	if _, _, _, ok := fenceMarker(rest); ok {
+		return true
+	}
+	return strings.HasPrefix(rest, "## ") || strings.HasPrefix(rest, "### ")
+}
+
+// maskCodeSpans は閉じた inline code span（同じ長さの backtick run で囲まれた範囲）を
+// space へ置換した文字列を返す。長さは元の行と一致させる。閉じない backtick run は
+// そのまま残す。code span 内の `<!--` を comment と誤認しないために使う。
+func maskCodeSpans(text string) string {
+	out := []byte(text)
+	i := 0
+	for i < len(text) {
+		if text[i] != '`' {
+			i++
+			continue
+		}
+		j := i
+		for j < len(text) && text[j] == '`' {
+			j++
+		}
+		runLen := j - i
+		// 同じ長さの backtick run を探す
+		k := j
+		for k < len(text) {
+			if text[k] != '`' {
+				k++
+				continue
+			}
+			m := k
+			for m < len(text) && text[m] == '`' {
+				m++
+			}
+			if m-k == runLen {
+				for x := i; x < m; x++ {
+					out[x] = ' '
+				}
+				i = m
+				break
+			}
+			k = m
+		}
+		if k >= len(text) {
+			// 閉じない run。この run を飛ばして続行する
+			i = j
+		}
+	}
+	return string(out)
+}
+
+// consumeComments は文字列から閉じた HTML comment を繰り返し取り除き、comment の外に
+// 残る文字列と、閉じない comment が開いたままかを返す。CommonMark に合わせて
+// `<!-->` と `<!--->` を空 comment として扱う。
 func consumeComments(s string) (residual string, open bool) {
 	var vis strings.Builder
 	for {
@@ -74,6 +146,14 @@ func consumeComments(s string) (residual string, open bool) {
 		}
 		vis.WriteString(s[:i])
 		rest := s[i+len("<!--"):]
+		switch {
+		case strings.HasPrefix(rest, ">"):
+			s = rest[len(">"):]
+			continue
+		case strings.HasPrefix(rest, "->"):
+			s = rest[len("->"):]
+			continue
+		}
 		j := strings.Index(rest, "-->")
 		if j < 0 {
 			return vis.String(), true
@@ -123,13 +203,24 @@ func (s *lineScanner) step(l bodyLine) lineClass {
 		s.fenceInfo = info
 		return classFenceOpen
 	}
-	// comment の開始位置は問わない。可視内容と混在する行は行頭・行末どちらでも拒否する
-	if strings.Contains(l.text, "<!--") {
-		residual, open := consumeComments(l.text)
-		s.inComment = open
+	if indentedMarker(l.text) {
+		return classIndentedMarker
+	}
+
+	// code span 内の `<!--` は comment ではないため、判定前に mask する
+	masked := maskCodeSpans(l.text)
+	if strings.Contains(masked, "<!--") {
+		residual, open := consumeComments(masked)
 		if strings.TrimSpace(residual) != "" {
+			// 可視内容と混在する行は拒否する。GitHub では列 0 以外の `<!--` は
+			// HTML block を開始しないため、comment 状態へは遷移させない
 			return classCommentAmbiguous
 		}
+		if indentWidth(masked) > 0 {
+			// indent された comment は文脈次第で code block になる
+			return classIndentedMarker
+		}
+		s.inComment = open
 		return classComment
 	}
 	return classText
@@ -150,13 +241,21 @@ func scanSections(lines []bodyLine) (preamble []bodyLine, sections []rawSection,
 	current := -1
 	for _, l := range lines {
 		class := sc.step(l)
-		if class == classCommentAmbiguous {
+		// 違反行も section の内容として保持する。誤った section_empty を重ねず、
+		// 原因行を指す error だけを返すため
+		switch class {
+		case classCommentAmbiguous:
 			errs = append(errs, ValidationError{
 				Code:    CodeCommentAmbiguous,
 				Line:    l.num,
 				Message: "HTML comment と内容を同一行に混在させない",
 			})
-			continue
+		case classIndentedMarker:
+			errs = append(errs, ValidationError{
+				Code:    CodeIndentedMarker,
+				Line:    l.num,
+				Message: "heading、code fence、HTML comment は列 0 から書く（indent すると GitHub の解釈が文脈で変わる）",
+			})
 		}
 		if class == classText && strings.HasPrefix(l.text, "## ") {
 			title := strings.TrimRight(l.text[len("## "):], " \t")
@@ -187,13 +286,15 @@ func contentLines(lines []bodyLine) []bodyLine {
 	var out []bodyLine
 	for _, l := range lines {
 		switch sc.step(l) {
-		case classComment, classCommentAmbiguous:
+		case classComment:
 			continue
 		case classText:
 			if strings.TrimSpace(l.text) == "" {
 				continue
 			}
 		}
+		// 混在行と indent marker 行は、それ自体が error だが可視内容は持つため
+		// section の内容として数える（誤った section_empty を重ねない）
 		out = append(out, l)
 	}
 	return out
@@ -259,9 +360,9 @@ func extractContractBlock(sec rawSection) (block []bodyLine, blockLine int, foun
 			fences[len(fences)-1].lines = append(fences[len(fences)-1].lines, l)
 		case classFenceClose:
 			// fence の終了。次の open まで何もしない
-		case classComment, classCommentAmbiguous:
+		case classComment, classCommentAmbiguous, classIndentedMarker:
 			// fence 外の comment は Contract section で許可する（template が使用する）。
-			// 混在行は scanSections が報告済み
+			// 混在行と indent marker 行は scanSections が報告済み
 		default:
 			outside = append(outside, l)
 		}
