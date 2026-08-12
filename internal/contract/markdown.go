@@ -4,8 +4,13 @@ import "strings"
 
 // 本 file は Issue Contract の検証に必要な最小限の Markdown 走査だけを実装する。
 // 一般的な Markdown parser を実装範囲へ広げない（docs/contracts/issue-contract-v1alpha1.md、
-// Issue #9 Constraints）。認識するのは行頭の H2/H3 heading、行頭の code fence、
+// Issue #9 Constraints）。認識するのは行頭の H2/H3 heading、code fence、
 // 行頭で始まる HTML comment のみである。
+//
+// fence と comment の判定は「人と Kudo の双方が同じ契約を読む」ために GitHub の描画と
+// 一致させる。fence は CommonMark の最小規則（3 個以上の backtick、閉 fence は開 fence
+// 以上の長さで info string なし、3 space までの indent）に従う。comment と可視内容を
+// 同一行へ混在させた行は、描画とparseの解釈差を残さないため error として拒否する。
 
 // bodyLine は正規化済みの 1 行を表す。GitHub API の body は CRLF を含むため、
 // 行分割時に行末の \r だけを取り除く。それ以外の空白は保持する。
@@ -23,45 +28,103 @@ func splitLines(body string) []bodyLine {
 	return lines
 }
 
+// lineClass は走査中の 1 行の分類を表す。
+type lineClass int
+
+const (
+	classText lineClass = iota
+	classFenceOpen
+	classFenceContent
+	classFenceClose
+	classComment
+	classCommentAmbiguous
+)
+
+// fenceMarker は行が fence marker（3 個以上の backtick、3 space までの indent）で
+// 始まるかを判定し、backtick 数と info string を返す。
+func fenceMarker(text string) (backticks int, info string, ok bool) {
+	i := 0
+	for i < 3 && i < len(text) && text[i] == ' ' {
+		i++
+	}
+	j := i
+	for j < len(text) && text[j] == '`' {
+		j++
+	}
+	if j-i < 3 {
+		return 0, "", false
+	}
+	return j - i, strings.TrimSpace(text[j:]), true
+}
+
+// consumeComments は文字列から閉じた `<!-- ... -->` の対を繰り返し取り除き、
+// comment の外に残る可視文字列と、閉じない comment が開いたままかを返す。
+func consumeComments(s string) (residual string, open bool) {
+	var vis strings.Builder
+	for {
+		i := strings.Index(s, "<!--")
+		if i < 0 {
+			vis.WriteString(s)
+			return vis.String(), false
+		}
+		vis.WriteString(s[:i])
+		rest := s[i+len("<!--"):]
+		j := strings.Index(rest, "-->")
+		if j < 0 {
+			return vis.String(), true
+		}
+		s = rest[j+len("-->"):]
+	}
+}
+
 // lineScanner は code fence と HTML comment の内側で heading を誤認しないための
 // 走査状態を持つ。
 type lineScanner struct {
-	inFence     bool
-	fenceLine   int
-	inComment   bool
-	commentLine int
+	inFence   bool
+	fenceLine int
+	fenceLen  int
+	fenceInfo string
+	inComment bool
 }
 
-// step は 1 行を読み、状態を更新する。返り値は「この行が fence / comment の
-// 内側（開始・終了行を含む）かどうか」である。
-func (s *lineScanner) step(l bodyLine) (inFence, inComment bool) {
-	trimmed := strings.TrimSpace(l.text)
-
+// step は 1 行を読んで状態を更新し、その行の分類を返す。
+func (s *lineScanner) step(l bodyLine) lineClass {
 	if s.inComment {
-		if strings.Contains(trimmed, "-->") {
-			s.inComment = false
+		idx := strings.Index(l.text, "-->")
+		if idx < 0 {
+			return classComment
 		}
-		return false, true
+		residual, open := consumeComments(l.text[idx+len("-->"):])
+		s.inComment = open
+		if strings.TrimSpace(residual) != "" {
+			return classCommentAmbiguous
+		}
+		return classComment
 	}
 	if s.inFence {
-		if strings.HasPrefix(l.text, "```") {
+		if n, info, ok := fenceMarker(l.text); ok && n >= s.fenceLen && info == "" {
 			s.inFence = false
+			return classFenceClose
 		}
-		return true, false
+		return classFenceContent
 	}
-	if strings.HasPrefix(l.text, "```") {
+	if n, info, ok := fenceMarker(l.text); ok {
 		s.inFence = true
 		s.fenceLine = l.num
-		return true, false
+		s.fenceLen = n
+		s.fenceInfo = info
+		return classFenceOpen
 	}
+	trimmed := strings.TrimSpace(l.text)
 	if strings.HasPrefix(trimmed, "<!--") {
-		if !strings.Contains(trimmed, "-->") {
-			s.inComment = true
-			s.commentLine = l.num
+		residual, open := consumeComments(trimmed)
+		s.inComment = open
+		if strings.TrimSpace(residual) != "" {
+			return classCommentAmbiguous
 		}
-		return false, true
+		return classComment
 	}
-	return false, false
+	return classText
 }
 
 // rawSection は本文から切り出した H2 section を表す。
@@ -72,14 +135,22 @@ type rawSection struct {
 }
 
 // scanSections は本文を H2 section へ分割する。fence または comment の内側の
-// `## ` は heading として扱わない。fence が閉じないまま本文が終わった場合は
-// CodeFenceUnclosed を報告する。
+// `## ` は heading として扱わない。fence が閉じないまま本文が終わった場合と、
+// comment と可視内容が同一行に混在する場合はエラーを報告する。
 func scanSections(lines []bodyLine) (preamble []bodyLine, sections []rawSection, errs []ValidationError) {
 	var sc lineScanner
 	current := -1
 	for _, l := range lines {
-		inFence, inComment := sc.step(l)
-		if !inFence && !inComment && strings.HasPrefix(l.text, "## ") {
+		class := sc.step(l)
+		if class == classCommentAmbiguous {
+			errs = append(errs, ValidationError{
+				Code:    CodeCommentAmbiguous,
+				Line:    l.num,
+				Message: "HTML comment と内容を同一行に混在させない",
+			})
+			continue
+		}
+		if class == classText && strings.HasPrefix(l.text, "## ") {
 			title := strings.TrimRight(l.text[len("## "):], " \t")
 			sections = append(sections, rawSection{title: title, line: l.num})
 			current = len(sections) - 1
@@ -107,12 +178,13 @@ func contentLines(lines []bodyLine) []bodyLine {
 	var sc lineScanner
 	var out []bodyLine
 	for _, l := range lines {
-		inFence, inComment := sc.step(l)
-		if inComment {
+		switch sc.step(l) {
+		case classComment, classCommentAmbiguous:
 			continue
-		}
-		if !inFence && strings.TrimSpace(l.text) == "" {
-			continue
+		case classText:
+			if strings.TrimSpace(l.text) == "" {
+				continue
+			}
 		}
 		out = append(out, l)
 	}
@@ -143,8 +215,8 @@ func scanCriteria(lines []bodyLine) []rawCriterion {
 	var out []rawCriterion
 	current := -1
 	for _, l := range lines {
-		inFence, inComment := sc.step(l)
-		if !inFence && !inComment && strings.HasPrefix(l.text, "### ") {
+		class := sc.step(l)
+		if class == classText && strings.HasPrefix(l.text, "### ") {
 			id := strings.TrimRight(l.text[len("### "):], " \t")
 			out = append(out, rawCriterion{id: id, line: l.num})
 			current = len(out) - 1
@@ -171,22 +243,17 @@ func extractContractBlock(sec rawSection) (block []bodyLine, blockLine int, foun
 	var outside []bodyLine
 
 	var sc lineScanner
-	openIdx := -1
 	for _, l := range sec.lines {
-		wasInFence := sc.inFence
-		inFence, inComment := sc.step(l)
-		switch {
-		case inFence && !wasInFence:
-			// 開始 fence 行
-			fences = append(fences, fence{info: strings.TrimSpace(strings.TrimPrefix(l.text, "```")), line: l.num})
-			openIdx = len(fences) - 1
-		case wasInFence && !sc.inFence:
-			// 終了 fence 行
-			openIdx = -1
-		case inFence && openIdx >= 0:
-			fences[openIdx].lines = append(fences[openIdx].lines, l)
-		case inComment:
-			// fence 外の comment は Contract section で許可する（template が使用する）
+		switch sc.step(l) {
+		case classFenceOpen:
+			fences = append(fences, fence{info: sc.fenceInfo, line: l.num})
+		case classFenceContent:
+			fences[len(fences)-1].lines = append(fences[len(fences)-1].lines, l)
+		case classFenceClose:
+			// fence の終了。次の open まで何もしない
+		case classComment, classCommentAmbiguous:
+			// fence 外の comment は Contract section で許可する（template が使用する）。
+			// 混在行は scanSections が報告済み
 		default:
 			outside = append(outside, l)
 		}

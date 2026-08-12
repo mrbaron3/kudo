@@ -36,6 +36,13 @@ func parseIssueRef(s string) (IssueRef, bool) {
 	if len(num) == 0 || num[0] == '0' {
 		return IssueRef{}, false
 	}
+	// strconv.Atoi は符号（+31 等）を許容するため、digit だけを明示的に許可し
+	// canonical でない表現を排除する
+	for i := 0; i < len(num); i++ {
+		if num[i] < '0' || num[i] > '9' {
+			return IssueRef{}, false
+		}
+	}
 	n, err := strconv.Atoi(num)
 	if err != nil || n <= 0 {
 		return IssueRef{}, false
@@ -259,7 +266,9 @@ func buildContract(entries []yamlEntry, blockLine int, self RepositoryRef) (Cont
 
 // validateCriteria は Contract block の acceptanceCriteriaIds と
 // Acceptance Criteria section の criterion ID の一致を検証する。
-func validateCriteria(ids []string, criteria []rawCriterion) []ValidationError {
+// sectionLine は Acceptance Criteria heading の行番号で、section 側に対応物が
+// 無いエラーの位置に使う。
+func validateCriteria(ids []string, criteria []rawCriterion, sectionLine int) []ValidationError {
 	var errs []ValidationError
 
 	inSection := map[string]bool{}
@@ -282,7 +291,7 @@ func validateCriteria(ids []string, criteria []rawCriterion) []ValidationError {
 		if !inSection[id] {
 			errs = append(errs, ValidationError{
 				Code:    CodeACCriterionMissing,
-				Line:    0,
+				Line:    sectionLine,
 				Section: sectionAcceptanceCriteria,
 				Field:   "acceptanceCriteriaIds",
 				Message: "acceptanceCriteriaIds の `" + id + "` に対応する criterion が section に無い",

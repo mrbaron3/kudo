@@ -25,7 +25,7 @@ Kudoがclaimできるのは、[GitHub routing policy](../github-routing.md)のca
 9. `Decision Authority`
 10. `Stop and Escalation Conditions`
 
-`Advisory Hints`は任意であり、使う場合は最後に置く。Issue comment、Project field、label、会話履歴は、上記契約へ明示的に取り込まれない限り実装authorityではない。
+`Advisory Hints`は任意であり、使う場合は最後に置く。required sectionは空にできない。HTML commentだけのsectionは内容が無いものとして扱い、claim rejectionとする（`Advisory Hints`は空でもよい）。人とKudoが同じ契約を読むため、HTML commentと可視内容を同一行に混在させない。Issue comment、Project field、label、会話履歴は、上記契約へ明示的に取り込まれない限り実装authorityではない。
 
 ## Contract block
 

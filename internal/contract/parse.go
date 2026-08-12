@@ -1,5 +1,7 @@
 package contract
 
+import "sort"
+
 // H2 section の canonical な title。この順序でそれぞれ 1 回だけ現れる。
 const (
 	sectionContract           = "Contract"
@@ -44,8 +46,8 @@ var sectionOrder = func() map[string]int {
 // 自己申告させないため、この値は GitHub API または検証済み event envelope を正とする。
 //
 // 返り値は、検証エラーが 1 件でもあれば task が nil になり、エラーが無ければ
-// 完全に typed な Task が返る。エラーは本文の記述順で安定しており、同じ入力は
-// 常に同じ結果を返す。
+// 完全に typed な Task が返る。エラーは行番号の昇順（位置を持たないものは先頭）で
+// 安定しており、同じ入力は常に同じ結果を返す。
 func Parse(body string, self RepositoryRef) (*Task, []ValidationError) {
 	if self.Owner == "" || self.Name == "" {
 		return nil, []ValidationError{{
@@ -105,14 +107,15 @@ func Parse(body string, self RepositoryRef) (*Task, []ValidationError) {
 		} else {
 			prevOrder = order
 		}
+		// required section は空にできない。任意の Advisory Hints は空を許可する
 		if !counted[sec.title] {
 			counted[sec.title] = true
-			if len(contentLines(sec.lines)) == 0 {
+			if order < len(requiredSections) && len(contentLines(sec.lines)) == 0 {
 				errs = append(errs, ValidationError{
 					Code:    CodeSectionEmpty,
 					Line:    sec.line,
 					Section: sec.title,
-					Message: "section `" + sec.title + "` に内容が無い",
+					Message: "required section `" + sec.title + "` に内容が無い",
 				})
 			}
 		}
@@ -148,9 +151,12 @@ func Parse(body string, self RepositoryRef) (*Task, []ValidationError) {
 	if sec := firstSeen[sectionAcceptanceCriteria]; sec != nil {
 		criteria = scanCriteria(sec.lines)
 		if contractOK {
-			errs = append(errs, validateCriteria(contract.AcceptanceCriteriaIDs, criteria)...)
+			errs = append(errs, validateCriteria(contract.AcceptanceCriteriaIDs, criteria, sec.line)...)
 		}
 	}
+
+	// 位置を持つエラーを行番号順に並べる。同一行内の順序は検出順を保つ
+	sort.SliceStable(errs, func(i, j int) bool { return errs[i].Line < errs[j].Line })
 
 	if len(errs) > 0 {
 		return nil, errs

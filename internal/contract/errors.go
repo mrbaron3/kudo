@@ -18,6 +18,7 @@ const (
 	CodeSectionOutOfOrder Code = "section_out_of_order"
 	CodeSectionEmpty      Code = "section_empty"
 	CodeFenceUnclosed     Code = "fence_unclosed"
+	CodeCommentAmbiguous  Code = "comment_ambiguous"
 
 	// Contract section の fenced block
 	CodeContractBlockMissing   Code = "contract_block_missing"

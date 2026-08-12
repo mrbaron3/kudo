@@ -4,21 +4,16 @@
 schema: kudo.issue/v1alpha1
 kind: task
 readiness: ready
-parent: github://mrbaron3/kudo/pulls/7
-dependsOn:
-  - github://mrbaron3/kudo/issues/07
-  - gitlab://mrbaron3/kudo/issues/3
-  - github://mrbaron3/kudo/issues/+31
+parent: null
+dependsOn: []
 acceptanceCriteriaIds:
   - AC-1
-authorityRefs:
-  - /etc/passwd
-  - docs/../AGENTS.md
+authorityRefs: []
 ```
 
 ## Outcome
 
-完了後に外部から観測できる結果。
+<!-- note --> 完了後に外部から観測できる結果。
 
 ## Authority and Inputs
 

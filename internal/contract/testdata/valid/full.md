@@ -18,6 +18,7 @@ acceptanceCriteriaIds:
 authorityRefs:
   - AGENTS.md
   - docs/contracts/issue-contract-v1alpha1.md
+  - .github/ISSUE_TEMPLATE/kudo-task.md
   - github://mrbaron3/kudo/issues/1
 ```
 
@@ -27,6 +28,8 @@ authorityRefs:
 複数行の comment も
 parse には影響しない。
 -->
+
+<!-- a --> <!-- b -->
 
 外部から観測できる結果を書く。
 
@@ -71,16 +74,22 @@ parse には影響しない。
 
 ## Verification and Evidence
 
-fence 内の `##` は heading として扱わない。
+fence 内の `##` は heading として扱わない。4 backtick の fence は内側の 3 backtick で閉じない。
 
+````md
 ```sh
 echo "## Fake Heading"
 mise run check
 ```
+````
 
 ## Constraints and Invariants
 
 - 不変条件
+
+  ```
+## Fenced Fake
+  ```
 
 ## Decision Authority
 

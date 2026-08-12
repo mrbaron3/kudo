@@ -102,6 +102,7 @@ func TestParseFullTyped(t *testing.T) {
 		AuthorityRefs: []AuthorityRef{
 			{Path: "AGENTS.md"},
 			{Path: "docs/contracts/issue-contract-v1alpha1.md"},
+			{Path: ".github/ISSUE_TEMPLATE/kudo-task.md"},
 			{Issue: &issue1},
 		},
 	}
@@ -127,8 +128,13 @@ func TestParseFullTyped(t *testing.T) {
 	}
 
 	// fence 内の `##` を heading として拾っていないことを確認する
+	// （4 backtick fence は内側の 3 backtick で閉じない）
 	if sec, ok := task.Section(sectionVerification); !ok || !strings.Contains(sec.Content, "## Fake Heading") {
 		t.Fatal("fence 内の内容が Verification section に保持されていない")
+	}
+	// indent された fence 内の行頭 `##` も heading として拾わない
+	if sec, ok := task.Section(sectionConstraints); !ok || !strings.Contains(sec.Content, "## Fenced Fake") {
+		t.Fatal("indented fence 内の内容が Constraints section に保持されていない")
 	}
 }
 
@@ -145,34 +151,91 @@ func TestParseTemplateDraftNotExecutable(t *testing.T) {
 	}
 }
 
-// invalidExpectations は fixture ごとの期待エラーを Code の出現順で固定する。
-// 順序の固定は AC-3（決定性）の検証を兼ねる。
-var invalidExpectations = map[string][]Code{
-	"invalid/preamble.md":                 {CodePreambleContent},
-	"invalid/section-missing.md":          {CodeSectionMissing},
-	"invalid/section-duplicate.md":        {CodeSectionDuplicate},
-	"invalid/section-order.md":            {CodeSectionOutOfOrder},
-	"invalid/advisory-not-last.md":        {CodeSectionOutOfOrder, CodeSectionOutOfOrder},
-	"invalid/section-empty.md":            {CodeSectionEmpty},
-	"invalid/fence-unclosed.md":           {CodeFenceUnclosed, CodeSectionMissing, CodeSectionMissing, CodeSectionMissing},
-	"invalid/contract-block-missing.md":   {CodeSectionEmpty, CodeContractBlockMissing},
-	"invalid/contract-block-duplicate.md": {CodeContractBlockDuplicate},
-	"invalid/contract-extra-content.md":   {CodeContractExtraContent},
-	"invalid/contract-fence-info.md":      {CodeContractBlockMissing},
-	"invalid/yaml-syntax.md":              {CodeYAMLSyntax, CodeFieldMissing},
-	"invalid/yaml-syntax-more.md":         {CodeYAMLSyntax, CodeYAMLSyntax, CodeYAMLSyntax, CodeFieldMissing},
-	"invalid/yaml-duplicate-key.md":       {CodeYAMLDuplicateKey},
-	"invalid/yaml-unknown-field.md":       {CodeYAMLUnknownField},
-	"invalid/field-missing.md":            {CodeFieldMissing},
-	"invalid/field-type.md":               {CodeFieldType, CodeFieldType, CodeFieldType},
-	"invalid/enum-invalid.md":             {CodeEnumInvalid, CodeEnumInvalid, CodeEnumInvalid},
-	"invalid/ref-invalid.md":              {CodeRefInvalid, CodeRefInvalid, CodeRefInvalid, CodeRefInvalid, CodeRefInvalid},
-	"invalid/ref-cross-repo.md":           {CodeRefCrossRepository, CodeRefCrossRepository},
-	"invalid/ref-duplicate.md":            {CodeRefDuplicate, CodeRefDuplicate, CodeRefDuplicate},
-	"invalid/ac-ids-empty.md":             {CodeACIDsEmpty},
-	"invalid/ac-id-duplicate.md":          {CodeACIDDuplicate},
-	"invalid/ac-mismatch.md":              {CodeACCriterionMissing, CodeACCriterionUnlisted},
-	"invalid/ac-criterion-duplicate.md":   {CodeACCriterionDuplicate},
+// expectedError は invalid fixture の期待エラーを code・field・行番号まで固定する。
+type expectedError struct {
+	Code  Code
+	Field string
+	Line  int
+}
+
+// invalidExpectations は fixture ごとの期待エラーを返却順（行番号昇順、位置なしは先頭）
+// で固定する。順序と位置の固定は AC-3（決定性）と deliverable（field/section 位置を
+// 保持する validation result）の検証を兼ねる。
+var invalidExpectations = map[string][]expectedError{
+	"invalid/preamble.md":          {{CodePreambleContent, "", 1}},
+	"invalid/section-missing.md":   {{CodeSectionMissing, "", 0}},
+	"invalid/section-duplicate.md": {{CodeSectionDuplicate, "", 36}},
+	"invalid/section-order.md":     {{CodeSectionOutOfOrder, "", 28}},
+	"invalid/section-unknown.md":   {{CodeSectionUnknown, "", 60}},
+	"invalid/advisory-not-last.md": {
+		{CodeSectionOutOfOrder, "", 56},
+		{CodeSectionOutOfOrder, "", 60},
+	},
+	"invalid/section-empty.md": {{CodeSectionEmpty, "", 14}},
+	"invalid/comment-ambiguous.md": {
+		{CodeSectionEmpty, "", 14},
+		{CodeCommentAmbiguous, "", 16},
+	},
+	"invalid/fence-unclosed.md": {
+		{CodeSectionMissing, "", 0},
+		{CodeSectionMissing, "", 0},
+		{CodeSectionMissing, "", 0},
+		{CodeFenceUnclosed, "", 46},
+	},
+	"invalid/contract-block-missing.md": {
+		{CodeSectionEmpty, "", 1},
+		{CodeContractBlockMissing, "", 1},
+	},
+	"invalid/contract-block-duplicate.md": {{CodeContractBlockDuplicate, "", 14}},
+	"invalid/contract-extra-content.md":   {{CodeContractExtraContent, "", 14}},
+	"invalid/contract-fence-info.md":      {{CodeContractBlockMissing, "", 3}},
+	"invalid/yaml-syntax.md": {
+		{CodeFieldMissing, "kind", 3},
+		{CodeYAMLSyntax, "", 5},
+	},
+	"invalid/yaml-syntax-more.md": {
+		{CodeFieldMissing, "readiness", 3},
+		{CodeYAMLSyntax, "", 6},
+		{CodeYAMLSyntax, "dependsOn", 8},
+		{CodeYAMLSyntax, "", 9},
+	},
+	"invalid/yaml-duplicate-key.md": {{CodeYAMLDuplicateKey, "readiness", 7}},
+	"invalid/yaml-unknown-field.md": {{CodeYAMLUnknownField, "priority", 12}},
+	"invalid/field-missing.md":      {{CodeFieldMissing, "dependsOn", 3}},
+	"invalid/field-type.md": {
+		{CodeFieldType, "schema", 4},
+		{CodeFieldType, "dependsOn", 9},
+		{CodeFieldType, "acceptanceCriteriaIds", 10},
+	},
+	"invalid/enum-invalid.md": {
+		{CodeEnumInvalid, "schema", 4},
+		{CodeEnumInvalid, "kind", 5},
+		{CodeEnumInvalid, "readiness", 6},
+	},
+	"invalid/ref-invalid.md": {
+		{CodeRefInvalid, "parent", 7},
+		{CodeRefInvalid, "dependsOn", 9},
+		{CodeRefInvalid, "dependsOn", 10},
+		{CodeRefInvalid, "dependsOn", 11},
+		{CodeRefInvalid, "authorityRefs", 15},
+		{CodeRefInvalid, "authorityRefs", 16},
+	},
+	"invalid/ref-cross-repo.md": {
+		{CodeRefCrossRepository, "parent", 7},
+		{CodeRefCrossRepository, "dependsOn", 9},
+	},
+	"invalid/ref-duplicate.md": {
+		{CodeRefDuplicate, "dependsOn", 10},
+		{CodeRefDuplicate, "authorityRefs", 15},
+		{CodeRefDuplicate, "authorityRefs", 17},
+	},
+	"invalid/ac-ids-empty.md":           {{CodeACIDsEmpty, "acceptanceCriteriaIds", 9}},
+	"invalid/ac-id-duplicate.md":        {{CodeACIDDuplicate, "acceptanceCriteriaIds", 11}},
+	"invalid/ac-criterion-duplicate.md": {{CodeACCriterionDuplicate, "", 44}},
+	"invalid/ac-mismatch.md": {
+		{CodeACCriterionMissing, "acceptanceCriteriaIds", 37},
+		{CodeACCriterionUnlisted, "", 45},
+	},
 }
 
 func TestParseInvalidFixtures(t *testing.T) {
@@ -190,12 +253,17 @@ func TestParseInvalidFixtures(t *testing.T) {
 			if task != nil {
 				t.Fatal("invalid fixture で task が返った")
 			}
-			var got []Code
+			var got []expectedError
 			for _, e := range errs {
-				got = append(got, e.Code)
+				got = append(got, expectedError{Code: e.Code, Field: e.Field, Line: e.Line})
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("codes = %v, want %v\nerrors: %v", got, want, errs)
+				t.Fatalf("errors = %v, want %v\nfull: %v", got, want, errs)
+			}
+			for i := 1; i < len(errs); i++ {
+				if errs[i].Line < errs[i-1].Line {
+					t.Fatalf("エラーが行番号順でない: %v", errs)
+				}
 			}
 			for _, e := range errs {
 				if e.Message == "" {
@@ -203,6 +271,20 @@ func TestParseInvalidFixtures(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseReadinessBlocked(t *testing.T) {
+	body := strings.Replace(readFixture(t, "valid/minimal.md"), "readiness: ready", "readiness: blocked", 1)
+	task, errs := Parse(body, testSelf)
+	if len(errs) > 0 {
+		t.Fatalf("エラー: %v", errs)
+	}
+	if task.Contract.Readiness != ReadinessBlocked {
+		t.Fatalf("readiness = %s, want blocked", task.Contract.Readiness)
+	}
+	if task.Contract.IsExecutableReadiness() {
+		t.Fatal("blocked が実行可能と判定された")
 	}
 }
 
