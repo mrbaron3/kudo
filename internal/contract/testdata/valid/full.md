@@ -33,11 +33,6 @@ parse には影響しない。
 
 外部から観測できる結果を書く。
 
-## Authority and Inputs
-
-1. `AGENTS.md`
-2. `docs/contracts/issue-contract-v1alpha1.md`
-
 ## Scope
 
 ### Included
@@ -90,6 +85,10 @@ mise run check
   ```
 ## Fenced Fake
   ```
+
+~~~text
+## Tilde Fake
+~~~
 
 ## Decision Authority
 

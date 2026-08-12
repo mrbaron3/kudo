@@ -11,10 +11,6 @@ acceptanceCriteriaIds:
 authorityRefs: []
 ```
 
-## Authority and Inputs
-
-1. `AGENTS.md`
-
 ## Scope
 
 ### Included

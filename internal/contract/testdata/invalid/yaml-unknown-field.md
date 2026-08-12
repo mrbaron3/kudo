@@ -16,10 +16,6 @@ priority: high
 
 完了後に外部から観測できる結果。
 
-## Authority and Inputs
-
-1. `AGENTS.md`
-
 ## Scope
 
 ### Included

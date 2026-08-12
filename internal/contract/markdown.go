@@ -8,9 +8,10 @@ import "strings"
 // 行頭で始まる HTML comment のみである。
 //
 // fence と comment の判定は「人と Kudo の双方が同じ契約を読む」ために GitHub の描画と
-// 一致させる。fence は CommonMark の最小規則（3 個以上の backtick、閉 fence は開 fence
-// 以上の長さで info string なし、3 space までの indent）に従う。comment と可視内容を
-// 同一行へ混在させた行は、描画とparseの解釈差を残さないため error として拒否する。
+// 一致させる。fence は CommonMark の最小規則（backtick または tilde 3 個以上、閉 fence は
+// 開 fence と同じ文字・同じ長さ以上で info string なし、3 space までの indent）に従う。
+// comment と可視内容を同一行へ混在させた行は、描画とparseの解釈差を残さないため
+// 位置にかかわらず error として拒否する。
 
 // bodyLine は正規化済みの 1 行を表す。GitHub API の body は CRLF を含むため、
 // 行分割時に行末の \r だけを取り除く。それ以外の空白は保持する。
@@ -40,21 +41,25 @@ const (
 	classCommentAmbiguous
 )
 
-// fenceMarker は行が fence marker（3 個以上の backtick、3 space までの indent）で
-// 始まるかを判定し、backtick 数と info string を返す。
-func fenceMarker(text string) (backticks int, info string, ok bool) {
+// fenceMarker は行が fence marker（backtick または tilde 3 個以上、3 space までの
+// indent）で始まるかを判定し、fence 文字・個数・info string を返す。
+func fenceMarker(text string) (char byte, count int, info string, ok bool) {
 	i := 0
 	for i < 3 && i < len(text) && text[i] == ' ' {
 		i++
 	}
+	if i >= len(text) || (text[i] != '`' && text[i] != '~') {
+		return 0, 0, "", false
+	}
+	c := text[i]
 	j := i
-	for j < len(text) && text[j] == '`' {
+	for j < len(text) && text[j] == c {
 		j++
 	}
 	if j-i < 3 {
-		return 0, "", false
+		return 0, 0, "", false
 	}
-	return j - i, strings.TrimSpace(text[j:]), true
+	return c, j - i, strings.TrimSpace(text[j:]), true
 }
 
 // consumeComments は文字列から閉じた `<!-- ... -->` の対を繰り返し取り除き、
@@ -82,6 +87,7 @@ func consumeComments(s string) (residual string, open bool) {
 type lineScanner struct {
 	inFence   bool
 	fenceLine int
+	fenceChar byte
 	fenceLen  int
 	fenceInfo string
 	inComment bool
@@ -102,22 +108,24 @@ func (s *lineScanner) step(l bodyLine) lineClass {
 		return classComment
 	}
 	if s.inFence {
-		if n, info, ok := fenceMarker(l.text); ok && n >= s.fenceLen && info == "" {
+		// 閉じ fence は開き fence と同じ文字・同じ長さ以上で、info string を持たない
+		if c, n, info, ok := fenceMarker(l.text); ok && c == s.fenceChar && n >= s.fenceLen && info == "" {
 			s.inFence = false
 			return classFenceClose
 		}
 		return classFenceContent
 	}
-	if n, info, ok := fenceMarker(l.text); ok {
+	if c, n, info, ok := fenceMarker(l.text); ok {
 		s.inFence = true
 		s.fenceLine = l.num
+		s.fenceChar = c
 		s.fenceLen = n
 		s.fenceInfo = info
 		return classFenceOpen
 	}
-	trimmed := strings.TrimSpace(l.text)
-	if strings.HasPrefix(trimmed, "<!--") {
-		residual, open := consumeComments(trimmed)
+	// comment の開始位置は問わない。可視内容と混在する行は行頭・行末どちらでも拒否する
+	if strings.Contains(l.text, "<!--") {
+		residual, open := consumeComments(l.text)
 		s.inComment = open
 		if strings.TrimSpace(residual) != "" {
 			return classCommentAmbiguous

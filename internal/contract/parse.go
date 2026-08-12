@@ -6,7 +6,6 @@ import "sort"
 const (
 	sectionContract           = "Contract"
 	sectionOutcome            = "Outcome"
-	sectionAuthorityAndInputs = "Authority and Inputs"
 	sectionScope              = "Scope"
 	sectionDeliverables       = "Deliverables"
 	sectionAcceptanceCriteria = "Acceptance Criteria"
@@ -20,7 +19,6 @@ const (
 var requiredSections = []string{
 	sectionContract,
 	sectionOutcome,
-	sectionAuthorityAndInputs,
 	sectionScope,
 	sectionDeliverables,
 	sectionAcceptanceCriteria,

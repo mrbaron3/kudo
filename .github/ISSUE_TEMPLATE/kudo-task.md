@@ -19,16 +19,13 @@ parent: null
 dependsOn: []
 acceptanceCriteriaIds:
   - AC-1
+# 実装時に読む正本を優先順位の高い順に列挙する。ここに無いものはauthorityになりません。
 authorityRefs: []
 ```
 
 ## Outcome
 
 <!-- 完了後に外部から観測できる結果を書く。実装方法は書かない。 -->
-
-## Authority and Inputs
-
-<!-- 正とする仕様・文書・Issueと、矛盾時の優先順位を書く。依存成果物はmain上のpathを指す。 -->
 
 ## Scope
 

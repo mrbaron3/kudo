@@ -15,6 +15,10 @@ authorityRefs: []
 
 完了後に外部から観測できる結果。
 
+## Deliverables
+
+- 成果物
+
 ## Scope
 
 ### Included
@@ -24,14 +28,6 @@ authorityRefs: []
 ### Excluded
 
 - 対象外
-
-## Authority and Inputs
-
-1. `AGENTS.md`
-
-## Deliverables
-
-- 成果物
 
 ## Acceptance Criteria
 

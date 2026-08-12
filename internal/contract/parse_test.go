@@ -78,8 +78,8 @@ func TestParseMinimalTyped(t *testing.T) {
 	if !task.Contract.IsExecutableReadiness() {
 		t.Fatal("readiness: ready が実行可能と判定されない")
 	}
-	if len(task.Sections) != 10 {
-		t.Fatalf("section 数 = %d, want 10", len(task.Sections))
+	if len(task.Sections) != len(requiredSections) {
+		t.Fatalf("section 数 = %d, want %d", len(task.Sections), len(requiredSections))
 	}
 }
 
@@ -132,9 +132,15 @@ func TestParseFullTyped(t *testing.T) {
 	if sec, ok := task.Section(sectionVerification); !ok || !strings.Contains(sec.Content, "## Fake Heading") {
 		t.Fatal("fence 内の内容が Verification section に保持されていない")
 	}
-	// indent された fence 内の行頭 `##` も heading として拾わない
-	if sec, ok := task.Section(sectionConstraints); !ok || !strings.Contains(sec.Content, "## Fenced Fake") {
-		t.Fatal("indented fence 内の内容が Constraints section に保持されていない")
+	// indent された fence と tilde fence の内側の行頭 `##` も heading として拾わない
+	sec, ok := task.Section(sectionConstraints)
+	if !ok {
+		t.Fatal("Constraints section が無い")
+	}
+	for _, want := range []string{"## Fenced Fake", "## Tilde Fake"} {
+		if !strings.Contains(sec.Content, want) {
+			t.Fatalf("fence 内の %q が Constraints section に保持されていない", want)
+		}
 	}
 }
 
@@ -164,23 +170,26 @@ type expectedError struct {
 var invalidExpectations = map[string][]expectedError{
 	"invalid/preamble.md":          {{CodePreambleContent, "", 1}},
 	"invalid/section-missing.md":   {{CodeSectionMissing, "", 0}},
-	"invalid/section-duplicate.md": {{CodeSectionDuplicate, "", 36}},
-	"invalid/section-order.md":     {{CodeSectionOutOfOrder, "", 28}},
-	"invalid/section-unknown.md":   {{CodeSectionUnknown, "", 60}},
+	"invalid/section-duplicate.md": {{CodeSectionDuplicate, "", 32}},
+	"invalid/section-order.md":     {{CodeSectionOutOfOrder, "", 22}},
+	"invalid/section-unknown.md":   {{CodeSectionUnknown, "", 56}},
 	"invalid/advisory-not-last.md": {
+		{CodeSectionOutOfOrder, "", 52},
 		{CodeSectionOutOfOrder, "", 56},
-		{CodeSectionOutOfOrder, "", 60},
 	},
 	"invalid/section-empty.md": {{CodeSectionEmpty, "", 14}},
+	// 行頭側（line 16）と行末側（line 30）の混在を両方拒否する
 	"invalid/comment-ambiguous.md": {
 		{CodeSectionEmpty, "", 14},
 		{CodeCommentAmbiguous, "", 16},
+		{CodeSectionEmpty, "", 28},
+		{CodeCommentAmbiguous, "", 30},
 	},
 	"invalid/fence-unclosed.md": {
 		{CodeSectionMissing, "", 0},
 		{CodeSectionMissing, "", 0},
 		{CodeSectionMissing, "", 0},
-		{CodeFenceUnclosed, "", 46},
+		{CodeFenceUnclosed, "", 42},
 	},
 	"invalid/contract-block-missing.md": {
 		{CodeSectionEmpty, "", 1},
@@ -231,10 +240,10 @@ var invalidExpectations = map[string][]expectedError{
 	},
 	"invalid/ac-ids-empty.md":           {{CodeACIDsEmpty, "acceptanceCriteriaIds", 9}},
 	"invalid/ac-id-duplicate.md":        {{CodeACIDDuplicate, "acceptanceCriteriaIds", 11}},
-	"invalid/ac-criterion-duplicate.md": {{CodeACCriterionDuplicate, "", 44}},
+	"invalid/ac-criterion-duplicate.md": {{CodeACCriterionDuplicate, "", 40}},
 	"invalid/ac-mismatch.md": {
-		{CodeACCriterionMissing, "acceptanceCriteriaIds", 37},
-		{CodeACCriterionUnlisted, "", 45},
+		{CodeACCriterionMissing, "acceptanceCriteriaIds", 33},
+		{CodeACCriterionUnlisted, "", 41},
 	},
 }
 

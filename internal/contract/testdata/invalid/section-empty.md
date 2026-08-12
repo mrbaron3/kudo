@@ -15,10 +15,6 @@ authorityRefs: []
 
 <!-- comment だけの section -->
 
-## Authority and Inputs
-
-1. `AGENTS.md`
-
 ## Scope
 
 ### Included
