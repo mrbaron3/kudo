@@ -32,8 +32,8 @@ Kudoがclaimできるのは、[GitHub routing policy](../github-routing.md)のca
 
 - heading、code fence、HTML commentは列0から書く。1〜3 space indentしたこれらのmarkerは、GitHubでは前後の文脈によりheadingにもcode blockにもなるため受理しない。
 - code fenceはbacktickまたはtildeを3個以上使って開き、同じ文字を同じ長さ以上並べたinfo stringを持たない列0の行だけが閉じる。
-- HTML commentは行全体がcommentである行だけに書く。可視内容と同一行に混在させない。
-- inline code span（backtickで囲んだ範囲）内の`<!--`はHTML commentではなく、通常の本文として扱う。
+- HTML commentは行全体がcommentである行だけに書く。可視内容と同一行に混在させない。inline code spanも可視内容であり、`` `AGENTS.md` <!-- 補足 --> ``のように可視内容がcode spanだけの行も混在として扱う。
+- inline code spanとHTML commentは、同一行では先に現れた側が優先される。code spanが先ならその内側の`<!--`はHTML commentではなく通常の本文として扱い、`<!--`が先ならその内側のbacktickはcode spanを開かない（commentは`-->`で閉じる）。
 
 ## Contract block
 

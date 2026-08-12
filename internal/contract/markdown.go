@@ -16,8 +16,11 @@ import "strings"
 //     GitHub では文脈次第で heading にも code block にもなるため拒否する
 //   - fence は backtick または tilde 3 個以上で開き、同じ文字・同じ長さ以上で
 //     info string を持たない列 0 の行だけが閉じる
-//   - HTML comment は行全体が comment の行だけを許可する。可視内容と混在する行は拒否する
-//   - inline code span（backtick で囲んだ範囲）内の `<!--` は comment ではない
+//   - HTML comment は行全体が comment の行だけを許可する。可視内容と混在する行は拒否する。
+//     inline code span も可視内容として数える
+//   - inline code span と HTML comment は同一行では先に現れた側が優先される。
+//     code span が先ならその内側の `<!--` は comment ではなく、`<!--` が先なら
+//     その内側の backtick は code span を開かない
 
 // bodyLine は正規化済みの 1 行を表す。GitHub API の body は CRLF を含むため、
 // 行分割時に行末の \r だけを取り除く。それ以外の空白は保持する。
@@ -89,77 +92,86 @@ func indentedMarker(text string) bool {
 	return strings.HasPrefix(rest, "## ") || strings.HasPrefix(rest, "### ")
 }
 
-// maskCodeSpans は閉じた inline code span（同じ長さの backtick run で囲まれた範囲）を
-// space へ置換した文字列を返す。長さは元の行と一致させる。閉じない backtick run は
-// そのまま残す。code span 内の `<!--` を comment と誤認しないために使う。
-func maskCodeSpans(text string) string {
-	out := []byte(text)
-	i := 0
-	for i < len(text) {
-		if text[i] != '`' {
-			i++
+// closingRun は from 以降で長さ runLen ちょうどの backtick run を探し、その直後の
+// index を返す。見つからない場合 ok は false になる。
+func closingRun(text string, from, runLen int) (end int, ok bool) {
+	for k := from; k < len(text); {
+		if text[k] != '`' {
+			k++
 			continue
 		}
-		j := i
-		for j < len(text) && text[j] == '`' {
-			j++
+		m := k
+		for m < len(text) && text[m] == '`' {
+			m++
 		}
-		runLen := j - i
-		// 同じ長さの backtick run を探す
-		k := j
-		for k < len(text) {
-			if text[k] != '`' {
-				k++
-				continue
-			}
-			m := k
-			for m < len(text) && text[m] == '`' {
-				m++
-			}
-			if m-k == runLen {
-				for x := i; x < m; x++ {
-					out[x] = ' '
-				}
-				i = m
-				break
-			}
-			k = m
+		if m-k == runLen {
+			return m, true
 		}
-		if k >= len(text) {
-			// 閉じない run。この run を飛ばして続行する
-			i = j
-		}
+		k = m
 	}
-	return string(out)
+	return 0, false
 }
 
-// consumeComments は文字列から閉じた HTML comment を繰り返し取り除き、comment の外に
-// 残る文字列と、閉じない comment が開いたままかを返す。CommonMark に合わせて
-// `<!-->` と `<!--->` を空 comment として扱う。
-func consumeComments(s string) (residual string, open bool) {
-	var vis strings.Builder
-	for {
-		i := strings.Index(s, "<!--")
-		if i < 0 {
-			vis.WriteString(s)
-			return vis.String(), false
+// inlineScan は 1 行を左から 1 度だけ走査し、行頭時点の comment 状態 inComment を
+// 起点として、comment の外に可視内容があるか (visible)、行末で comment が開いたままか
+// (open)、この行が comment を含むか (hasComment) を返す。
+//
+// inline code span と HTML comment はどちらも inline 構造で、CommonMark では
+// 先に現れた側が優先される。走査を 1 本化してこの優先順位をそのまま実装する。
+//
+//   - backtick run が先: 同じ長さの run で閉じれば code span。内側の `<!--` は
+//     comment ではない。閉じない run は literal text。どちらも可視内容として数える
+//   - `<!--` が先: 対応する `-->` までが comment。内側の backtick は code span を
+//     開かない。CommonMark に合わせて `<!-->` と `<!--->` は空 comment として扱う
+//
+// code span を先に mask してから comment を探す実装にはしない。その順序では
+// (1) code span だけが可視内容の行で可視内容が空白に化けて混在を見落とし、
+// (2) comment 内の backtick が comment 外の backtick と対になって閉じ `-->` ごと
+// mask され、comment 状態が以降の本文へ漏れる。
+func inlineScan(text string, inComment bool) (visible, open, hasComment bool) {
+	var outside strings.Builder
+	open = inComment
+	hasComment = inComment
+	for i := 0; i < len(text); {
+		if open {
+			j := strings.Index(text[i:], "-->")
+			if j < 0 {
+				break
+			}
+			i += j + len("-->")
+			open = false
+			continue
 		}
-		vis.WriteString(s[:i])
-		rest := s[i+len("<!--"):]
 		switch {
-		case strings.HasPrefix(rest, ">"):
-			s = rest[len(">"):]
-			continue
-		case strings.HasPrefix(rest, "->"):
-			s = rest[len("->"):]
-			continue
+		case text[i] == '`':
+			j := i
+			for j < len(text) && text[j] == '`' {
+				j++
+			}
+			end, ok := closingRun(text, j, j-i)
+			if !ok {
+				end = j
+			}
+			outside.WriteString(text[i:end])
+			i = end
+		case strings.HasPrefix(text[i:], "<!--"):
+			hasComment = true
+			rest := text[i+len("<!--"):]
+			switch {
+			case strings.HasPrefix(rest, ">"):
+				i += len("<!-->")
+			case strings.HasPrefix(rest, "->"):
+				i += len("<!--->")
+			default:
+				open = true
+				i += len("<!--")
+			}
+		default:
+			outside.WriteByte(text[i])
+			i++
 		}
-		j := strings.Index(rest, "-->")
-		if j < 0 {
-			return vis.String(), true
-		}
-		s = rest[j+len("-->"):]
 	}
+	return strings.TrimSpace(outside.String()) != "", open, hasComment
 }
 
 // lineScanner は code fence と HTML comment の内側で heading を誤認しないための
@@ -176,13 +188,9 @@ type lineScanner struct {
 // step は 1 行を読んで状態を更新し、その行の分類を返す。
 func (s *lineScanner) step(l bodyLine) lineClass {
 	if s.inComment {
-		idx := strings.Index(l.text, "-->")
-		if idx < 0 {
-			return classComment
-		}
-		residual, open := consumeComments(l.text[idx+len("-->"):])
+		visible, open, _ := inlineScan(l.text, true)
 		s.inComment = open
-		if strings.TrimSpace(residual) != "" {
+		if visible {
 			return classCommentAmbiguous
 		}
 		return classComment
@@ -207,23 +215,21 @@ func (s *lineScanner) step(l bodyLine) lineClass {
 		return classIndentedMarker
 	}
 
-	// code span 内の `<!--` は comment ではないため、判定前に mask する
-	masked := maskCodeSpans(l.text)
-	if strings.Contains(masked, "<!--") {
-		residual, open := consumeComments(masked)
-		if strings.TrimSpace(residual) != "" {
-			// 可視内容と混在する行は拒否する。GitHub では列 0 以外の `<!--` は
-			// HTML block を開始しないため、comment 状態へは遷移させない
-			return classCommentAmbiguous
-		}
-		if indentWidth(masked) > 0 {
-			// indent された comment は文脈次第で code block になる
-			return classIndentedMarker
-		}
-		s.inComment = open
-		return classComment
+	visible, open, hasComment := inlineScan(l.text, false)
+	if !hasComment {
+		return classText
 	}
-	return classText
+	if visible {
+		// 可視内容と混在する行は拒否する。GitHub では列 0 以外の `<!--` は
+		// HTML block を開始しないため、comment 状態へは遷移させない
+		return classCommentAmbiguous
+	}
+	if indentWidth(l.text) > 0 {
+		// indent された comment は文脈次第で code block になる
+		return classIndentedMarker
+	}
+	s.inComment = open
+	return classComment
 }
 
 // rawSection は本文から切り出した H2 section を表す。

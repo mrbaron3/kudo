@@ -40,10 +40,12 @@ authorityRefs: []
 ## Verification and Evidence
 
 - `mise run check`
+`AGENTS.md` <!-- 可視内容が inline code span だけの混在 -->
 
 ## Constraints and Invariants
 
 - 不変条件
+<!-- `authorityRefs の順序 --> comment 外に残る可視内容 `AGENTS.md`
 
 ## Decision Authority
 

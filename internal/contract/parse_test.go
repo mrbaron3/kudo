@@ -182,9 +182,13 @@ var invalidExpectations = map[string][]expectedError{
 		{CodeSectionOutOfOrder, "", 52},
 		{CodeSectionOutOfOrder, "", 56},
 	},
+	// 16: 行頭側の混在、30: 行末側の混在、43: 可視内容が inline code span だけの混在、
+	// 48: comment 内の backtick が comment 外の backtick と対になる形
 	"invalid/comment-ambiguous.md": {
 		{CodeCommentAmbiguous, "", 16},
 		{CodeCommentAmbiguous, "", 30},
+		{CodeCommentAmbiguous, "", 43},
+		{CodeCommentAmbiguous, "", 48},
 	},
 	"invalid/contract-block-duplicate.md": {{CodeContractBlockDuplicate, "", 14}},
 	"invalid/contract-block-missing.md": {
