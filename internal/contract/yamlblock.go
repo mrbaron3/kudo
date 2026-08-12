@@ -15,12 +15,14 @@ import "strings"
 // 許可する構文は次のみとする。
 //
 //	key: value          # 値付き field（value は空白を含まない printable ASCII）
-//	key:                # 直後に 1 件以上の item 行が続く sequence
+//	key:                # 1 件以上の item 行が続く sequence
 //	  - value           # sequence item（2 space indent 固定）
 //	key: []             # 空 sequence の明示
 //	# comment           # 行全体の comment（template が使用する）
 //	（空行）
 //
+// 空行と行全体 comment は sequence を終わらせない。`key:` と item 行の間、および
+// item 行の間に挟んでもよく、sequence は次の field 行か block 末尾で閉じる。
 // 値の quoting、行内 comment、tab、行末空白は受理しない。
 
 // yamlEntry は Contract block の 1 field を表す。

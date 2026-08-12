@@ -2,6 +2,7 @@ package contract
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -28,7 +29,9 @@ func fixtureNames(t *testing.T, dir string) []string {
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-			names = append(names, filepath.Join(dir, e.Name()))
+			// invalidExpectations の key と一致させるため slash 区切りで組み立てる
+			// （filepath.Join は Windows で `invalid\x.md` になる）
+			names = append(names, path.Join(dir, e.Name()))
 		}
 	}
 	if len(names) == 0 {
