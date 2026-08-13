@@ -40,6 +40,13 @@ Use deterministic unit tests with fakes at GitHub, process, clock, filesystem, m
 - Keep transport failures separate from review verdicts.
 - A changed commit or artifact digest makes the previous review result stale.
 
+## コードコメント
+
+- コメントには、コードから読み取れない意図、背景、制約、トレードオフ、不変条件を記す。
+- 処理内容、識別子、制御フローを言い換えるだけのコメントは書かない。説明がなければ理解しにくい場合は、まず命名や処理の分割でコード自体を明確にする。
+- 公開 API のドキュメントコメントでは、宣言を繰り返さず、保証、前提条件、エラー、副作用、並行実行上の注意など、利用者が判断に必要な契約を記す。
+- 回避策や外部仕様に由来する判断には、必要に応じて Issue、契約、仕様への参照を添える。前提が変わったときは、実装と同時にコメントを更新または削除する。
+
 ## Deferred work
 
 Do not add pass@k, multi-candidate evaluation, scoring dashboards, or an evaluation harness without a separate design decision. Runtime telemetry may be emitted, but external observability storage is not authoritative workflow state.
