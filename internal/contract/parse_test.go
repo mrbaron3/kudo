@@ -172,6 +172,7 @@ type expectedError struct {
 // 保持する validation result）の検証を兼ねる。
 var invalidExpectations = map[string][]expectedError{
 	"invalid/ac-criterion-duplicate.md": {{CodeACCriterionDuplicate, "", 40}},
+	"invalid/ac-criterion-order.md":     {{CodeACCriterionOutOfOrder, "", 35}},
 	"invalid/ac-id-duplicate.md":        {{CodeACIDDuplicate, "acceptanceCriteriaIds", 11}},
 	"invalid/ac-ids-empty.md":           {{CodeACIDsEmpty, "acceptanceCriteriaIds", 9}},
 	"invalid/ac-mismatch.md": {

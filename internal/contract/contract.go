@@ -6,7 +6,10 @@
 // 本 package は GitHub API、filesystem、clock 等の外部境界へ接続しない。
 package contract
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // repositoryRef は Task Issue が属する repository の identity を表す。
 // Issue 本文には repository を自己申告させないため、呼び出し側が
@@ -43,9 +46,21 @@ func (r IssueRef) repositoryRef() repositoryRef {
 	return repositoryRef{Owner: r.Owner, Name: r.Repository}
 }
 
+// canonical は GitHub の case-insensitive な identity に合わせて owner / repository を
+// 小文字へ揃える。同じ Issue を指す reference が表記の case 差分だけで別 digest を
+// 生まないよう、Issue identity の同値関係を本 method 一つに集約する。
+func (r IssueRef) canonical() IssueRef {
+	return IssueRef{
+		Owner:      strings.ToLower(r.Owner),
+		Repository: strings.ToLower(r.Repository),
+		Number:     r.Number,
+	}
+}
+
 // String は canonical な github:// 表記を返す。
 func (r IssueRef) String() string {
-	return fmt.Sprintf("github://%s/%s/issues/%d", r.Owner, r.Repository, r.Number)
+	c := r.canonical()
+	return fmt.Sprintf("github://%s/%s/issues/%d", c.Owner, c.Repository, c.Number)
 }
 
 // AuthorityRef は authorityRefs の 1 要素を表す。repository 内 relative path か、

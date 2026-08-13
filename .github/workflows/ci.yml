@@ -33,8 +33,13 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # KUDO_YAML_ORACLE=required は canonical YAML の差分オラクル（独立実装の YAML
+      # parser）が見つからない場合に skip ではなく失敗させる。golden fixture は
+      # 自作 encoder の変化検出器でしかないため、YAML としての正しさは CI で必ず検証する。
       - name: Test
         run: go test ./...
+        env:
+          KUDO_YAML_ORACLE: required
 
   # linux/amd64 と linux/arm64 の両方で image build と smoke test を行う
   container-image:

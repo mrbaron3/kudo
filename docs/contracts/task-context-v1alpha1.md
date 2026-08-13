@@ -19,7 +19,11 @@ Compilerの入力は次の二つだけである。
 
 Compilerは`kudo.issue/v1alpha1`のContract field、H2 section title、Acceptance Criterionを解釈する唯一のapplication-facing boundaryである。claim以降のController、Issue Worker、Review Workerはparserの`Task`、`Contract`、section titleを読み直さず、`ClaimRequirements`とversioned artifact/refだけを受け取る。
 
-CompilerはGitHub、repository、filesystem、clock、provider、Artifact Storeへ接続しない。bodyがUTF-8でない、Issue identityが欠落・不正、またはIssue Contractがstrict parseに失敗した場合はartifactを返さず、構造化されたvalidation errorを返す。
+CompilerはGitHub、repository、filesystem、clock、provider、Artifact Storeへ接続しない。bodyがUTF-8でない、bodyがcontrol characterを含む、Issue identityが欠落・不正、またはIssue Contractがstrict parseに失敗した場合はartifactを返さず、構造化されたvalidation errorを返す。
+
+body中のcontrol characterは信頼境界で拒否する。許可するのは改行（LFまたはCRLF）とTABだけであり、NUL、ESC、単独のCR、DELを含むその他のC0 controlは`body_control_character`として拒否する。これらはcanonical YAMLとPostgreSQLのtext / jsonbへ格納できないため、compile後の保存時点まで失敗を遅らせない。
+
+Issue identityのowner / repositoryはGitHubに合わせて大文字小文字を区別しない。CompilerはcallerのIssue identityと本文中のreferenceの双方を小文字へ正規化してからcanonical encodeする。表記のcase差分は意味の差分ではないため、refを変えてはならない。
 
 Compiler algorithmは`kudo.issue-compiler/v1alpha1`として識別する。同じraw body、Issue identity、Compiler versionは、別processでも同じcanonical bytes、ref、`ClaimRequirements`を生成しなければならない。
 
@@ -79,7 +83,7 @@ Compilerは次をTask Contextから除外する。
 - Contract fenced blockの空行、comment、表記上のlayout。strict parse後のtyped valueだけを固定順でencodeする
 - GitHub API response、Issue comment、label、Project field、assignee、native relationship metadata
 
-各section contentはcomment除去後に先頭・末尾の空行を除き、内部のMarkdownと空行を保持する。code fence内のcomment記号は通常のcontentとして保持する。`Acceptance Criteria`はcriterion前のpreambleと、Contractの宣言順に並ぶ`{id,body}`へCompilerが分解する。任意の`Advisory Hints`が無い場合は`null`、存在する空sectionは空stringとして区別する。
+各section contentはcomment除去後に先頭・末尾の空行を除き、内部のMarkdownと空行を保持する。code fence内のcomment記号は通常のcontentとして保持する。`Acceptance Criteria`はcriterion前のpreambleと、Contractの宣言順に並ぶ`{id,body}`へCompilerが分解する。Issue Contractはsection内のcriterion順が`acceptanceCriteriaIds`と一致することを要求するため、Compilerは並べ替えを行わない。任意の`Advisory Hints`が無い場合は`null`、存在する空sectionは空stringとして区別する。
 
 Outcome、Scope、Deliverables、Acceptance Criteria、Verification、Constraints、Decision Authority、Stop Conditions、Advisory Hintsまたはtyped Contractの意味が変わればTask Context refも変わる。raw bodyだけの非意味的差分ではIssue Observation refだけが変わり、Task Context refは変わらない。
 
@@ -114,6 +118,8 @@ authorityRefs:
 ```
 
 親が無い場合は`parent: null`、dependencyまたはauthorityが無い場合は`[]`を明示する。配列順はIssue Contractの宣言順を保ち、同じidentityを重複させない。repository pathは固定した`baseSha`から、Issue authorityはGitHubから直接解決し、取得bytesのdigestを記録する。
+
+manifestが解決結果であることは呼び出し側の規律ではなくencode境界で強制する。manifestのencodeには対応する`ClaimRequirements`を渡し、`parent`、`dependencies`、`authorityRefs`のidentityと件数と順序がTask Contextの宣言と一致しない場合は拒否する。manifestが自由に決められるのは解決結果、すなわち`baseSha`、`completionDigest`、`contentDigest`だけである。`authorityRefs`の順序はauthorityの優先順位を表すため、集合一致では不十分である。
 
 Context Manifestは`TaskContextRef`、base、parent identity、dependency completion、authority content digestだけを持つ。`IssueObservationRef`、`bodyDigest`、raw body、authority本文、Run ID、claim timestamp、workspace path、provider session IDを含めない。したがって、Task Contextと解決済み入力が同じなら、raw bodyだけの非意味的差分でContext Manifest refは変わらない。
 
@@ -157,6 +163,8 @@ Issue Observation、Task Context、Context Manifest、Execution Policyのcanonic
 - SHA-256は`sha256:`に64桁のlowercase hexを続ける
 
 byte-levelの正本は`internal/contract/testdata/canonical/`のgolden fixtureである。key、表現、除外fieldを変更する場合は、該当schema version、本書、encoder、fixture、testを同じchangeで更新する。
+
+golden fixtureはencoder自身の出力から生成するため、変化検出器ではあってもYAMLとしての正しさの検出器ではない。canonical bytesが実際にYAMLとしてparseでき、string scalarがescape前の値へ戻ることは、独立実装のYAML parserを差分オラクルとして検証する。CIでは`KUDO_YAML_ORACLE=required`を設定し、oracleが見つからない場合にskipせず失敗させる。
 
 ## Artifact payload contract
 

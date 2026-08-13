@@ -10,7 +10,7 @@ import (
 func TestContextManifestDifferenceMatrix(t *testing.T) {
 	compiled := requireCompiled(t, readFixture(t, "valid/full.md"))
 	base := sampleContextManifest(compiled)
-	baseRef, _, err := EncodeContextManifest(base)
+	baseRef, _, err := EncodeContextManifest(compiled.ClaimRequirements, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,13 +31,13 @@ func TestContextManifestDifferenceMatrix(t *testing.T) {
 	changedAuthority.AuthorityRefs[0].ContentDigest = SHA256([]byte("changed authority"))
 	variants["authority content"] = changedAuthority
 
-	changedParent := base
-	changedParent.Parent = &IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 2}
-	variants["parent identity"] = changedParent
+	// parent、dependency identity、authority identity は Task Context の宣言であり
+	// manifest 側の自由変数ではない。これらの不一致は
+	// TestContextManifestMustMatchClaimRequirements が拒否として検証する。
 
 	for name, variant := range variants {
 		t.Run(name, func(t *testing.T) {
-			got, payload, err := EncodeContextManifest(variant)
+			got, payload, err := EncodeContextManifest(compiled.ClaimRequirements, variant)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -56,7 +56,7 @@ func TestContextManifestDifferenceMatrix(t *testing.T) {
 
 func TestExecutionPolicyDifferenceIsIsolated(t *testing.T) {
 	compiled := requireCompiled(t, readFixture(t, "valid/full.md"))
-	manifestRef, _, err := EncodeContextManifest(sampleContextManifest(compiled))
+	manifestRef, _, err := EncodeContextManifest(compiled.ClaimRequirements, sampleContextManifest(compiled))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestExecutionPolicyDifferenceIsIsolated(t *testing.T) {
 		t.Fatal("policy change で ExecutionPolicyRef が変わらない")
 	}
 
-	afterManifestRef, _, err := EncodeContextManifest(sampleContextManifest(compiled))
+	afterManifestRef, _, err := EncodeContextManifest(compiled.ClaimRequirements, sampleContextManifest(compiled))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestContextManifestValidation(t *testing.T) {
 			got.Dependencies = append([]DependencyCompletion(nil), valid.Dependencies...)
 			got.AuthorityRefs = append([]AuthorityContent(nil), valid.AuthorityRefs...)
 			mutate(&got)
-			if _, _, err := EncodeContextManifest(got); err == nil {
+			if _, _, err := EncodeContextManifest(compiled.ClaimRequirements, got); err == nil {
 				t.Fatal("invalid manifest を受理した")
 			}
 		})
@@ -227,9 +227,74 @@ func TestExecutionPolicyValidation(t *testing.T) {
 	}
 }
 
+// Context Manifest は Task Context から解決した closure である。
+// 対応関係を呼び出し側の規律に任せず、encode 境界で強制する。
+func TestContextManifestMustMatchClaimRequirements(t *testing.T) {
+	compiled := requireCompiled(t, readFixture(t, "valid/full.md"))
+	claim := compiled.ClaimRequirements
+
+	tests := map[string]func(*ContextManifest){
+		"dependency 欠落": func(m *ContextManifest) {
+			m.Dependencies = m.Dependencies[:1]
+		},
+		"dependency 追加": func(m *ContextManifest) {
+			m.Dependencies = append(m.Dependencies, DependencyCompletion{
+				Issue:            IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 77},
+				CompletionDigest: SHA256([]byte("extra")),
+			})
+		},
+		"dependency 順序": func(m *ContextManifest) {
+			m.Dependencies[0], m.Dependencies[1] = m.Dependencies[1], m.Dependencies[0]
+		},
+		"dependency identity": func(m *ContextManifest) {
+			m.Dependencies[0].Issue = IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 77}
+		},
+		"authority 欠落": func(m *ContextManifest) {
+			m.AuthorityRefs = m.AuthorityRefs[:2]
+		},
+		"authority 順序": func(m *ContextManifest) {
+			m.AuthorityRefs[0], m.AuthorityRefs[1] = m.AuthorityRefs[1], m.AuthorityRefs[0]
+		},
+		"authority identity": func(m *ContextManifest) {
+			m.AuthorityRefs[0].Ref = AuthorityRef{Path: "README.md"}
+		},
+		"parent 差異": func(m *ContextManifest) {
+			m.Parent = &IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 77}
+		},
+		"parent 欠落": func(m *ContextManifest) {
+			m.Parent = nil
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := sampleContextManifest(compiled)
+			mutate(&got)
+			if _, _, err := EncodeContextManifest(claim, got); err == nil {
+				t.Fatal("Task Context と対応しない manifest を受理した")
+			}
+		})
+	}
+
+	// 対応する manifest は受理し、case 差分だけの claim とも同じ ref になる
+	valid := sampleContextManifest(compiled)
+	ref, _, err := EncodeContextManifest(claim, valid)
+	if err != nil {
+		t.Fatalf("対応する manifest を拒否した: %v", err)
+	}
+	mixedCase := valid
+	mixedCase.Parent = &IssueRef{Owner: "MrBaron3", Repository: "Kudo", Number: 1}
+	mixedRef, _, err := EncodeContextManifest(claim, mixedCase)
+	if err != nil {
+		t.Fatalf("case 差分の manifest を拒否した: %v", err)
+	}
+	if mixedRef != ref {
+		t.Fatal("reference の case 差分で ContextManifestRef が変化")
+	}
+}
+
 func TestReferenceTypesIncludeSchemaAndDigest(t *testing.T) {
 	compiled := requireCompiled(t, readFixture(t, "valid/full.md"))
-	manifestRef, manifestPayload, err := EncodeContextManifest(sampleContextManifest(compiled))
+	manifestRef, manifestPayload, err := EncodeContextManifest(compiled.ClaimRequirements, sampleContextManifest(compiled))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -39,8 +39,16 @@ type ContextManifestRef struct {
 }
 
 // EncodeContextManifest は manifest を検証し、canonical payload と ref を返す。
-func EncodeContextManifest(manifest ContextManifest) (ContextManifestRef, ArtifactPayload, error) {
+//
+// claim には同じ Task Context を compile して得た ClaimRequirements を渡す。
+// manifest は「Task Context から解決した closure」であり、その対応関係を呼び出し側の
+// 規律に任せず encode 境界で強制する。manifest が持つのは解決結果（digest と base SHA）
+// だけで、どの reference を解決するかは Task Context が決める。
+func EncodeContextManifest(claim ClaimRequirements, manifest ContextManifest) (ContextManifestRef, ArtifactPayload, error) {
 	if err := validateContextManifest(manifest); err != nil {
+		return ContextManifestRef{}, ArtifactPayload{}, err
+	}
+	if err := validateManifestMatchesClaim(claim, manifest); err != nil {
 		return ContextManifestRef{}, ArtifactPayload{}, err
 	}
 	data := encodeContextManifest(manifest)
@@ -78,7 +86,7 @@ func validateContextManifest(manifest ContextManifest) error {
 		if !dependency.CompletionDigest.Valid() {
 			return fmt.Errorf("dependencies[%d].completionDigest が不正", i)
 		}
-		key := refFoldKey(dependency.Issue)
+		key := dependency.Issue.String()
 		if seenDependencies[key] {
 			return fmt.Errorf("dependencies[%d].issue が重複", i)
 		}
@@ -97,6 +105,54 @@ func validateContextManifest(manifest ContextManifest) error {
 		seenAuthority[key] = true
 		if !authority.ContentDigest.Valid() {
 			return fmt.Errorf("authorityRefs[%d].contentDigest が不正", i)
+		}
+	}
+	return nil
+}
+
+// validateManifestMatchesClaim は manifest が Task Context の宣言と 1 対 1 に
+// 対応することを検証する。件数・identity・順序のいずれかが食い違えば拒否する。
+// 順序は authority の優先順位（Issue Contract の authorityRefs 順）を表すため、
+// 集合一致では不十分である。
+func validateManifestMatchesClaim(claim ClaimRequirements, manifest ContextManifest) error {
+	switch {
+	case claim.Parent == nil && manifest.Parent != nil:
+		return errors.New("Task Context が parent を持たないのに manifest に parent がある")
+	case claim.Parent != nil && manifest.Parent == nil:
+		return errors.New("Task Context の parent が manifest で解決されていない")
+	case claim.Parent != nil && claim.Parent.String() != manifest.Parent.String():
+		return fmt.Errorf("parent が Task Context と一致しない: got %s, want %s",
+			manifest.Parent.String(), claim.Parent.String())
+	}
+
+	if len(manifest.Dependencies) != len(claim.DependsOn) {
+		return fmt.Errorf("dependencies の件数が dependsOn と一致しない: got %d, want %d",
+			len(manifest.Dependencies), len(claim.DependsOn))
+	}
+	for i, dependency := range manifest.Dependencies {
+		if dependency.Issue.String() != claim.DependsOn[i].String() {
+			return fmt.Errorf("dependencies[%d] が dependsOn の宣言順と一致しない: got %s, want %s",
+				i, dependency.Issue.String(), claim.DependsOn[i].String())
+		}
+	}
+
+	if len(manifest.AuthorityRefs) != len(claim.AuthorityRefs) {
+		return fmt.Errorf("authorityRefs の件数が Task Context と一致しない: got %d, want %d",
+			len(manifest.AuthorityRefs), len(claim.AuthorityRefs))
+	}
+	for i, authority := range manifest.AuthorityRefs {
+		// 重複検出と同じ identity 関数で比較し、path と Issue reference の
+		// 同一性判定が 2 通りに分かれないようにする。
+		got, err := validateAuthorityIdentity(authority.Ref)
+		if err != nil {
+			return fmt.Errorf("authorityRefs[%d].ref: %w", i, err)
+		}
+		want, err := validateAuthorityIdentity(claim.AuthorityRefs[i])
+		if err != nil {
+			return fmt.Errorf("Task Context の authorityRefs[%d] が不正: %w", i, err)
+		}
+		if got != want {
+			return fmt.Errorf("authorityRefs[%d] が Task Context の宣言順と一致しない: got %s, want %s", i, got, want)
 		}
 	}
 	return nil
@@ -125,7 +181,7 @@ func validateAuthorityIdentity(ref AuthorityRef) (string, error) {
 		if !validIssueRef(*ref.Issue) {
 			return "", errors.New("IssueRef が不正")
 		}
-		return "issue:" + refFoldKey(*ref.Issue), nil
+		return "issue:" + ref.Issue.String(), nil
 	default:
 		return "", errors.New("path または IssueRef のどちらか一方だけが必要")
 	}

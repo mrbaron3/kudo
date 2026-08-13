@@ -118,6 +118,12 @@ func (c Compiler) Compile(body string, issue IssueRef) (*CompiledIssue, []Valida
 			Message: "Issue body は UTF-8 でなければならない",
 		}}
 	}
+	if errs := validateBodyCharacters(body); len(errs) > 0 {
+		return nil, errs
+	}
+	// GitHub の owner / repository は case-insensitive である。caller が渡す
+	// verified identity も Issue 本文の reference と同じ規則で正規化する。
+	issue = issue.canonical()
 
 	task, errs := parse(body, issue.repositoryRef())
 	if len(errs) > 0 {
@@ -170,7 +176,43 @@ func (c Compiler) Compile(body string, issue IssueRef) (*CompiledIssue, []Valida
 	}, nil
 }
 
+// validateBodyCharacters は canonical artifact へ載せられない control character を
+// 信頼境界で拒否する。ここで通すと compile と digest 計算は成功し、PostgreSQL の
+// text / jsonb へ保存する段階で初めて失敗するため、失敗境界を入力側へ寄せる。
+//
+// LF と TAB は本文の構造として許可する。CRLF は行分割で `\r` を落とすため許可し、
+// 単独の CR は canonical bytes へ残ってしまうため拒否する。
+func validateBodyCharacters(body string) []ValidationError {
+	line := 1
+	for i, r := range body {
+		switch {
+		case r == '\n':
+			line++
+			continue
+		case r == '\t':
+			continue
+		case r == '\r':
+			if i+1 < len(body) && body[i+1] == '\n' {
+				continue
+			}
+		case r >= 0x20 && r != 0x7f:
+			continue
+		}
+		return []ValidationError{{
+			Code:    CodeBodyControlCharacter,
+			Line:    line,
+			Message: fmt.Sprintf("Issue body に control character U+%04X は使えない", r),
+		}}
+	}
+	return nil
+}
+
 func buildTaskContext(task *parsedTask, issue IssueRef, compilerVersion string) TaskContext {
+	// required section の存在は parse が CodeSectionMissing として保証し、
+	// Compile は 1 件でも ValidationError があれば buildTaskContext を呼ばない
+	// （parse.go の requiredSections 検証を参照）。ここへ到達するのは parser 側の
+	// 不変条件が壊れた場合だけであり、誤った Task Context を生成して下流へ流すより
+	// 即座に停止する方が安全なため assertion として panic する。
 	section := func(title string) string {
 		value, ok := task.section(title)
 		if !ok {

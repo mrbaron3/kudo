@@ -84,7 +84,7 @@ func TestCompileCanonicalGolden(t *testing.T) {
 	requireGolden(t, compiled.ObservationPayload.Data, "issue-observation.yaml")
 	requireGolden(t, compiled.TaskContextPayload.Data, "task-context.yaml")
 
-	manifestRef, manifestPayload, err := EncodeContextManifest(sampleContextManifest(compiled))
+	manifestRef, manifestPayload, err := EncodeContextManifest(compiled.ClaimRequirements, sampleContextManifest(compiled))
 	if err != nil {
 		t.Fatalf("manifest encode error: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestCompileDeterministic(t *testing.T) {
 func TestCompileObservationAndTaskContextSeparation(t *testing.T) {
 	body := readFixture(t, "valid/minimal.md")
 	base := requireCompiled(t, body)
-	baseManifestRef, _, err := EncodeContextManifest(ContextManifest{
+	baseManifestRef, _, err := EncodeContextManifest(base.ClaimRequirements, ContextManifest{
 		Schema:      ContextManifestSchemaV1Alpha1,
 		TaskContext: base.TaskContextRef,
 		BaseSHA:     "0123456789abcdef0123456789abcdef01234567",
@@ -166,7 +166,7 @@ func TestCompileObservationAndTaskContextSeparation(t *testing.T) {
 			if !reflect.DeepEqual(got.ClaimRequirements, base.ClaimRequirements) {
 				t.Fatal("非意味的差分で ClaimRequirements が変化")
 			}
-			manifestRef, _, err := EncodeContextManifest(ContextManifest{
+			manifestRef, _, err := EncodeContextManifest(got.ClaimRequirements, ContextManifest{
 				Schema:      ContextManifestSchemaV1Alpha1,
 				TaskContext: got.TaskContextRef,
 				BaseSHA:     "0123456789abcdef0123456789abcdef01234567",
@@ -249,7 +249,7 @@ func TestCanonicalNullAndEmptyList(t *testing.T) {
 		TaskContext: compiled.TaskContextRef,
 		BaseSHA:     "0123456789abcdef0123456789abcdef01234567",
 	}
-	_, payload, err := EncodeContextManifest(manifest)
+	_, payload, err := EncodeContextManifest(compiled.ClaimRequirements, manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,6 +257,80 @@ func TestCanonicalNullAndEmptyList(t *testing.T) {
 		if !strings.Contains(string(payload.Data), want) {
 			t.Fatalf("Context Manifest に %q が無い", want)
 		}
+	}
+}
+
+// GitHub の owner/repository は case-insensitive であり、同じ Issue を指す reference が
+// 表記の case 差分だけで別 identity になってはならない。parser は既に EqualFold で
+// 同一 repository と判定し、重複も case を無視して拒否するため、canonical encode 側も
+// 同じ同値関係へ揃える。
+func TestCompileNormalizesIssueReferenceCase(t *testing.T) {
+	body := readFixture(t, "valid/minimal.md")
+	lower := strings.Replace(body, "parent: null", "parent: github://mrbaron3/kudo/issues/1", 1)
+	mixed := strings.Replace(body, "parent: null", "parent: github://MrBaron3/Kudo/issues/1", 1)
+
+	base := requireCompiled(t, lower)
+	got := requireCompiled(t, mixed)
+
+	if got.TaskContextRef != base.TaskContextRef {
+		t.Fatalf("reference の case 差分で TaskContextRef が変化: got %v, want %v", got.TaskContextRef, base.TaskContextRef)
+	}
+	if !reflect.DeepEqual(got.ClaimRequirements, base.ClaimRequirements) {
+		t.Fatalf("reference の case 差分で ClaimRequirements が変化: got %+v", got.ClaimRequirements)
+	}
+	if want := "github://mrbaron3/kudo/issues/1"; got.TaskContext.Parent.String() != want {
+		t.Fatalf("parent = %q, want %q", got.TaskContext.Parent.String(), want)
+	}
+
+	// caller が渡す verified Issue identity も同じ規則で正規化する
+	mixedIssue, errs := Compile(body, IssueRef{Owner: "MrBaron3", Repository: "Kudo", Number: 10})
+	if len(errs) > 0 {
+		t.Fatalf("compile error: %v", errs)
+	}
+	lowerIssue := requireCompiled(t, body)
+	if mixedIssue.TaskContextRef != lowerIssue.TaskContextRef {
+		t.Fatal("Issue identity の case 差分で TaskContextRef が変化")
+	}
+	if mixedIssue.ObservationRef != lowerIssue.ObservationRef {
+		t.Fatal("Issue identity の case 差分で IssueObservationRef が変化")
+	}
+}
+
+// control character は canonical artifact と PostgreSQL の text/jsonb へ格納できず、
+// compile 成功後の保存で初めて失敗する。信頼境界で fail-closed に拒否する。
+func TestCompileRejectsControlCharacters(t *testing.T) {
+	body := readFixture(t, "valid/minimal.md")
+	tests := map[string]string{
+		"NUL":        strings.Replace(body, "- 停止条件", "- 停止条件\x00", 1),
+		"ESC":        strings.Replace(body, "- 停止条件", "- 停止条件\x1b[31m", 1),
+		"BEL":        strings.Replace(body, "- 停止条件", "- 停止条件\x07", 1),
+		"DEL":        strings.Replace(body, "- 停止条件", "- 停止条件\x7f", 1),
+		"lone CR":    strings.Replace(body, "- 停止条件", "- 停止条件\r混入", 1),
+		"in fence":   strings.Replace(body, "kind: task", "kind: task\x00", 1),
+		"in AC body": strings.Replace(body, "- Then: 期待結果", "- Then: 期待結果\x0b", 1),
+	}
+	for name, variant := range tests {
+		t.Run(name, func(t *testing.T) {
+			compiled, errs := Compile(variant, compilerTestIssue)
+			if compiled != nil {
+				t.Fatal("control character を含む body から artifact を生成した")
+			}
+			if len(errs) != 1 || errs[0].Code != CodeBodyControlCharacter {
+				t.Fatalf("errors = %v, want 1 件の %s", errs, CodeBodyControlCharacter)
+			}
+		})
+	}
+
+	// CRLF と TAB は正当な本文として通す
+	for name, variant := range map[string]string{
+		"CRLF": strings.ReplaceAll(body, "\n", "\r\n"),
+		"TAB":  strings.Replace(body, "- 停止条件", "- 停止条件\tの補足", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, errs := Compile(variant, compilerTestIssue); len(errs) > 0 {
+				t.Fatalf("正当な body を拒否した: %v", errs)
+			}
+		})
 	}
 }
 

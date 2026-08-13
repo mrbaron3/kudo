@@ -34,6 +34,7 @@ Kudoがclaimできるのは、[GitHub routing policy](../github-routing.md)のca
 - code fenceはbacktickまたはtildeを3個以上使って開き、同じ文字を同じ長さ以上並べたinfo stringを持たない列0の行だけが閉じる。
 - HTML commentは行全体がcommentである行だけに書く。可視内容と同一行に混在させない。inline code spanも可視内容であり、`` `AGENTS.md` <!-- 補足 --> ``のように可視内容がcode spanだけの行も混在として扱う。
 - inline code spanとHTML commentは、同一行では先に現れた側が優先される。code spanが先ならその内側の`<!--`はHTML commentではなく通常の本文として扱い、`<!--`が先ならその内側のbacktickはcode spanを開かない（commentは`-->`で閉じる）。
+- 本文にcontrol characterを含めない。改行（LFまたはCRLF）とTABだけを許可し、NUL、ESC、単独のCR、DELを含むその他のC0 controlはclaim rejectionとする。これらはcanonical artifactとPostgreSQLのtext / jsonbへ格納できず、受理すると失敗がcompile後の保存時点まで遅れる。
 
 ## Contract block
 
@@ -68,7 +69,9 @@ authorityRefs:
 
 v1alpha1では`parent`、`dependsOn`、GitHub Issue形式の`authorityRefs`をTaskと同じrepositoryに限定する。cross-repository hierarchyまたはdependencyは別の設計判断なしに解釈しない。
 
-`acceptanceCriteriaIds`の各IDはTask自身の`Acceptance Criteria` sectionに一度だけ存在し、section内の全criterion IDがこの配列に列挙されなければならない。
+`acceptanceCriteriaIds`の各IDはTask自身の`Acceptance Criteria` sectionに一度だけ存在し、section内の全criterion IDがこの配列に列挙されなければならない。さらに、section内のcriterionはこの配列と同じ順序で並べなければならない。順序が食い違う本文を受理してCompiler側で並べ替えると、人が読むIssueの順序とAIへ渡る順序が黙って食い違うため、H2 sectionの順序規則と同じくclaim rejectionとする。
+
+`parent`、`dependsOn`、`authorityRefs`のGitHub Issue referenceは、GitHubに合わせてowner / repositoryを大文字小文字非区別に解釈する。同じIssueを指すreferenceが表記差分だけで別identityにならないよう、parse時にowner / repositoryを小文字へ正規化してから重複検出とcanonical encodeを行う。
 
 authority間の優先順位は`authorityRefs`の配列順で表す。先頭が最優先であり、矛盾した場合はより前のreferenceを正とする。優先順位を散文で重複定義せず、順序を変える場合はContract blockを変更する。
 
