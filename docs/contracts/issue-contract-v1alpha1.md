@@ -16,16 +16,24 @@ Kudoがclaimできるのは、[GitHub routing policy](../github-routing.md)のca
 
 1. `Contract`
 2. `Outcome`
-3. `Authority and Inputs`
-4. `Scope`
-5. `Deliverables`
-6. `Acceptance Criteria`
-7. `Verification and Evidence`
-8. `Constraints and Invariants`
-9. `Decision Authority`
-10. `Stop and Escalation Conditions`
+3. `Scope`
+4. `Deliverables`
+5. `Acceptance Criteria`
+6. `Verification and Evidence`
+7. `Constraints and Invariants`
+8. `Decision Authority`
+9. `Stop and Escalation Conditions`
 
-`Advisory Hints`は任意であり、使う場合は最後に置く。Issue comment、Project field、label、会話履歴は、上記契約へ明示的に取り込まれない限り実装authorityではない。
+`Advisory Hints`は任意であり、使う場合は最後に置く。required sectionは空にできない。HTML commentだけのsectionは内容が無いものとして扱い、claim rejectionとする（`Advisory Hints`は空でもよい）。Issue comment、Project field、label、会話履歴は、上記契約へ明示的に取り込まれない限り実装authorityではない。
+
+### 本文の書き方
+
+人が読む描画とKudoのparseで解釈が分かれないように、本文の構造は次の規則に従う。Kudoは描画を推測して補わず、解釈が一意に定まらない書き方をclaim rejectionとする。
+
+- heading、code fence、HTML commentは列0から書く。1〜3 space indentしたこれらのmarkerは、GitHubでは前後の文脈によりheadingにもcode blockにもなるため受理しない。
+- code fenceはbacktickまたはtildeを3個以上使って開き、同じ文字を同じ長さ以上並べたinfo stringを持たない列0の行だけが閉じる。
+- HTML commentは行全体がcommentである行だけに書く。可視内容と同一行に混在させない。inline code spanも可視内容であり、`` `AGENTS.md` <!-- 補足 --> ``のように可視内容がcode spanだけの行も混在として扱う。
+- inline code spanとHTML commentは、同一行では先に現れた側が優先される。code spanが先ならその内側の`<!--`はHTML commentではなく通常の本文として扱い、`<!--`が先ならその内側のbacktickはcode spanを開かない（commentは`-->`で閉じる）。
 
 ## Contract block
 
@@ -54,13 +62,15 @@ authorityRefs:
 | `parent` | yes | 直接の親Issue reference。親がなければ`null` |
 | `dependsOn` | yes | 先に完了し、成果物がclaim対象baseへ統合済みである必要があるIssue references。空配列可 |
 | `acceptanceCriteriaIds` | yes | このTask自身の`Acceptance Criteria`に定義するID。1件以上 |
-| `authorityRefs` | yes | 実装時に読むrepository内pathまたはGitHub Issueのsource-of-truth references。空配列可 |
+| `authorityRefs` | yes | 実装時に読むrepository内pathまたはGitHub Issueのsource-of-truth references。優先順位の高い順に列挙する。空配列可 |
 
 未知のfield、重複key、不正なenum、重複reference、解決不能なreferenceはclaim rejectionとする。将来のschema追加を暗黙に解釈しない。
 
 v1alpha1では`parent`、`dependsOn`、GitHub Issue形式の`authorityRefs`をTaskと同じrepositoryに限定する。cross-repository hierarchyまたはdependencyは別の設計判断なしに解釈しない。
 
 `acceptanceCriteriaIds`の各IDはTask自身の`Acceptance Criteria` sectionに一度だけ存在し、section内の全criterion IDがこの配列に列挙されなければならない。
+
+authority間の優先順位は`authorityRefs`の配列順で表す。先頭が最優先であり、矛盾した場合はより前のreferenceを正とする。優先順位を散文で重複定義せず、順序を変える場合はContract blockを変更する。
 
 ## Hierarchy and reference semantics
 
@@ -76,7 +86,7 @@ Taskは、自身のOutcome、Scope、Deliverables、Acceptance Criteria、Verifi
 
 親Issueが`kudo.issue/v1alpha1`を実装する必要はない。Kudoは親の存在とrelationship identityを検証するが、親をclaimしたり、親本文の独自formatを実装契約として解釈したりしない。
 
-親の横断的な制約がTaskへ適用される場合は、Taskの`Constraints and Invariants`へ明記するか、親Issueを`authorityRefs`へ明示して`Authority and Inputs`で適用範囲と優先順位を書く。Initiative等の上位Issueも、Taskが`authorityRefs`へ列挙しない限り再帰的に継承しない。
+親の横断的な制約がTaskへ適用される場合は、Taskの`Constraints and Invariants`へ明記するか、親Issueを`authorityRefs`へ明示する。適用範囲を限定する必要があれば`Constraints and Invariants`へ書く。Initiative等の上位Issueも、Taskが`authorityRefs`へ列挙しない限り再帰的に継承しない。
 
 ### Dependencies
 
@@ -86,13 +96,13 @@ Taskは、自身のOutcome、Scope、Deliverables、Acceptance Criteria、Verifi
 
 dependency completion identityには、少なくともIssue reference、completed state、baseへ統合されたcommit identityを含める。linked PRまたは明示的なcompletion artifactからbase統合を証明できない場合、Issueがclosedであることだけをcompletedとして推測しない。
 
-依存成果物を実装入力として読む必要がある場合、Taskはbase commit上のpathを`authorityRefs`または`Authority and Inputs`で指定する。依存Issue本文全体を暗黙のcontextにしない。依存Issue本文そのものがauthorityなら、そのIssue referenceも`authorityRefs`へ明示する。
+依存成果物を実装入力として読む必要がある場合、Taskはbase commit上のpathを`authorityRefs`で指定する。依存Issue本文全体を暗黙のcontextにしない。依存Issue本文そのものがauthorityなら、そのIssue referenceも`authorityRefs`へ明示する。
 
 ### Authority references
 
 v1alpha1の`authorityRefs`は、対象repository内のrelative pathと、同じrepositoryの`github://.../issues/<number>`だけを許可する。repository-relative referenceはclaim対象base commitで解決し、content digestを記録する。GitHub Issue referenceはIssue本文を直接取得してbody digestを記録する。cross-repository reference、mutableな一般URL、versionを固定できないreferenceは実装authorityとして扱わない。
 
-`Authority and Inputs`で実装authorityとして列挙するreferenceは、`parent`または`dependsOn`でrelationshipだけを参照する場合を除き、すべて`authorityRefs`にも列挙する。Contract blockにないreferenceをproseから推測して取得しない。referenceが存在しない、またはAuthorityの優先順位が曖昧な場合はclaimを拒否する。
+実装authorityは`authorityRefs`だけを正とする。`parent`と`dependsOn`はrelationshipとreadiness gateであり、それ自体はauthorityではない。Contract blockにないreferenceをproseから推測して取得しない。referenceが解決できない場合はclaimを拒否する。
 
 GitHub native sub-issueまたはdependency relationshipをadapterが取得できる場合、Contract blockの`parent`および`dependsOn`と一致しなければならない。二つの表現が競合した場合に片方を推測で採用しない。
 
@@ -103,10 +113,6 @@ GitHub native sub-issueまたはdependency relationshipをadapterが取得でき
 ### Outcome
 
 完了後に利用者または外部systemから観測できる結果を書く。ファイル名、関数名、利用library、実装手順だけでOutcomeを代用しない。
-
-### Authority and Inputs
-
-正とするIssue、仕様、schema、documentと、矛盾した場合の優先順位を書く。依存taskが生成した成果物を使う場合は、Issueの会話ではなくbase commit上の成果物を指す。
 
 ### Scope
 
@@ -216,7 +222,7 @@ Issue RevisionはWorkerへ渡す要約ではない。model sessionは取得し�
 - `acceptanceCriteriaIds`とTask本文のcriterionが一致しない
 - dependencyが未完了またはbaseへ未統合
 - native relationshipとContract blockの不一致
-- Authorityの矛盾または優先順位不足
+- authority referenceの解決不能または内容の矛盾
 - claim中のIssueまたはreference変更
 
 GitHub API timeout、rate limit、network error等はclaim rejectionへ変換せず、transport failureとして扱う。

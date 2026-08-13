@@ -20,7 +20,7 @@
 1. required section と Contract block をすべて確定する。
 2. `kind: task`、`readiness: ready`にする。
 3. Acceptance Criteria を観測可能な Given/When/Then で書き、ID を Contract block と一致させる。
-4. 参照すべき仕様を`authorityRefs`へ列挙し、矛盾時の優先順位を書く。
+4. 参照すべき仕様を`authorityRefs`へ優先順位の高い順に列挙する。
 5. `mrbaron3`を assign する。
 6. 最後に`ai-ready`を付ける。
 
