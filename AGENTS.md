@@ -4,6 +4,10 @@
 
 Kudo is a greenfield Go implementation of a lightweight TDD issue-to-PR runtime. Servo is reference material, not a source-code dependency or compatibility target.
 
+## 開発手順
+
+実装は TDD で進める。まず期待する振る舞いを示す失敗するテストを書き、テストを通す最小限の実装を行い、その後テストが通る状態を保ちながらリファクタリングする。
+
 ## Required checks
 
 Run the fastest relevant checks first. Before handing off a change, run:
