@@ -23,7 +23,7 @@ candidate と claimable は別である。Issue Worker は live GitHub API か�
 - Acceptance Criteria、native relationship、authority reference が整合する
 - `dependsOn`の全成果が完了し、選択した base へ統合済みである
 - 同じ IssueRef に active Run がない
-- 検証中に Issue Revision または参照 content が変わっていない
+- 検証中にIssue Observationまたは参照contentが変わっていない
 
 結果は少なくとも次を区別する。
 
@@ -119,7 +119,7 @@ dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`�
 
 - Review Result が`needs_human`
 - Contract、Acceptance、authority の矛盾、不足、曖昧さ
-- Issue Revision、authority、base/head の unexpected change による stale input
+- Issue Observation、authority、base/head の unexpected change による stale input
 - 危険な mutation に対する明示的許可不足
 - 自動選択できない仕様判断
 - 必須 credential または外部設定が人間の操作なしに復旧できない状態

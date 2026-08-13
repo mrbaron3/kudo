@@ -9,6 +9,8 @@ type Code string
 const (
 	// 入力全体
 	CodeRepositoryRefInvalid Code = "repository_ref_invalid"
+	CodeIssueRefInvalid      Code = "issue_ref_invalid"
+	CodeBodyEncodingInvalid  Code = "body_encoding_invalid"
 	CodePreambleContent      Code = "preamble_content"
 
 	// H2 section 構造

@@ -17,7 +17,11 @@ var contractFields = map[string]bool{
 	"authorityRefs":         true,
 }
 
-const schemaV1Alpha1 = "kudo.issue/v1alpha1"
+// IssueContractSchemaV1Alpha1 は Issue Contract の schema identity である。
+// Task Context その他の artifact schema とは独立して version 管理する。
+const IssueContractSchemaV1Alpha1 = "kudo.issue/v1alpha1"
+
+const schemaV1Alpha1 = IssueContractSchemaV1Alpha1
 
 // parseIssueRef は github://owner/repository/issues/number 形式の reference を解釈する。
 func parseIssueRef(s string) (IssueRef, bool) {
@@ -77,7 +81,7 @@ func validRepoName(s string) bool {
 }
 
 // sameRepository は GitHub の大文字小文字非区別に合わせて repository identity を比較する。
-func sameRepository(r IssueRef, self RepositoryRef) bool {
+func sameRepository(r IssueRef, self repositoryRef) bool {
 	return strings.EqualFold(r.Owner, self.Owner) && strings.EqualFold(r.Repository, self.Name)
 }
 
@@ -102,10 +106,10 @@ func validAuthorityPath(p string) bool {
 	return true
 }
 
-// buildContract は yamlEntry 列を typed Contract へ変換し、semantic rule を検証する。
+// buildContract は yamlEntry 列を typed parsedContract へ変換し、semantic rule を検証する。
 // blockLine は fenced block の開始行で、field 欠落エラーの位置に使う。
-func buildContract(entries []yamlEntry, blockLine int, self RepositoryRef) (Contract, []ValidationError) {
-	var c Contract
+func buildContract(entries []yamlEntry, blockLine int, self repositoryRef) (parsedContract, []ValidationError) {
+	var c parsedContract
 	var errs []ValidationError
 
 	addErr := func(code Code, line int, field, msg string) {

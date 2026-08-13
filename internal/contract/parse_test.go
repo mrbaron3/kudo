@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-var testSelf = RepositoryRef{Owner: "mrbaron3", Name: "kudo"}
+var testSelf = repositoryRef{Owner: "mrbaron3", Name: "kudo"}
 
 func readFixture(t *testing.T, name string) string {
 	t.Helper()
@@ -43,7 +43,7 @@ func fixtureNames(t *testing.T, dir string) []string {
 func TestParseValidFixtures(t *testing.T) {
 	for _, name := range fixtureNames(t, "valid") {
 		t.Run(name, func(t *testing.T) {
-			task, errs := Parse(readFixture(t, name), testSelf)
+			task, errs := parse(readFixture(t, name), testSelf)
 			if len(errs) > 0 {
 				t.Fatalf("valid fixture でエラー: %v", errs)
 			}
@@ -62,11 +62,11 @@ func TestParseValidFixtures(t *testing.T) {
 }
 
 func TestParseMinimalTyped(t *testing.T) {
-	task, errs := Parse(readFixture(t, "valid/minimal.md"), testSelf)
+	task, errs := parse(readFixture(t, "valid/minimal.md"), testSelf)
 	if len(errs) > 0 {
 		t.Fatalf("エラー: %v", errs)
 	}
-	want := Contract{
+	want := parsedContract{
 		Schema:                "kudo.issue/v1alpha1",
 		Kind:                  KindTask,
 		Readiness:             ReadinessReady,
@@ -78,7 +78,7 @@ func TestParseMinimalTyped(t *testing.T) {
 	if !reflect.DeepEqual(task.Contract, want) {
 		t.Fatalf("Contract = %+v, want %+v", task.Contract, want)
 	}
-	if !task.Contract.IsExecutableReadiness() {
+	if !task.Contract.isExecutableReadiness() {
 		t.Fatal("readiness: ready が実行可能と判定されない")
 	}
 	if len(task.Sections) != len(requiredSections) {
@@ -87,12 +87,12 @@ func TestParseMinimalTyped(t *testing.T) {
 }
 
 func TestParseFullTyped(t *testing.T) {
-	task, errs := Parse(readFixture(t, "valid/full.md"), testSelf)
+	task, errs := parse(readFixture(t, "valid/full.md"), testSelf)
 	if len(errs) > 0 {
 		t.Fatalf("エラー: %v", errs)
 	}
 	issue1 := IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 1}
-	want := Contract{
+	want := parsedContract{
 		Schema:    "kudo.issue/v1alpha1",
 		Kind:      KindTask,
 		Readiness: ReadinessReady,
@@ -132,11 +132,11 @@ func TestParseFullTyped(t *testing.T) {
 
 	// fence 内の `##` を heading として拾っていないことを確認する
 	// （4 backtick fence は内側の 3 backtick で閉じない）
-	if sec, ok := task.Section(sectionVerification); !ok || !strings.Contains(sec.Content, "## Fake Heading") {
+	if sec, ok := task.section(sectionVerification); !ok || !strings.Contains(sec.Content, "## Fake Heading") {
 		t.Fatal("fence 内の内容が Verification section に保持されていない")
 	}
 	// indent された fence と tilde fence の内側の行頭 `##` も heading として拾わない
-	sec, ok := task.Section(sectionConstraints)
+	sec, ok := task.section(sectionConstraints)
 	if !ok {
 		t.Fatal("Constraints section が無い")
 	}
@@ -148,14 +148,14 @@ func TestParseFullTyped(t *testing.T) {
 }
 
 func TestParseTemplateDraftNotExecutable(t *testing.T) {
-	task, errs := Parse(readFixture(t, "valid/template-draft.md"), testSelf)
+	task, errs := parse(readFixture(t, "valid/template-draft.md"), testSelf)
 	if len(errs) > 0 {
 		t.Fatalf("エラー: %v", errs)
 	}
 	if task.Contract.Readiness != ReadinessDraft {
 		t.Fatalf("readiness = %s, want draft", task.Contract.Readiness)
 	}
-	if task.Contract.IsExecutableReadiness() {
+	if task.Contract.isExecutableReadiness() {
 		t.Fatal("draft が実行可能と判定された")
 	}
 }
@@ -267,7 +267,7 @@ func TestParseInvalidFixtures(t *testing.T) {
 			if !ok {
 				t.Fatalf("fixture %s の期待値が無い", name)
 			}
-			task, errs := Parse(readFixture(t, name), testSelf)
+			task, errs := parse(readFixture(t, name), testSelf)
 			if task != nil {
 				t.Fatal("invalid fixture で task が返った")
 			}
@@ -294,14 +294,14 @@ func TestParseInvalidFixtures(t *testing.T) {
 
 func TestParseReadinessBlocked(t *testing.T) {
 	body := strings.Replace(readFixture(t, "valid/minimal.md"), "readiness: ready", "readiness: blocked", 1)
-	task, errs := Parse(body, testSelf)
+	task, errs := parse(body, testSelf)
 	if len(errs) > 0 {
 		t.Fatalf("エラー: %v", errs)
 	}
 	if task.Contract.Readiness != ReadinessBlocked {
 		t.Fatalf("readiness = %s, want blocked", task.Contract.Readiness)
 	}
-	if task.Contract.IsExecutableReadiness() {
+	if task.Contract.isExecutableReadiness() {
 		t.Fatal("blocked が実行可能と判定された")
 	}
 }
@@ -309,8 +309,8 @@ func TestParseReadinessBlocked(t *testing.T) {
 func TestParseCRLF(t *testing.T) {
 	body := readFixture(t, "valid/minimal.md")
 	crlf := strings.ReplaceAll(body, "\n", "\r\n")
-	taskLF, errsLF := Parse(body, testSelf)
-	taskCRLF, errsCRLF := Parse(crlf, testSelf)
+	taskLF, errsLF := parse(body, testSelf)
+	taskCRLF, errsCRLF := parse(crlf, testSelf)
 	if len(errsLF) > 0 || len(errsCRLF) > 0 {
 		t.Fatalf("エラー: %v / %v", errsLF, errsCRLF)
 	}
@@ -325,8 +325,8 @@ func TestParseDeterminism(t *testing.T) {
 	names = append(names, fixtureNames(t, "invalid")...)
 	for _, name := range names {
 		body := readFixture(t, name)
-		t1, e1 := Parse(body, testSelf)
-		t2, e2 := Parse(body, testSelf)
+		t1, e1 := parse(body, testSelf)
+		t2, e2 := parse(body, testSelf)
 		if !reflect.DeepEqual(t1, t2) || !reflect.DeepEqual(e1, e2) {
 			t.Fatalf("%s: 同じ入力で結果が一致しない", name)
 		}
@@ -334,7 +334,7 @@ func TestParseDeterminism(t *testing.T) {
 }
 
 func TestParseEmptyBody(t *testing.T) {
-	task, errs := Parse("", testSelf)
+	task, errs := parse("", testSelf)
 	if task != nil {
 		t.Fatal("空 body で task が返った")
 	}
@@ -349,7 +349,7 @@ func TestParseEmptyBody(t *testing.T) {
 }
 
 func TestParseRequiresRepositoryRef(t *testing.T) {
-	task, errs := Parse("x", RepositoryRef{})
+	task, errs := parse("x", repositoryRef{})
 	if task != nil || len(errs) != 1 || errs[0].Code != CodeRepositoryRefInvalid {
 		t.Fatalf("task=%v errs=%v", task, errs)
 	}

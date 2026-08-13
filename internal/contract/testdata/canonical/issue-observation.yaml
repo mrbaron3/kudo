@@ -1,0 +1,3 @@
+schema: "kudo.issue-observation/v1alpha1"
+issue: "github://mrbaron3/kudo/issues/10"
+bodyDigest: "sha256:2774daba7863a2ebe1f0605101ba09014b01a82e1ad24dab40df1355753f7637"

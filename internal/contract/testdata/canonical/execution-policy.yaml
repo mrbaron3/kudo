@@ -1,0 +1,18 @@
+schema: "kudo.execution-policy/v1alpha1"
+issueWorker:
+  provider: "codex"
+  model: "gpt-5.5"
+  adapter: "codex-cli"
+  adapterVersion: "1.2.3"
+  toolPermissions:
+    - "github:write"
+    - "repository:write"
+  timeout: "45m0s"
+reviewWorker:
+  provider: "claude"
+  model: "claude-opus"
+  adapter: "claude-cli"
+  adapterVersion: "2.0.0"
+  toolPermissions:
+    - "repository:read"
+  timeout: "30m0s"

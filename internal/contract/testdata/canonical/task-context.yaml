@@ -1,0 +1,37 @@
+schema: "kudo.task-context/v1alpha1"
+compiler: "kudo.issue-compiler/v1alpha1"
+issue: "github://mrbaron3/kudo/issues/10"
+contract:
+  schema: "kudo.issue/v1alpha1"
+  kind: "task"
+  readiness: "ready"
+  parent: "github://mrbaron3/kudo/issues/1"
+  dependsOn:
+    - "github://mrbaron3/kudo/issues/31"
+    - "github://mrbaron3/kudo/issues/9"
+  acceptanceCriteriaIds:
+    - "AC-1"
+    - "AC-2"
+    - "AC-3"
+  authorityRefs:
+    - "AGENTS.md"
+    - "docs/contracts/issue-contract-v1alpha1.md"
+    - ".github/ISSUE_TEMPLATE/kudo-task.md"
+    - "github://mrbaron3/kudo/issues/1"
+outcome: "外部から観測できる結果を書く。"
+scope: "### Included\n\n- 対象とする範囲\n\n### Excluded\n\n- 対象外の範囲"
+deliverables: "- 成果物の一覧"
+acceptanceCriteria:
+  preamble: ""
+  criteria:
+    - id: "AC-1"
+      body: "- Given: 前提 1\n- When: 操作 1\n- Then: 期待 1"
+    - id: "AC-2"
+      body: "- Given: 前提 2\n- When: 操作 2\n- Then: 期待 2"
+    - id: "AC-3"
+      body: "- Given: 前提 3\n- When: 操作 3\n- Then: 期待 3"
+verificationAndEvidence: "fence 内の `##` は heading として扱わない。4 backtick の fence は内側の 3 backtick で閉じない。\n\n````md\n```sh\necho \"## Fake Heading\"\nmise run check\n```\n````"
+constraintsAndInvariants: "- 不変条件\n- HTML comment（`<!-- x -->`）は code span 内なら混在ではない\n\n```\n## Fenced Fake\n```\n\n~~~text\n## Tilde Fake\n~~~"
+decisionAuthority: "- このIssue内で決めてよい: 内部構成\n- ADRまたは別Issueが必要: 契約変更"
+stopAndEscalationConditions: "- 停止条件"
+advisoryHints: "- 非拘束の助言"

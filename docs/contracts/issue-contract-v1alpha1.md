@@ -6,7 +6,7 @@ GitHub Issueを、人とKudoの双方が解釈できる実行契約として扱�
 
 「Issue単体で実装可能」とは、Issue本文へ全資料を複製することではない。Task Issue自身が実行境界を完結させ、必要な外部contextを安定したreferenceとして列挙していることを意味する。Controllerが会話履歴や独自の要約で不足を補ってはならない。
 
-Issue WorkerはTask開始時にGitHubからIssueを直接取得する。取得した本文と解決済みreferenceのdigestは、実行対象を証明するIssue RevisionとContext Manifestとして固定する。これらはIssueの代替となる別の正本ではなく、実際に参照した版の証拠である。
+Issue WorkerはTask開始時にGitHubからIssueを直接取得する。pureなIssue Compilerは取得したraw bodyと検証済みIssue identityから、exactな[Issue Observationとcanonical Task Context](task-context-v1alpha1.md)を分離して生成する。解決済みreferenceはContext Manifestへ固定する。これらはGitHub Issueの代替となる別の正本ではなく、実際に観測・解釈・参照した版の証拠である。
 
 ## Executability
 
@@ -151,55 +151,52 @@ Issue WorkerがTask内で決めてよい事項、別のADRやIssueを必要と�
 claim operationはrepository identityとIssue numberを入力にし、次を行う。
 
 1. Issue WorkerがIssueをGitHubから直接取得する
-2. bodyをstrictにparseし、取得したbody bytesのdigestを計算する
+2. raw bodyと検証済みIssue identityをIssue Compilerへ渡し、strict parse済みTask Context、Issue Observation、ClaimRequirementsを生成する
 3. native relationshipとContract blockを照合する
 4. parent identity、dependency completion、authority referenceを解決する
 5. base commitを固定し、referenceごとのdigestを計算する
-6. Issue RevisionとContext Manifestをimmutable artifactとして保存する
-7. model-bearing Worker Operationを開始する直前にIssueを再取得し、revision一致を検証する
+6. raw body、Issue Observation、Task Context、Context Manifestをimmutable artifactとして保存する
+7. model-bearing Worker Operationを開始する直前にIssueを再取得し、Issue Observationのbody digestと一致することを検証する
 
-### Issue Revision
+### Issue Observation and Task Context
 
-Issue Revisionは、Workerが直接取得したTask Issueの版を表す。
+canonical表現、SHA-256 identity、payload contract、versioning ruleは[Task Context Protocol](task-context-v1alpha1.md)を正とする。
 
-```yaml
-schema: kudo.issue-revision/v1alpha1
-issue: github://owner/repository/issues/42
-bodyDigest: sha256:<digest>
-contractDigest: sha256:<digest>
-```
-
-`bodyDigest`はGitHub APIから取得したbody文字列を追加の改行・空白正規化なしにUTF-8でencodeしたbytesへ計算する。body bytes自体も同じdigestでcontent-addressed artifactとして保存する。`contractDigest`はstrict parse後のfieldとsectionをcanonical表現へ変換して計算し、canonicalizationはfixtureで固定する。
-
-Issue Revisionのidentityに取得時刻、delivery ID、run IDを含めない。同じIssue bodyとcontractは再取得時にも同じidentityを持たなければならない。
+- Issue Observationはverified Issue identityとexact raw body digestを持ち、live変更検知と監査に使う。
+- Task Contextはstrict parse後のContract、section、criterionを固定fieldへ投影したcanonical YAMLであり、model sessionへ渡すIssue表現である。
+- raw bodyのline endingまたはtemplate HTML commentだけが変わった場合、Issue Observation refは変わるがTask Context refは変わらない。
+- claim以降はparserのTask/Contract/section titleを再解釈せず、ClaimRequirementsとversioned artifact/refを渡す。
 
 ### Context Manifest
 
-Context Manifestは、Issue Revisionから解決した実装入力のclosureを表す。
+Context Manifestは、Task Contextから解決した実装入力のclosureを表す。
 
 ```yaml
-schema: kudo.context-manifest/v1alpha1
-issueRevision: sha256:<digest>
-baseSha: <git-commit-sha>
-parent: github://owner/repository/issues/100
+schema: "kudo.context-manifest/v1alpha1"
+taskContext:
+  schema: "kudo.task-context/v1alpha1"
+  digest: "sha256:<digest>"
+baseSha: "<git-commit-sha>"
+parent: "github://owner/repository/issues/100"
 dependencies:
-  - issue: github://owner/repository/issues/101
-    completionDigest: sha256:<digest>
+  - issue: "github://owner/repository/issues/101"
+    completionDigest: "sha256:<digest>"
 authorityRefs:
-  - ref: docs/architecture.md
-    contentDigest: sha256:<digest>
+  - ref: "docs/architecture.md"
+    contentDigest: "sha256:<digest>"
 ```
 
 親を持たない場合は`parent: null`、依存またはauthority referenceがない場合は空配列を使う。配列順はIssue Contractの宣言順を保ち、重複を許可しない。
 
-Context ManifestにはIssue本文、authority本文、会話履歴を複製しない。各contentはdigestから取得できるimmutable artifactとして保存する。parent本文は`authorityRefs`にも指定された場合だけcontent artifactへ含める。
+Context ManifestにはIssue Observation ref、body digest、Issue本文、authority本文、会話履歴を含めない。各contentはdigestから取得できるimmutable artifactとして保存する。parent本文は`authorityRefs`にも指定された場合だけcontent artifactへ含める。
 
-Context Manifestのidentityにrun ID、claim timestamp、workspace path、provider session IDを含めない。同じIssue Revision、base SHA、relationship、dependency completion、authority contentは同じmanifest identityを持たなければならない。
+Context Manifestのidentityにrun ID、claim timestamp、workspace path、provider session IDを含めない。同じTask Context、base SHA、relationship、dependency completion、authority contentは同じmanifest identityを持たなければならない。Task Contextが同じなら、raw bodyだけの非意味的差分でmanifest identityを変えない。
 
 claim成功時に、少なくとも次を固定する。
 
 - repository identityとIssue number
-- Issueのrevision identity、取得したbody、body digest
+- Issue Observation ref、取得したraw body、body digest
+- Task Context refとcanonical YAML artifact
 - base commit SHA
 - parent identity
 - dependency identities、completion identities、baseへの統合確認
@@ -208,9 +205,9 @@ claim成功時に、少なくとも次を固定する。
 - Context Manifest digest
 - run IDとclaim timestamp
 
-Issue RevisionはWorkerへ渡す要約ではない。model sessionは取得したIssue本文そのものと、Context Manifestが明示する入力を読む。Controllerが契約内容を自然言語で再解釈してpromptへ置き換えてはならない。
+model sessionはraw Issue本文ではなくcanonical Task Contextと、Context Manifestが明示するauthority contentを読む。Controllerが契約内容を自然言語で再解釈してpromptへ置き換えたり、parserのsection titleを読み直したりしてはならない。raw bodyとIssue Observationは監査とlive変更検知に使う。
 
-実行中にIssue本文、dependency completion、base commit、authority referenceの内容が変わった場合は、進行中runへ暗黙に取り込まない。現在入力との不一致をstaleとして記録し、新しいclaimまたは人間判断へ戻す。実装入力ではない親Issue本文の編集だけではrunをstaleにしない。
+実行中にIssue本文、dependency completion、base commit、authority referenceの内容が変わった場合は、進行中runへ暗黙に取り込まない。raw bodyの非意味的差分でTask Context/Context Manifestが同じ場合もIssue Observationのlive freshnessは一致しないため、現在入力との不一致をstaleとして記録し、新しいclaimまたは人間判断へ戻す。実装入力ではない親Issue本文の編集だけではrunをstaleにしない。
 
 ## Claim rejection
 

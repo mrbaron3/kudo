@@ -15,7 +15,7 @@ pass@kなどの指標を採用する前に、少なくとも次を定義する�
 - Candidate generation: 同じinputからどの条件を変えてk候補を作るか
 - Independence: retry、共有context、repairが試行独立性をどう壊すか
 - Censoring: timeout、infra failure、人へのescalationを分母と成功判定でどう扱うか
-- Reproducibility: repository SHA、Issue Revision、Context Manifest、policy、model/provider設定をどう固定するか
+- Reproducibility: repository SHA、Issue Observation、Task Context、Context Manifest、policy、model/provider設定をどう固定するか
 - Cost and latency: 品質と同時に何を最適化するか
 - Online/offline boundary: production runとbenchmark runをどう分離するか
 
@@ -25,7 +25,7 @@ pass@kなどの指標を採用する前に、少なくとも次を定義する�
 
 Kudoは将来の分析に必要なrun ID、state transition、artifact digest、duration、token/cost、verdictなどをOTelへemitできる。ただし、次はKudo側のauthoritative recordに残す。
 
-- Issue Revision、Context Manifest、contract digest
+- Issue Observation、Task Context、Context Manifest
 - artifact manifest
 - Review Request / Result
 - idempotencyとworkflow state

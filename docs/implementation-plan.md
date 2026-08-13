@@ -8,9 +8,9 @@
 
 ## Current status
 
-現在 repository に実装済みなのは、`kudo help`/`kudo version`の CLI bootstrap と、Milestone 0 の Compose 開発基盤（multi-stage Dockerfile、PostgreSQL 18.4 付き開発用 Compose、container 内 check / integration test 入口）である。Issue/Review protocol と target architecture は文書化されているが、次は未実装である。
+現在repositoryに実装済みなのは、`kudo help`/`kudo version`のCLI bootstrap、Milestone 0のCompose開発基盤（multi-stage Dockerfile、PostgreSQL 18.4付き開発用Compose、container内check/integration test入口）、`kudo.issue/v1alpha1`のstrict parser、およびIssue Observation・canonical Task Context・Context Manifest・Execution Policyを作るpure compiler coreである。Issue/Review protocolとtarget architectureは文書化されているが、次は未実装である。
 
-- Issue Contract parser と canonical digest
+- Worker Operation、Review Request/Result、Artifact Manifestのparserとcanonical identity
 - PostgreSQL schema、Operation queue、lease、inbox/outbox
 - GitHub webhook/poller/reconciliation
 - Artifact Store と Run workspace
@@ -61,7 +61,7 @@ IssueRef から Task の execution context と review identity を決定論的�
 
 - `kudo.issue/v1alpha1`の fixed section と YAML block の strict parser
 - unknown/duplicate field、不正 enum、欠落/重複 AC、曖昧 authority の validation
-- Issue Revision と Context Manifest の canonical encoding と SHA-256 identity
+- Issue Observation、Task Context、Context Manifest の canonical encoding と SHA-256 identity
 - Execution Policy snapshot と Operation envelope/result の canonical identity
 - Review Request / Result / Artifact Manifest の validation と staleness rule
 - claim/review/transport error taxonomy
@@ -70,7 +70,7 @@ IssueRef から Task の execution context と review identity を決定論的�
 ### Milestone 1 exit criteria
 
 - 同じ input は常に同じ digest になり、whitespace と ordering rule が fixture で固定される。
-- changed Issue body、authority content、Execution Policy、head SHA、artifact bytes が以前の review を stale にする。
+- changed Issue Observation、authority content、Execution Policy、head SHA、artifact bytes が以前の review を stale にする。
 - malformed contract、human decision、transport failure、review finding が混同されない。
 - GitHub/network/filesystem/provider なしで全 behavior を unit test できる。
 
@@ -161,7 +161,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 ### Milestone 5 exit criteria
 
 - expected failure の RED が固定されるまで review request を作らない。
-- reviewer は Issue Revision、artifact、read-only checkout だけで verdict を返す。
+- reviewer はIssue Observationでlive freshnessを検証し、canonical Task Context、artifact、read-only checkoutだけでverdictを返す。
 - `request_changes`後は同じ worktree の新しい provider session が修正し、新しい request digest で再 review する。
 - test approval なしに implementation Operation を enqueue できない。
 - Issue edit、test head change、artifact change が approval を stale にする。

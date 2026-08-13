@@ -72,7 +72,7 @@ Issue Worker は implementation data plane であり、実装側の唯一の wri
 Review Worker は read-only evaluator である。
 
 - `test_validity`と`final_implementation`の Review Request を処理する
-- request が指す Issue Revision と live Issue の digest を照合する
+- request が指す Issue Observation と live Issue のexact body digestを照合する
 - head SHAとimmutable source bundle/snapshot artifactからdisposable checkoutを構築する。既にread-only remoteで取得可能な同一commitは再利用してよい
 - immutable artifact と明示された policy だけを fresh provider session へ渡す
 - versioned`approve`、`request_changes`、`needs_human` Result を返す
@@ -215,22 +215,22 @@ Controller replica、Issue Worker replica、Review Worker replica を増やし�
 
 ## Context and session isolation
 
-Task Issue が execution-context root である。
+Task Issue が execution-context rootであり、Issue Compilerがcanonical Task Contextへ一度だけ解釈する。
 
 ```text
 Task Issue
-├─ Task自身の Outcome / Scope / Deliverables / AC / Verification
+├─ canonical Task Context            Task自身のContractと各section
 ├─ parent                           hierarchyとtraceabilityのみ
 ├─ dependsOn                       readiness gateのみ
 └─ authorityRefs                   明示された実装入力
 ```
 
-parent、dependency、Issue comment、Project field、provider conversation は、Task が authority として明示しない限り session context に入れない。Context Manifest は解決結果の一覧であり、Controller が作る自然言語要約ではない。
+parent、dependency、Issue comment、Project field、provider conversation は、Task が authority として明示しない限り session context に入れない。Context Manifest はTask Contextへのversioned refと解決結果の一覧であり、Issue Observation/raw bodyを含めず、Controller が作る自然言語要約でもない。
 
 Implementation と Review が共有できるのは次だけである。
 
 - versioned Operation / Review protocol
-- IssueRef と期待 Issue Revision
+- IssueRef、期待Issue Observation、canonical Task Context
 - base/head commit SHA
 - Context Manifest と immutable artifact reference
 - versioned Review Result と明示された policy
