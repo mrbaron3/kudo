@@ -43,7 +43,7 @@ sequenceDiagram
     C->>DB: ReconcileIssueをdeduplicate/queue
     C->>IW: claim(IssueRef)
     IW->>GH: live Issue/contextを取得
-    IW-->>C: Issue Revision + Context Manifest
+    IW-->>C: Issue Observation + Task Context + Context Manifest
     C->>DB: Runとclaimをcommit
     C->>GH: ai-in-progressを冪等に投影
     C->>IW: author_tests(immutable context)
@@ -87,11 +87,11 @@ Reconciliation は live GitHub state で candidate 条件を確認する。条�
 
 Controller は IssueRef に対する短い claim lease を取得し、Issue Worker へ claim Operation を dispatch する。Issue Worker は GitHub から現在の Issue を直接取得し、Contract、native relationship、dependency、authority、base commit を検証する。
 
-claim 成功時は、Run、Issue Revision、Context Manifest、Execution Policy、base SHA を一つの durable transition として確定する。その後、outbox から`ai-ready`と古い status label を外し、`ai-in-progress`を付ける。GitHub projection が一時的に失敗しても Run を巻き戻さない。
+claim 成功時は、Run、Issue Observation、Task Context、Context Manifest、Execution Policy、base SHA を一つの durable transition として確定する。その後、outbox から`ai-ready`と古い status label を外し、`ai-in-progress`を付ける。GitHub projection が一時的に失敗しても Run を巻き戻さない。
 
 ### 3. Test authoring and RED
 
-Issue Worker は fresh provider session で`author_tests`を実行する。session には live digest と一致した Task Issue 本文、Context Manifest が参照する authority content、base/head SHA、明示された policy だけを渡す。
+Issue Worker は fresh provider session で`author_tests`を実行する。session には live Issue Observationと一致するcanonical Task Context、Context Manifestが参照するauthority content、base/head SHA、明示されたpolicyだけを渡す。raw Issue bodyは監査・live変更検知用であり、model inputへ重ねて渡さない。
 
 test plan は各 Acceptance Criteria と test case の対応を示す。テストを追加した head で規定 command を実行し、対象機能の欠如に起因する期待どおりの failure を RED evidence として固定する。環境故障、compile infrastructure failure、無関係な既存 failure を RED とみなさない。
 
@@ -99,7 +99,7 @@ Issue Worker は test-only checkpoint commit、patch、command、exit status、s
 
 ### 4. Test validity review
 
-Controller は immutable input から`test_validity` Review Request を作る。Review Worker は fresh session と別の read-only checkout を使い、Task Issue、Acceptance Criteria、test plan、test patch、RED evidence を評価する。
+Controller は immutable input から`test_validity` Review Request を作る。Review Worker は fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence を評価する。
 
 - `approve`: 承認対象 digest を固定し、implementation へ進む。
 - `request_changes`: blocking finding を versioned Result として返す。Controller は同じ Run/worktree を所有する Issue Worker の新しい`revise_tests` session へ finding と artifact を渡す。
@@ -109,7 +109,7 @@ Controller は immutable input から`test_validity` Review Request を作る。
 
 ### 5. GREEN and refactor
 
-test validity approval 後にだけ、Issue Worker は fresh`implement` session を開始する。入力は Task Issue、approved test/result、現在 head、Context Manifest であり、test author または reviewer の transcript ではない。
+test validity approval 後にだけ、Issue Worker は fresh`implement` session を開始する。入力はcanonical Task Context、approved test/result、現在head、Context Manifestであり、raw Issue body、test authorまたはreviewerのtranscriptではない。
 
 implementation は次を順に満たす。
 
@@ -180,4 +180,4 @@ stateDiagram-v2
 - worktree/branch/PR mutation は Issue Worker の idempotency key で重複を防ぐ。
 - state transition と external projection intent は同じ database transaction に記録し、outbox が GitHub へ再送する。
 - process 停止で lease が失効した場合、別 worker が immutable checkpoint から Operation を再取得する。
-- Run 中に Issue Revision、authority digest、base/head が変われば進行を止め、以前の review を stale にする。
+- Run 中に Issue Observation、authority digest、base/head が変われば進行を止め、以前の review を stale にする。

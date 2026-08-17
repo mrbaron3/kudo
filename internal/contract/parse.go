@@ -38,7 +38,7 @@ var sectionOrder = func() map[string]int {
 	return m
 }()
 
-// Parse は GitHub Issue 本文を kudo.issue/v1alpha1 として strict に解釈する。
+// parse は GitHub Issue 本文を kudo.issue/v1alpha1 として strict に解釈する。
 //
 // self には Issue が属する repository の identity を渡す。本文には repository を
 // 自己申告させないため、この値は GitHub API または検証済み event envelope を正とする。
@@ -46,7 +46,7 @@ var sectionOrder = func() map[string]int {
 // 返り値は、検証エラーが 1 件でもあれば task が nil になり、エラーが無ければ
 // 完全に typed な Task が返る。エラーは行番号の昇順（位置を持たないものは先頭）で
 // 安定しており、同じ入力は常に同じ結果を返す。
-func Parse(body string, self RepositoryRef) (*Task, []ValidationError) {
+func parse(body string, self repositoryRef) (*parsedTask, []ValidationError) {
 	if self.Owner == "" || self.Name == "" {
 		return nil, []ValidationError{{
 			Code:    CodeRepositoryRefInvalid,
@@ -129,7 +129,7 @@ func Parse(body string, self RepositoryRef) (*Task, []ValidationError) {
 	}
 
 	// Contract block の strict parse と semantic validation
-	var contract Contract
+	var contract parsedContract
 	var contractOK bool
 	if sec := firstSeen[sectionContract]; sec != nil {
 		block, blockLine, found, blockErrs := extractContractBlock(*sec)
@@ -160,16 +160,16 @@ func Parse(body string, self RepositoryRef) (*Task, []ValidationError) {
 		return nil, errs
 	}
 
-	task := &Task{Contract: contract}
+	task := &parsedTask{Contract: contract}
 	for _, sec := range sections {
-		task.Sections = append(task.Sections, Section{
+		task.Sections = append(task.Sections, parsedSection{
 			Title:   sec.title,
 			Line:    sec.line,
 			Content: joinLines(sec.lines),
 		})
 	}
 	for _, cr := range criteria {
-		task.AcceptanceCriteria = append(task.AcceptanceCriteria, Criterion{
+		task.AcceptanceCriteria = append(task.AcceptanceCriteria, parsedCriterion{
 			ID:   cr.id,
 			Line: cr.line,
 			Body: joinLines(cr.lines),

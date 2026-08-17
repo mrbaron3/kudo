@@ -1,16 +1,20 @@
-// Package contract は kudo.issue/v1alpha1 の Issue Contract を strict に parse・検証する。
+// Package contract は versioned Issue Contract を strict に parse・compile し、
+// immutable な実行入力の canonical identity を構築する pure core である。
 //
-// 正本は docs/contracts/issue-contract-v1alpha1.md と .github/ISSUE_TEMPLATE/kudo-task.md
-// である。本 package は GitHub API へ接続せず、Issue 本文の文字列だけを入力にする。
-// digest 生成と reference の内容解決は後続 Task（Issue Revision / Context Manifest）の範囲とする。
+// 正本は docs/contracts/issue-contract-v1alpha1.md、
+// docs/contracts/task-context-v1alpha1.md、.github/ISSUE_TEMPLATE/kudo-task.md である。
+// 本 package は GitHub API、filesystem、clock 等の外部境界へ接続しない。
 package contract
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
-// RepositoryRef は Task Issue が属する repository の identity を表す。
+// repositoryRef は Task Issue が属する repository の identity を表す。
 // Issue 本文には repository を自己申告させないため、呼び出し側が
 // GitHub API または検証済み event envelope の値を明示的に渡す。
-type RepositoryRef struct {
+type repositoryRef struct {
 	Owner string
 	Name  string
 }
@@ -38,9 +42,25 @@ type IssueRef struct {
 	Number     int
 }
 
+func (r IssueRef) repositoryRef() repositoryRef {
+	return repositoryRef{Owner: r.Owner, Name: r.Repository}
+}
+
+// canonical は GitHub の case-insensitive な identity に合わせて owner / repository を
+// 小文字へ揃える。同じ Issue を指す reference が表記の case 差分だけで別 digest を
+// 生まないよう、Issue identity の同値関係を本 method 一つに集約する。
+func (r IssueRef) canonical() IssueRef {
+	return IssueRef{
+		Owner:      strings.ToLower(r.Owner),
+		Repository: strings.ToLower(r.Repository),
+		Number:     r.Number,
+	}
+}
+
 // String は canonical な github:// 表記を返す。
 func (r IssueRef) String() string {
-	return fmt.Sprintf("github://%s/%s/issues/%d", r.Owner, r.Repository, r.Number)
+	c := r.canonical()
+	return fmt.Sprintf("github://%s/%s/issues/%d", c.Owner, c.Repository, c.Number)
 }
 
 // AuthorityRef は authorityRefs の 1 要素を表す。repository 内 relative path か、
@@ -58,8 +78,9 @@ func (r AuthorityRef) String() string {
 	return r.Path
 }
 
-// Contract は strict parse 済みの Contract block を表す。
-type Contract struct {
+// parsedContract は strict parse 済みの Contract block を表す。
+// application-facing consumer へは Compiler が TaskContext/ClaimRequirements として公開する。
+type parsedContract struct {
 	Schema                string
 	Kind                  Kind
 	Readiness             Readiness
@@ -69,39 +90,39 @@ type Contract struct {
 	AuthorityRefs         []AuthorityRef
 }
 
-// IsExecutableReadiness は readiness が実行可能な値かどうかを返す。
+// isExecutableReadiness は readiness が実行可能な値かどうかを返す。
 // candidate 条件や dependency completion の判定は本 package の範囲外である。
-func (c Contract) IsExecutableReadiness() bool {
+func (c parsedContract) isExecutableReadiness() bool {
 	return c.Readiness == ReadinessReady
 }
 
-// Section は Issue 本文の H2 section を文書順に表す。
-type Section struct {
+// parsedSection は Issue 本文の H2 section を文書順に表す。
+type parsedSection struct {
 	Title   string
 	Line    int    // H2 heading の行番号（1 始まり）
 	Content string // heading 行を除く section 本文
 }
 
-// Criterion は Acceptance Criteria section 内の 1 criterion を表す。
-type Criterion struct {
+// parsedCriterion は Acceptance Criteria section 内の 1 criterion を表す。
+type parsedCriterion struct {
 	ID   string
 	Line int    // H3 heading の行番号（1 始まり）
 	Body string // heading 行を除く criterion 本文
 }
 
-// Task は strict parse に成功した Task Issue 本文の全体を表す。
-type Task struct {
-	Contract           Contract
-	Sections           []Section
-	AcceptanceCriteria []Criterion
+// parsedTask は strict parse に成功した Task Issue 本文の全体を表す。
+type parsedTask struct {
+	Contract           parsedContract
+	Sections           []parsedSection
+	AcceptanceCriteria []parsedCriterion
 }
 
-// Section は指定した title の section を返す。存在しない場合は ok が false になる。
-func (t *Task) Section(title string) (Section, bool) {
+// section は指定した title の section を返す。存在しない場合は ok が false になる。
+func (t *parsedTask) section(title string) (parsedSection, bool) {
 	for _, s := range t.Sections {
 		if s.Title == title {
 			return s, true
 		}
 	}
-	return Section{}, false
+	return parsedSection{}, false
 }

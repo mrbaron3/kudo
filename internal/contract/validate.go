@@ -17,7 +17,11 @@ var contractFields = map[string]bool{
 	"authorityRefs":         true,
 }
 
-const schemaV1Alpha1 = "kudo.issue/v1alpha1"
+// IssueContractSchemaV1Alpha1 は Issue Contract の schema identity である。
+// Task Context その他の artifact schema とは独立して version 管理する。
+const IssueContractSchemaV1Alpha1 = "kudo.issue/v1alpha1"
+
+const schemaV1Alpha1 = IssueContractSchemaV1Alpha1
 
 // parseIssueRef は github://owner/repository/issues/number 形式の reference を解釈する。
 func parseIssueRef(s string) (IssueRef, bool) {
@@ -47,7 +51,9 @@ func parseIssueRef(s string) (IssueRef, bool) {
 	if err != nil || n <= 0 {
 		return IssueRef{}, false
 	}
-	return IssueRef{Owner: owner, Repository: repo, Number: n}, true
+	// GitHub は owner / repository を case-insensitive に扱う。表記の case 差分が
+	// 別 identity として下流の digest まで伝播しないよう、parse 境界で正規化する。
+	return IssueRef{Owner: owner, Repository: repo, Number: n}.canonical(), true
 }
 
 func validOwner(s string) bool {
@@ -77,13 +83,8 @@ func validRepoName(s string) bool {
 }
 
 // sameRepository は GitHub の大文字小文字非区別に合わせて repository identity を比較する。
-func sameRepository(r IssueRef, self RepositoryRef) bool {
+func sameRepository(r IssueRef, self repositoryRef) bool {
 	return strings.EqualFold(r.Owner, self.Owner) && strings.EqualFold(r.Repository, self.Name)
-}
-
-// refFoldKey は重複 reference 検出用の正規化 key を返す。
-func refFoldKey(r IssueRef) string {
-	return strings.ToLower(r.Owner) + "/" + strings.ToLower(r.Repository) + "#" + strconv.Itoa(r.Number)
 }
 
 // validAuthorityPath は repository 内 relative path として許可される形かを検証する。
@@ -102,10 +103,10 @@ func validAuthorityPath(p string) bool {
 	return true
 }
 
-// buildContract は yamlEntry 列を typed Contract へ変換し、semantic rule を検証する。
+// buildContract は yamlEntry 列を typed parsedContract へ変換し、semantic rule を検証する。
 // blockLine は fenced block の開始行で、field 欠落エラーの位置に使う。
-func buildContract(entries []yamlEntry, blockLine int, self RepositoryRef) (Contract, []ValidationError) {
-	var c Contract
+func buildContract(entries []yamlEntry, blockLine int, self repositoryRef) (parsedContract, []ValidationError) {
+	var c parsedContract
 	var errs []ValidationError
 
 	addErr := func(code Code, line int, field, msg string) {
@@ -198,7 +199,7 @@ func buildContract(entries []yamlEntry, blockLine int, self RepositoryRef) (Cont
 				addErr(CodeRefCrossRepository, item.line, "dependsOn", "dependsOn は Task と同じ repository の Issue に限定する")
 				continue
 			}
-			key := refFoldKey(ref)
+			key := ref.String()
 			if seen[key] {
 				addErr(CodeRefDuplicate, item.line, "dependsOn", "dependsOn の reference `"+item.value+"` が重複している")
 				continue
@@ -239,7 +240,7 @@ func buildContract(entries []yamlEntry, blockLine int, self RepositoryRef) (Cont
 					addErr(CodeRefCrossRepository, item.line, "authorityRefs", "GitHub Issue 形式の authorityRefs は Task と同じ repository に限定する")
 					continue
 				}
-				key := refFoldKey(ref)
+				key := ref.String()
 				if seenIssue[key] {
 					addErr(CodeRefDuplicate, item.line, "authorityRefs", "reference `"+item.value+"` が重複している")
 					continue
@@ -308,6 +309,24 @@ func validateCriteria(ids []string, criteria []rawCriterion, sectionLine int) []
 			})
 			// 同じ ID の再報告を防ぐ
 			listed[cr.id] = true
+		}
+	}
+
+	// ID の集合が一致する場合だけ順序を検証する。集合が食い違う状態で順序差分も
+	// 報告すると、原因ではなく症状を重ねて報告することになる。
+	// 順序不一致を受理して Compiler 側で並べ替えると、人が読む Issue の順序と
+	// AI へ渡る順序が黙って食い違うため、H2 section の順序規則と同じく拒否する。
+	if len(errs) == 0 && len(ids) == len(criteria) {
+		for i, cr := range criteria {
+			if cr.id != ids[i] {
+				errs = append(errs, ValidationError{
+					Code:    CodeACCriterionOutOfOrder,
+					Line:    cr.line,
+					Section: sectionAcceptanceCriteria,
+					Message: "criterion `" + cr.id + "` の位置が acceptanceCriteriaIds の宣言順と一致しない",
+				})
+				break
+			}
 		}
 	}
 	return errs

@@ -11,6 +11,7 @@ Kudo の文書は、目標、振る舞い、技術構造、外部 protocol、実
 | Operations | [Development environment](development.md) | Compose 開発基盤の初期設定と標準 command |
 | Integration | [GitHub routing policy](github-routing.md) | candidate 条件、webhook/polling、label lifecycle |
 | Protocol | [Issue Contract](contracts/issue-contract-v1alpha1.md) | 人間が記述する Task Issue の機械可読 contract |
+| Protocol | [Task Context Protocol](contracts/task-context-v1alpha1.md) | Issue Observation、canonical Task Context、Context Manifest、Execution Policy |
 | Protocol | [Worker Operation Protocol](contracts/operation-protocol-v1alpha1.md) | Controller から Issue Worker への durable Operation / Result |
 | Protocol | [Implementation–Review Protocol](contracts/review-protocol-v1alpha1.md) | immutable review request/result と verdict semantics |
 | Delivery | [Implementation plan](implementation-plan.md) | 現在地、実装順序、各 milestone と全体の exit criteria |

@@ -4,6 +4,10 @@
 
 Kudo is a greenfield Go implementation of a lightweight TDD issue-to-PR runtime. Servo is reference material, not a source-code dependency or compatibility target.
 
+## 開発手順
+
+実装は TDD で進める。まず期待する振る舞いを示す失敗するテストを書き、テストを通す最小限の実装を行い、その後テストが通る状態を保ちながらリファクタリングする。
+
 ## Required checks
 
 Run the fastest relevant checks first. Before handing off a change, run:
@@ -35,6 +39,13 @@ Use deterministic unit tests with fakes at GitHub, process, clock, filesystem, m
 - Reject missing or ambiguous required input; do not infer contract fields from conversational context.
 - Keep transport failures separate from review verdicts.
 - A changed commit or artifact digest makes the previous review result stale.
+
+## コードコメント
+
+- コメントには、コードから読み取れない意図、背景、制約、トレードオフ、不変条件を記す。
+- 処理内容、識別子、制御フローを言い換えるだけのコメントは書かない。説明がなければ理解しにくい場合は、まず命名や処理の分割でコード自体を明確にする。
+- 公開 API のドキュメントコメントでは、宣言を繰り返さず、保証、前提条件、エラー、副作用、並行実行上の注意など、利用者が判断に必要な契約を記す。
+- 回避策や外部仕様に由来する判断には、必要に応じて Issue、契約、仕様への参照を添える。前提が変わったときは、実装と同時にコメントを更新または削除する。
 
 ## Deferred work
 

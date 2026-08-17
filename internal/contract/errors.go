@@ -9,6 +9,9 @@ type Code string
 const (
 	// 入力全体
 	CodeRepositoryRefInvalid Code = "repository_ref_invalid"
+	CodeIssueRefInvalid      Code = "issue_ref_invalid"
+	CodeBodyEncodingInvalid  Code = "body_encoding_invalid"
+	CodeBodyControlCharacter Code = "body_control_character"
 	CodePreambleContent      Code = "preamble_content"
 
 	// H2 section 構造
@@ -40,11 +43,12 @@ const (
 	CodeRefCrossRepository Code = "ref_cross_repository"
 
 	// Acceptance Criteria の対応
-	CodeACIDsEmpty           Code = "acceptance_criteria_ids_empty"
-	CodeACIDDuplicate        Code = "acceptance_criteria_id_duplicate"
-	CodeACCriterionMissing   Code = "acceptance_criterion_missing"
-	CodeACCriterionUnlisted  Code = "acceptance_criterion_unlisted"
-	CodeACCriterionDuplicate Code = "acceptance_criterion_duplicate"
+	CodeACIDsEmpty            Code = "acceptance_criteria_ids_empty"
+	CodeACIDDuplicate         Code = "acceptance_criteria_id_duplicate"
+	CodeACCriterionMissing    Code = "acceptance_criterion_missing"
+	CodeACCriterionUnlisted   Code = "acceptance_criterion_unlisted"
+	CodeACCriterionDuplicate  Code = "acceptance_criterion_duplicate"
+	CodeACCriterionOutOfOrder Code = "acceptance_criterion_out_of_order"
 )
 
 // ValidationError は claim rejection の原因 1 件を構造化して表す。

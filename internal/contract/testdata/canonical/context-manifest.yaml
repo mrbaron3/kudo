@@ -1,0 +1,20 @@
+schema: "kudo.context-manifest/v1alpha1"
+taskContext:
+  schema: "kudo.task-context/v1alpha1"
+  digest: "sha256:297c37f7fe06892d1b8d2ee0d91e950251b400eb474ce3d65a42cdca4d213457"
+baseSha: "0123456789abcdef0123456789abcdef01234567"
+parent: "github://mrbaron3/kudo/issues/1"
+dependencies:
+  - issue: "github://mrbaron3/kudo/issues/31"
+    completionDigest: "sha256:43ee2e7c30e8248cbfa1ae0c505dc49758cf65693e9743fc8d3a66a49aba0b55"
+  - issue: "github://mrbaron3/kudo/issues/9"
+    completionDigest: "sha256:9b19cd7161b874ff29b62d87784f05982088621610813bf6dbd87cf7a503d517"
+authorityRefs:
+  - ref: "AGENTS.md"
+    contentDigest: "sha256:a54ff182c7e8acf56acfd6e4b9c3ff41e2c41a31c9b211b2deb9df75d9a478f9"
+  - ref: "docs/contracts/issue-contract-v1alpha1.md"
+    contentDigest: "sha256:ca9d3a439bd102e52e70ae58bae4534d59661c48659f69d4de9de8ab027e6d79"
+  - ref: ".github/ISSUE_TEMPLATE/kudo-task.md"
+    contentDigest: "sha256:5cde0f1298f41f7d1c8b907a36992a7a513225a2615bd6e307bf1a9149b06b40"
+  - ref: "github://mrbaron3/kudo/issues/1"
+    contentDigest: "sha256:edfd7dfe10ca600bfd688abbf7ff7b7e77a9473b9521e0c9d4899db7906e6178"

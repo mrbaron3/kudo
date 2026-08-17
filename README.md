@@ -15,7 +15,7 @@ Kudo は、人間が定型の GitHub Issue を用意すると、独立した tes
 7. Review Worker が最終成果を独立レビューし、approve 後に Issue Worker だけが Pull Request を作成する。
 8. Issue を`ai-review-waiting`へ投影し、人間の Pull Request review へ引き渡す。
 
-各 model-bearing Operation は必ず fresh session で実行します。同じ Run の worktree を引き継ぐ場合も、前 session の transcript や private memory は渡さず、Issue Revision、commit、artifact、Review Result だけを明示的に handoff します。
+各 model-bearing Operation は必ず fresh session で実行します。同じ Run の worktree を引き継ぐ場合も、前 session の transcript や private memory は渡さず、Issue Observation、canonical Task Context、commit、artifact、Review Result だけを明示的に handoff します。
 
 ## Runtime
 
@@ -33,7 +33,7 @@ artifact は content-addressed な named volume、Issue Worker の workspace は
 
 ## Repository status
 
-文書は完成形の product/runtime specification を定義しています。現在の code は CLI bootstrap と Milestone 0 の Compose 開発基盤（build/test image、PostgreSQL、integration test 入口）まで実装済みで、workflow 本体は未実装です。実装順序と全体の完了条件は [Implementation plan](docs/implementation-plan.md) を正とします。
+文書は完成形の product/runtime specification を定義しています。現在のcodeはCLI bootstrap、Milestone 0のCompose開発基盤（build/test image、PostgreSQL、integration test入口）に加え、Milestone 1のIssue Contract parserとTask Context compiler coreまで実装済みで、durable workflow本体は未実装です。実装順序と全体の完了条件は[Implementation plan](docs/implementation-plan.md)を正とします。
 
 ## Development
 
@@ -64,6 +64,7 @@ go run ./cmd/kudo help
 - [GitHub routing policy](docs/github-routing.md)
 - [Implementation plan](docs/implementation-plan.md)
 - [Issue Contract](docs/contracts/issue-contract-v1alpha1.md)
+- [Task Context Protocol](docs/contracts/task-context-v1alpha1.md)
 - [Worker Operation Protocol](docs/contracts/operation-protocol-v1alpha1.md)
 - [Implementation–Review Protocol](docs/contracts/review-protocol-v1alpha1.md)
 - [Compose 採用 ADR](docs/decisions/0001-compose-runtime.md)

@@ -15,9 +15,15 @@ runId: run-01
 kind: author_tests
 repository: github://owner/repository
 issue: github://owner/repository/issues/42
-issueRevision: sha256:<digest>
-contextManifest: sha256:<digest>
-executionPolicy: sha256:<digest>
+issueObservation:
+  schema: kudo.issue-observation/v1alpha1
+  digest: sha256:<digest>
+contextManifest:
+  schema: kudo.context-manifest/v1alpha1
+  digest: sha256:<digest>
+executionPolicy:
+  schema: kudo.execution-policy/v1alpha1
+  digest: sha256:<digest>
 baseSha: <git-commit-sha>
 headSha: <git-commit-sha>
 inputArtifacts:
@@ -30,22 +36,22 @@ createdAt: 2026-08-11T00:00:00Z
 
 `operationId`はlogical Operationのstable identity、database上のexecution attemptは別identityとする。retryのたびにOperationを複製せず、同じOperationへattemptを追加する。
 
-Operation digestは、schema、kind、Run、repository、Issue、Issue Revision、Context Manifest、Execution Policy、base/head SHA、input artifact digest、policy refs、causation identityから計算する。queue時刻、lease owner、attempt number、provider session ID、workspace pathをdigestへ含めない。
+Operation digestは、schema、kind、Run、repository、Issue、Issue Observation ref、Context Manifest ref、Execution Policy ref、base/head SHA、input artifact digest、policy refs、causation identityから計算する。queue時刻、lease owner、attempt number、provider session ID、workspace pathをdigestへ含めない。
 
-Execution Policyは`kudo.execution-policy/v1alpha1`として、Issue Worker/Review Workerのprovider adapter、model identifier、adapter version、tool permission、timeout policyを固定したimmutable artifactである。credential、secret path、session IDは含めない。同じRunの途中でdeployment defaultが変わっても、既存Operationへ暗黙に適用しない。
+Issue Observation、Task Context、Context Manifest、Execution Policyのschema、canonicalization、refは[Task Context Protocol](task-context-v1alpha1.md)を正とする。Execution PolicyはIssue Worker/Review Workerのprovider adapter、model identifier、adapter version、tool permission、timeout policyを固定し、credential、secret path、session IDを含めない。同じRunの途中でdeployment defaultが変わっても、既存Operationへ暗黙に適用しない。
 
 ## Issue Worker operation kinds
 
 | Kind | Model session | Required input | Output |
 | --- | --- | --- | --- |
-| `claim` | no | repository、IssueRef、candidate policy | Issue Revision、Context Manifest、base SHAまたはstructured rejection |
+| `claim` | no | repository、IssueRef、candidate policy | Issue Observation、Task Context、ClaimRequirements、Context Manifest、base SHAまたはstructured rejection |
 | `author_tests` | fresh | claimed context、base/head | test plan、test-only head、RED evidence |
 | `revise_tests` | fresh | current test head、blocking Review Result、prior artifacts | revised test head、new RED evidence |
 | `implement` | fresh | approved test validity Result、test head、Issue context | implementation head、GREEN/refactor/check evidence |
 | `repair_implementation` | fresh | current implementation head、blocking final Review Result | repaired head、new evidence |
 | `create_pull_request` | no | final approved head、PR body artifact、idempotency identity | GitHub PR number、URL、observed head |
 
-`claim`ではControllerがRun IDを予約するが、claim成功まではactive Runとして公開しない。また、Issue Revision、Context Manifest、base/headはまだ存在しないため、envelope上の該当fieldを省略する。Execution Policyはclaim成功時にRunへ固定する。それ以外のOperationではkindに必要なfieldを省略しない。空文字や直前Runの値から推測しない。
+`claim`ではControllerがRun IDを予約するが、claim成功まではactive Runとして公開しない。また、Issue Observation、Context Manifest、base/headはまだ存在しないため、envelope上の該当fieldを省略する。Execution Policyはclaim成功時にRunへ固定する。それ以外のOperationではkindに必要なfieldを省略しない。空文字や直前Runの値から推測しない。Task ContextはContext Manifest内の`TaskContextRef`から取得し、digestだけでschemaを推測しない。
 
 model-bearing Operationは、同じRun/worktreeを扱う場合もfresh provider process/sessionを作る。継続に必要な情報はcurrent commit、input artifact、versioned Review Resultとして渡し、resume tokenやconversation transcriptを渡さない。
 
@@ -66,7 +72,7 @@ completedAt: 2026-08-11T00:01:00Z
 terminalな`outcome`は次のいずれかとする。
 
 - `succeeded`: Operation contractを満たすoutputがimmutableに固定された
-- `stale_input`: Issue Revision、authority、base/head、input artifactが開始時の期待値と一致しない
+- `stale_input`: Issue Observation、authority、base/head、input artifactが開始時の期待値と一致しない
 - `needs_human`: Issue Workerだけでは選べないauthority、安全、仕様判断が必要
 - `failed_terminal`: retry policyを適用しても自動継続できないexecution failure
 
@@ -86,7 +92,7 @@ Workerはroleとkindが一致するqueued Operationだけをleaseする。attemp
 
 ## Freshness and mutation
 
-各Operationは開始時にinput artifactのdigest/lengthを検証する。model-bearing Operationの直前にはlive Issue body digestを期待Issue Revisionと照合する。sourceを変更するOperationは専用worktreeのcurrent headが`headSha`と一致することを確認する。
+各Operationは開始時にinput artifactのdigest/lengthとschemaを検証する。model-bearing Operationの直前にはlive Issue body digestを期待Issue Observationと照合する。sourceを変更するOperationは専用worktreeのcurrent headが`headSha`と一致することを確認する。
 
 GitHub mutationを伴う`create_pull_request`は、repository、Run、Issue、headを含むstable idempotency markerをPR bodyまたは検索可能なmetadataへ記録する。responseを受け取る前にprocessが停止した場合、retry時は既存PRを検索・照合してからcreateする。
 
