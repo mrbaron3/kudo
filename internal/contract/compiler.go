@@ -323,7 +323,7 @@ func encodeTaskContext(context TaskContext) []byte {
 
 // ReadIssueObservationArtifact は ref と payload を照合し、保存 bytes をそのまま返す。
 func ReadIssueObservationArtifact(ref IssueObservationRef, payload ArtifactPayload) ([]byte, error) {
-	if !validSchemaIdentity(ref.Schema, "kudo.issue-observation/") {
+	if !validSchemaIdentity(ref.Schema, issueObservationSchemaPrefix) {
 		return nil, fmt.Errorf("IssueObservationRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindIssueObservation, ref.Schema, ref.Digest, payload)
@@ -331,7 +331,7 @@ func ReadIssueObservationArtifact(ref IssueObservationRef, payload ArtifactPaylo
 
 // ReadTaskContextArtifact は ref と payload を照合し、再 encode せず保存 bytes を返す。
 func ReadTaskContextArtifact(ref TaskContextRef, payload ArtifactPayload) ([]byte, error) {
-	if !validSchemaIdentity(ref.Schema, "kudo.task-context/") {
+	if !validSchemaIdentity(ref.Schema, taskContextSchemaPrefix) {
 		return nil, fmt.Errorf("TaskContextRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindTaskContext, ref.Schema, ref.Digest, payload)

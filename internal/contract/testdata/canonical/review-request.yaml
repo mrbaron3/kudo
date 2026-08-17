@@ -1,0 +1,16 @@
+schema: "kudo.review-request/v1alpha1"
+kind: "test_validity"
+repository: "github://mrbaron3/kudo"
+issue: "github://mrbaron3/kudo/issues/10"
+headSha: "89abcdef0123456789abcdef0123456789abcdef"
+contextManifest:
+  schema: "kudo.context-manifest/v1alpha1"
+  digest: "sha256:6367ff1a65c2f02218cfb6f40fd9b979447a51d008d54d6f31392ec1c888a1d2"
+executionPolicy:
+  schema: "kudo.execution-policy/v1alpha1"
+  digest: "sha256:3b9f2163726f0420bc286602bea5ad9acb7085aba4a6bdc935138cd0d488feec"
+artifactManifest:
+  schema: "kudo.artifact-manifest/v1alpha1"
+  digest: "sha256:70c968aff9f1111a1ad59636e611f4187337715e192e56e39d2354b270a2bfca"
+policyRefs:
+  - "docs/contracts/issue-contract-v1alpha1.md"

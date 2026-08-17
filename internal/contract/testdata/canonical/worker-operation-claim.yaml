@@ -1,0 +1,13 @@
+schema: "kudo.worker-operation/v1alpha1"
+kind: "claim"
+run: "run-01"
+repository: "github://mrbaron3/kudo"
+issue: "github://mrbaron3/kudo/issues/10"
+contextManifest: null
+executionPolicy:
+  schema: "kudo.execution-policy/v1alpha1"
+  digest: "sha256:3b9f2163726f0420bc286602bea5ad9acb7085aba4a6bdc935138cd0d488feec"
+headSha: null
+inputArtifacts: []
+policyRefs: []
+causation: "transition-00"

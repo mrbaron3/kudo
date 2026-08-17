@@ -120,7 +120,7 @@ func encodeWorkerExecutionPolicy(b *strings.Builder, policy WorkerExecutionPolic
 
 // ReadExecutionPolicyArtifact は ref/payload を照合して保存 bytes を返す。
 func ReadExecutionPolicyArtifact(ref ExecutionPolicyRef, payload ArtifactPayload) ([]byte, error) {
-	if !validSchemaIdentity(ref.Schema, "kudo.execution-policy/") {
+	if !validSchemaIdentity(ref.Schema, executionPolicySchemaPrefix) {
 		return nil, fmt.Errorf("ExecutionPolicyRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindExecutionPolicy, ref.Schema, ref.Digest, payload)

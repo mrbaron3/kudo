@@ -38,7 +38,7 @@ Use deterministic unit tests with fakes at GitHub, process, clock, filesystem, m
 - Treat files under `docs/contracts/` as protocol baselines. Change documentation, parsing, and tests together.
 - Reject missing or ambiguous required input; do not infer contract fields from conversational context.
 - Keep transport failures separate from review verdicts.
-- A changed commit or artifact digest makes the previous review result stale.
+- A changed Context Manifest, Execution Policy, commit, artifact manifest, or policy reference makes the previous review result stale. A changed Issue Observation alone does not: it is audit lineage, not semantic input.
 
 ## コードコメント
 

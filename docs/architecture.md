@@ -197,7 +197,8 @@ retry policy は error class ごとに決める。
 - invalid provider output: bounded retry 後に execution failure として記録し、品質 verdict には変換しない
 - contract/authority conflict、安全判断: `needs_human`
 - review の blocking finding: `request_changes`として修正 Operation へ routing
-- changed Issue/head/artifact: stale。新しい identity で再評価し、古い approval は破棄
+- changed Context Manifest/Execution Policy/head/artifact/policy: stale。新しい identity で再評価し、古い approval は破棄
+- changed Issue Observation のみ（Task Context と Context Manifest が同じ）: audit lineage へ追記し、identity と approval は維持
 
 ## Scheduling and concurrency
 

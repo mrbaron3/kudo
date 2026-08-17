@@ -25,6 +25,26 @@ func writeYAMLNull(b *strings.Builder, indent int, key string) {
 	b.WriteString(": null\n")
 }
 
+// writeYAMLRef は versioned ref を schema と digest の入れ子 mapping として書く。
+// ref は必ず組で比較するため、canonical bytes でも両者を分離しない。
+func writeYAMLRef(b *strings.Builder, indent int, key, schema string, digest Digest) {
+	b.WriteString(strings.Repeat(" ", indent))
+	b.WriteString(key)
+	b.WriteString(":\n")
+	writeYAMLString(b, indent+2, "schema", schema)
+	writeYAMLString(b, indent+2, "digest", string(digest))
+}
+
+// writeYAMLOptionalString は空文字を null として書く。SHA や ref のように空文字が
+// 正当な値になりえない field でだけ使い、「無い」ことを明示する。
+func writeYAMLOptionalString(b *strings.Builder, indent int, key, value string) {
+	if value == "" {
+		writeYAMLNull(b, indent, key)
+		return
+	}
+	writeYAMLString(b, indent, key, value)
+}
+
 func writeYAMLStringList(b *strings.Builder, indent int, key string, values []string) {
 	prefix := strings.Repeat(" ", indent)
 	b.WriteString(prefix)

@@ -119,7 +119,7 @@ dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`�
 
 - Review Result が`needs_human`
 - Contract、Acceptance、authority の矛盾、不足、曖昧さ
-- Issue Observation、authority、base/head の unexpected change による stale input
+- Context Manifest（Task Context、authority content、base）、Execution Policy、head、artifact の unexpected change による stale input
 - 危険な mutation に対する明示的許可不足
 - 自動選択できない仕様判断
 - 必須 credential または外部設定が人間の操作なしに復旧できない状態
