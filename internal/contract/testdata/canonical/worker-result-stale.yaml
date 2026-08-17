@@ -1,0 +1,9 @@
+schema: "kudo.worker-result/v1alpha1"
+operationDigest: "sha256:713a6c2c23b979bf68276d5c257314868c00442d9c9e2ed95c564a7cd05af4ac"
+outcome: "stale_input"
+headSha: null
+changedInputFields:
+  - "executionPolicy"
+  - "headSha"
+outputArtifacts: []
+externalRefs: []

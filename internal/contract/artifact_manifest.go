@@ -2,6 +2,7 @@ package contract
 
 import (
 	"fmt"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -96,6 +97,11 @@ func validateArtifactManifest(manifest ArtifactManifest) error {
 
 // validArtifactName は logical name として許可する形を返す。manifest は name で
 // 引く table であり、大文字小文字や空白の揺れで別 entry を作らせない。
+//
+// 文字種に加えて relative path として正規形であることを課す。この name は Issue Worker が
+// 作り Review Worker が読む値であり、review 側は immutable snapshot を disposable checkout へ
+// 展開する。name を展開先の名前に使う実装は自然に出てくるため、`..` や空 segment を
+// 含む形を manifest の入口で拒否する。
 func validArtifactName(name string) bool {
 	if name == "" || len(name) > 128 {
 		return false
@@ -109,6 +115,14 @@ func validArtifactName(name string) bool {
 				return false
 			}
 		default:
+			return false
+		}
+	}
+	if path.Clean(name) != name {
+		return false
+	}
+	for _, seg := range strings.Split(name, "/") {
+		if seg == "" || seg == "." || seg == ".." {
 			return false
 		}
 	}

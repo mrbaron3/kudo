@@ -32,12 +32,16 @@ func TestExecutionFailureNeverBecomesQualityVerdict(t *testing.T) {
 				t.Fatalf("valid な attempt failure を拒否した: %v", err)
 			}
 
-			if outcome, ok := failure.TerminalOutcome(false); ok {
+			outcome, ok, err := failure.TerminalOutcome(false)
+			if err != nil {
+				t.Fatalf("valid な failure で error を返した: %v", err)
+			}
+			if ok {
 				t.Fatalf("retry budget が残っているのに terminal outcome %q へ落とした", outcome)
 			}
-			outcome, ok := failure.TerminalOutcome(true)
-			if !ok || outcome != OutcomeFailedTerminal {
-				t.Fatalf("TerminalOutcome = (%q, %v), want (%q, true)", outcome, ok, OutcomeFailedTerminal)
+			outcome, ok, err = failure.TerminalOutcome(true)
+			if err != nil || !ok || outcome != OutcomeFailedTerminal {
+				t.Fatalf("TerminalOutcome = (%q, %v, %v), want (%q, true, nil)", outcome, ok, err, OutcomeFailedTerminal)
 			}
 
 			// 同じ文字列が quality verdict として通ってはならない
@@ -99,8 +103,16 @@ func TestAttemptFailureValidation(t *testing.T) {
 			if err := got.Validate(); err == nil {
 				t.Fatal("invalid attempt failure を受理した")
 			}
-			if _, ok := got.TerminalOutcome(true); ok {
-				t.Fatal("invalid attempt failure から terminal outcome を返した")
+			// 不正な record を「retry 余地あり」と同じ戻り値へ潰すと、bounded retry が
+			// 無効化され、escalation も failed_terminal も起きないまま attempt が積まれる。
+			for _, exhausted := range []bool{true, false} {
+				outcome, ok, err := got.TerminalOutcome(exhausted)
+				if err == nil {
+					t.Fatalf("retryBudgetExhausted=%v で invalid な failure record を受理した", exhausted)
+				}
+				if ok || outcome != "" {
+					t.Fatalf("invalid attempt failure から outcome を返した: (%q, %v)", outcome, ok)
+				}
 			}
 		})
 	}

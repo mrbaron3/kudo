@@ -53,11 +53,18 @@ func (f AttemptFailure) Validate() error {
 }
 
 // TerminalOutcome は bounded retry を使い切った failure だけを Operation outcome へ落とす。
-// retry 余地がある間、および failure record 自体が不正な間は ok = false を返し、
-// caller は同じ logical Operation へ次の attempt を積む。
-func (f AttemptFailure) TerminalOutcome(retryBudgetExhausted bool) (OperationOutcome, bool) {
-	if !retryBudgetExhausted || f.Validate() != nil {
-		return "", false
+//
+// ok が false かつ error が nil のときだけ retry 余地があり、caller は同じ logical
+// Operation へ次の attempt を積んでよい。record 自体が保存できない形なら error を返す。
+// 不正な record を「retry 余地あり」と同じ戻り値へ潰すと、bounded retry が無効化され、
+// escalation も failed_terminal も起きないまま attempt が積み続けられる。誤受理は
+// caller から見えないため、判定不能はここで拒否する。
+func (f AttemptFailure) TerminalOutcome(retryBudgetExhausted bool) (OperationOutcome, bool, error) {
+	if err := f.Validate(); err != nil {
+		return "", false, err
 	}
-	return OutcomeFailedTerminal, true
+	if !retryBudgetExhausted {
+		return "", false, nil
+	}
+	return OutcomeFailedTerminal, true, nil
 }

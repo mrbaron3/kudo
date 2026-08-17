@@ -9,7 +9,6 @@ contextManifest:
 executionPolicy:
   schema: "kudo.execution-policy/v1alpha1"
   digest: "sha256:3b9f2163726f0420bc286602bea5ad9acb7085aba4a6bdc935138cd0d488feec"
-baseSha: "0123456789abcdef0123456789abcdef01234567"
 headSha: "89abcdef0123456789abcdef0123456789abcdef"
 inputArtifacts:
   - "sha256:b2148f070c84d00ded2f457bade68f5b514bd430e897bada60582f5cd5ccb4d4"

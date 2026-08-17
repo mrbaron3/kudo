@@ -7,7 +7,6 @@ import (
 )
 
 const (
-	sampleBaseSHA = "0123456789abcdef0123456789abcdef01234567"
 	sampleHeadSHA = "89abcdef0123456789abcdef0123456789abcdef"
 	sampleNextSHA = "fedcba9876543210fedcba9876543210fedcba98"
 )
@@ -41,7 +40,6 @@ func sampleWorkerOperation(t *testing.T) WorkerOperation {
 		Observation:     &observation,
 		ContextManifest: &manifestRef,
 		ExecutionPolicy: policyRef,
-		BaseSHA:         sampleBaseSHA,
 		HeadSHA:         sampleHeadSHA,
 		InputArtifacts:  []Digest{SHA256([]byte("implementation-brief"))},
 		PolicyRefs:      []string{"docs/github-routing.md"},
@@ -82,6 +80,17 @@ func sampleOperationResult(t *testing.T, op WorkerOperation) OperationResult {
 	}
 }
 
+// sampleStaleOperationResult は semantic input が変わって止まった attempt の Result を返す。
+func sampleStaleOperationResult(t *testing.T, op WorkerOperation) OperationResult {
+	t.Helper()
+	result := sampleOperationResult(t, op)
+	result.Outcome = OutcomeStaleInput
+	result.HeadSHA = ""
+	result.OutputArtifacts = nil
+	result.ChangedInputFields = []string{fieldHeadSHA, fieldExecutionPolicy}
+	return result
+}
+
 func requireOperationDigest(t *testing.T, op WorkerOperation) Digest {
 	t.Helper()
 	digest, err := OperationDigest(op)
@@ -96,6 +105,7 @@ func TestWorkerOperationCanonicalGolden(t *testing.T) {
 	requireGolden(t, encodeOperationIdentity(op), "worker-operation.yaml")
 	requireGolden(t, encodeOperationIdentity(sampleClaimOperation(t)), "worker-operation-claim.yaml")
 	requireGolden(t, encodeOperationResultIdentity(sampleOperationResult(t, op)), "worker-result.yaml")
+	requireGolden(t, encodeOperationResultIdentity(sampleStaleOperationResult(t, op)), "worker-result-stale.yaml")
 
 	identity := string(encodeOperationIdentity(op))
 	for _, excluded := range []string{"issueObservation", "bodyDigest", "observedAt", "operationId", "createdAt", "attempt"} {
@@ -168,7 +178,6 @@ func TestOperationDigestCoversSemanticIdentity(t *testing.T) {
 		"context manifest":     func(o *WorkerOperation) { o.ContextManifest = &otherManifest },
 		"manifest ref schema":  func(o *WorkerOperation) { o.ContextManifest = &sameDigestOtherSchema },
 		"execution policy":     func(o *WorkerOperation) { o.ExecutionPolicy = otherPolicy },
-		"base sha":             func(o *WorkerOperation) { o.BaseSHA = sampleNextSHA },
 		"head sha":             func(o *WorkerOperation) { o.HeadSHA = sampleNextSHA },
 		"input artifacts":      func(o *WorkerOperation) { o.InputArtifacts = []Digest{SHA256([]byte("別 input"))} },
 		"input artifact count": func(o *WorkerOperation) { o.InputArtifacts = nil },
@@ -211,7 +220,6 @@ func TestWorkerOperationValidation(t *testing.T) {
 			o.ContextManifest = &ref
 		},
 		"policy schema":      func(o *WorkerOperation) { o.ExecutionPolicy.Schema = "kudo.context-manifest/v1alpha1" },
-		"base sha":           func(o *WorkerOperation) { o.BaseSHA = strings.ToUpper(sampleBaseSHA) },
 		"head sha":           func(o *WorkerOperation) { o.HeadSHA = "" },
 		"artifact digest":    func(o *WorkerOperation) { o.InputArtifacts = []Digest{"sha256:nope"} },
 		"duplicate artifact": func(o *WorkerOperation) { o.InputArtifacts = []Digest{SHA256([]byte("a")), SHA256([]byte("a"))} },
@@ -253,7 +261,6 @@ func TestClaimOperationRejectsContextFields(t *testing.T) {
 	tests := map[string]func(*WorkerOperation){
 		"observation":     func(o *WorkerOperation) { o.Observation = &observation },
 		"manifest":        func(o *WorkerOperation) { o.ContextManifest = &manifestRef },
-		"base sha":        func(o *WorkerOperation) { o.BaseSHA = sampleBaseSHA },
 		"head sha":        func(o *WorkerOperation) { o.HeadSHA = sampleHeadSHA },
 		"input artifacts": func(o *WorkerOperation) { o.InputArtifacts = []Digest{SHA256([]byte("a"))} },
 	}
@@ -414,6 +421,9 @@ func TestOperationResultValidation(t *testing.T) {
 		"duplicate external ref": func(r *OperationResult) {
 			r.ExternalRefs = []string{"github://owner/repo/pull/1", "github://owner/repo/pull/1"}
 		},
+		"changed fields without stale outcome": func(r *OperationResult) {
+			r.ChangedInputFields = []string{"headSha"}
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -427,5 +437,163 @@ func TestOperationResultValidation(t *testing.T) {
 
 	if err := ValidateOperationResult(valid); err != nil {
 		t.Fatalf("valid Result を拒否した: %v", err)
+	}
+}
+
+// `stale_input`は「どの field が変わったか」を Result へ載せる。載せる場所が無いと、
+// Controller は他の outcome と区別のつかない Result を受け取り、comparison の結果を
+// 別経路で持ち回るしかなくなる。field 名の語彙は comparison の出力と共有する。
+func TestStaleInputResultRecordsChangedFields(t *testing.T) {
+	op := sampleWorkerOperation(t)
+	latest := latestFromOperation(op)
+	latest.HeadSHA = sampleNextSHA
+	latest.ExecutionPolicy.Digest = SHA256([]byte("別 policy"))
+	diff := requireOperationComparison(t, op, latest)
+
+	stale := sampleOperationResult(t, op)
+	stale.Outcome = OutcomeStaleInput
+	stale.HeadSHA = ""
+	stale.OutputArtifacts = nil
+	stale.ChangedInputFields = diff.ChangedFields
+	if err := ValidateOperationResult(stale); err != nil {
+		t.Fatalf("comparison が返した changed fields を持つ Result を拒否した: %v", err)
+	}
+	if err := BindOperationResult(op, stale); err != nil {
+		t.Fatalf("stale_input Result を bind できない: %v", err)
+	}
+
+	invalid := map[string][]string{
+		"空":           nil,
+		"未知の field":   {"baseSha"},
+		"重複":          {"headSha", "headSha"},
+		"observation": {"issueObservation"},
+	}
+	for name, fields := range invalid {
+		t.Run(name, func(t *testing.T) {
+			got := stale
+			got.ChangedInputFields = fields
+			if err := ValidateOperationResult(got); err == nil {
+				t.Fatal("記録できない changedInputFields を受理した")
+			}
+		})
+	}
+
+	// 何が変わったかは Result の content identity である。順序は identity ではない。
+	other := stale
+	other.ChangedInputFields = []string{"headSha"}
+	staleDigest, err := OperationResultDigest(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDigest, err := OperationResultDigest(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staleDigest == otherDigest {
+		t.Fatal("changed fields の違いが Result identity へ反映されない")
+	}
+
+	reordered := stale
+	reordered.ChangedInputFields = []string{"headSha", "executionPolicy"}
+	reorderedDigest, err := OperationResultDigest(reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reorderedDigest != staleDigest {
+		t.Fatal("changed fields の並び替えで Result identity が変化")
+	}
+}
+
+// attempt failure は verdict や Result と同じ field で表現しない、を Operation 側でも
+// 型で固定する。protocol 文書は両 role へ同じ規律を課している。
+func TestOperationAttemptOutcomeSeparatesResultAndFailure(t *testing.T) {
+	result := sampleOperationResult(t, sampleWorkerOperation(t))
+	failure := sampleAttemptFailure()
+
+	if err := (OperationAttemptOutcome{Result: &result}).Validate(); err != nil {
+		t.Fatalf("Result だけを持つ attempt outcome を拒否した: %v", err)
+	}
+	if err := (OperationAttemptOutcome{Failure: &failure}).Validate(); err != nil {
+		t.Fatalf("failure だけを持つ attempt outcome を拒否した: %v", err)
+	}
+	if err := (OperationAttemptOutcome{Result: &result, Failure: &failure}).Validate(); err == nil {
+		t.Fatal("Result と failure を同時に持つ attempt outcome を受理した")
+	}
+	if err := (OperationAttemptOutcome{}).Validate(); err == nil {
+		t.Fatal("結末を持たない attempt outcome を受理した")
+	}
+}
+
+// succeeded は「Operation contract を満たす output が immutable に固定された」ことを意味する。
+// output を何も残さない succeeded を通すと、後続 gate は存在しない artifact を前提に進む。
+func TestSucceededResultRequiresKindOutput(t *testing.T) {
+	producing := []OperationKind{
+		OperationClaim,
+		OperationAuthorTests,
+		OperationReviseTests,
+		OperationImplement,
+		OperationRepairImplementation,
+	}
+	for _, kind := range producing {
+		t.Run(string(kind), func(t *testing.T) {
+			op := sampleWorkerOperation(t)
+			op.Kind = kind
+			if kind == OperationClaim {
+				op = sampleClaimOperation(t)
+			}
+			result := sampleOperationResult(t, op)
+			if kind == OperationClaim {
+				result.HeadSHA = ""
+			}
+			if err := BindOperationResult(op, result); err != nil {
+				t.Fatalf("output artifact を持つ succeeded を拒否した: %v", err)
+			}
+
+			empty := result
+			empty.OutputArtifacts = nil
+			if err := BindOperationResult(op, empty); err == nil {
+				t.Fatal("output artifact を持たない succeeded を受理した")
+			}
+
+			// terminal な非 succeeded は output を持たなくてよい
+			staleResult := sampleStaleOperationResult(t, op)
+			if err := BindOperationResult(op, staleResult); err != nil {
+				t.Fatalf("stale_input Result を拒否した: %v", err)
+			}
+		})
+	}
+}
+
+// create_pull_request は source head を進めない Operation であり、承認済み head をそのまま
+// 観測して PR を作る。Result が別の head を報告できると、review 済みでない head に対する
+// PR が gate を通ってしまう。作成した PR の reference も succeeded の必須出力である。
+func TestCreatePullRequestBindsApprovedHeadAndReference(t *testing.T) {
+	op := sampleWorkerOperation(t)
+	op.Kind = OperationCreatePullRequest
+
+	result := sampleOperationResult(t, op)
+	result.HeadSHA = op.HeadSHA
+	result.OutputArtifacts = nil
+	result.ExternalRefs = []string{"github://mrbaron3/kudo/pull/42"}
+	if err := BindOperationResult(op, result); err != nil {
+		t.Fatalf("承認済み head と PR reference を持つ Result を拒否した: %v", err)
+	}
+
+	movedHead := result
+	movedHead.HeadSHA = sampleNextSHA
+	if err := BindOperationResult(op, movedHead); err == nil {
+		t.Fatal("承認済み head と異なる head を報告した Result を受理した")
+	}
+
+	noReference := result
+	noReference.ExternalRefs = nil
+	if err := BindOperationResult(op, noReference); err == nil {
+		t.Fatal("PR reference を持たない succeeded を受理した")
+	}
+
+	// 他の kind は新しい head を固定してよい
+	authoring := sampleWorkerOperation(t)
+	if err := BindOperationResult(authoring, sampleOperationResult(t, authoring)); err != nil {
+		t.Fatalf("head を進める kind の Result を拒否した: %v", err)
 	}
 }

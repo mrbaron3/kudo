@@ -1,7 +1,8 @@
 schema: "kudo.worker-result/v1alpha1"
-operationDigest: "sha256:5a484dfa9b22cfab56b0488a28780d2e9fbcf451e36d5a79ce9721f8a68b0249"
+operationDigest: "sha256:713a6c2c23b979bf68276d5c257314868c00442d9c9e2ed95c564a7cd05af4ac"
 outcome: "succeeded"
 headSha: "fedcba9876543210fedcba9876543210fedcba98"
+changedInputFields: []
 outputArtifacts:
   - "sha256:d53effa6478cae3a5486c76584fd4b911e846477d46596e9f43531afe8eaa721"
   - "sha256:e45b022999ae12524b2140146c9b2f9d6f4365f9057d810328aeb81815ec6f23"

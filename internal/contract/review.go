@@ -3,6 +3,7 @@ package contract
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -251,17 +252,24 @@ func ReviewResultDigest(result ReviewResult) (Digest, error) {
 	return SHA256(encodeReviewResultIdentity(result)), nil
 }
 
+// encodeReviewResultIdentity は finding を ID の lexicographic 順へ並べ替えて encode する。
+// 並びは reviewer が列挙した順序であって判断そのものではなく、model provider は同じ
+// 判断でも順序を再現しない。ValidateReviewResult が ID の一意性を保証しているため、
+// ID 順は決定論的である。
 func encodeReviewResultIdentity(result ReviewResult) []byte {
+	findings := append([]ReviewFinding(nil), result.Findings...)
+	slices.SortFunc(findings, func(a, b ReviewFinding) int { return strings.Compare(a.ID, b.ID) })
+
 	var b strings.Builder
 	writeYAMLString(&b, 0, "schema", result.Schema)
 	writeYAMLString(&b, 0, "requestDigest", string(result.RequestDigest))
 	writeYAMLString(&b, 0, "verdict", string(result.Verdict))
-	if len(result.Findings) == 0 {
+	if len(findings) == 0 {
 		b.WriteString("findings: []\n")
 		return []byte(b.String())
 	}
 	b.WriteString("findings:\n")
-	for _, finding := range result.Findings {
+	for _, finding := range findings {
 		b.WriteString("  - id: ")
 		b.WriteString(yamlString(finding.ID))
 		b.WriteByte('\n')

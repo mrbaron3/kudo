@@ -18,6 +18,28 @@ const (
 	ChangedSemanticInput SemanticComparison = "changed_semantic_input"
 )
 
+// semantic input field の名前は comparison の出力であると同時に、`stale_input` Result の
+// 記録欄でもある。両者が別の語彙を持つと、Controller は受け取った changedInputFields を
+// comparison の結果と突き合わせられない。
+const (
+	fieldContextManifest  = "contextManifest"
+	fieldExecutionPolicy  = "executionPolicy"
+	fieldHeadSHA          = "headSha"
+	fieldInputArtifacts   = "inputArtifacts"
+	fieldPolicyRefs       = "policyRefs"
+	fieldArtifactManifest = "artifactManifest"
+)
+
+// operationInputFields は Operation の semantic input field 名である。
+// Issue Observation は identity ではないため、ここには含まれない。
+var operationInputFields = map[string]bool{
+	fieldContextManifest: true,
+	fieldExecutionPolicy: true,
+	fieldHeadSHA:         true,
+	fieldInputArtifacts:  true,
+	fieldPolicyRefs:      true,
+}
+
 // SemanticDifference は再利用判定と、その根拠を決定論的に返す。
 //
 // ObservationChanged は identity の判定には影響しない。exact body が変わったことを
@@ -76,19 +98,19 @@ func CompareOperationInput(op WorkerOperation, latest LatestOperationInput) (Sem
 
 	var changed []string
 	if *op.ContextManifest != latest.ContextManifest {
-		changed = append(changed, "contextManifest")
+		changed = append(changed, fieldContextManifest)
 	}
 	if op.ExecutionPolicy != latest.ExecutionPolicy {
-		changed = append(changed, "executionPolicy")
+		changed = append(changed, fieldExecutionPolicy)
 	}
 	if op.HeadSHA != latest.HeadSHA {
-		changed = append(changed, "headSha")
+		changed = append(changed, fieldHeadSHA)
 	}
 	if !slices.Equal(canonicalDigestStrings(op.InputArtifacts), canonicalDigestStrings(latest.InputArtifacts)) {
-		changed = append(changed, "inputArtifacts")
+		changed = append(changed, fieldInputArtifacts)
 	}
 	if !slices.Equal(canonicalStringSet(op.PolicyRefs), canonicalStringSet(latest.PolicyRefs)) {
-		changed = append(changed, "policyRefs")
+		changed = append(changed, fieldPolicyRefs)
 	}
 	return newSemanticDifference(changed, *op.Observation != latest.Observation), nil
 }
@@ -108,19 +130,19 @@ func CompareReviewInput(req ReviewRequest, latest LatestReviewInput) (SemanticDi
 
 	var changed []string
 	if req.ContextManifest != latest.ContextManifest {
-		changed = append(changed, "contextManifest")
+		changed = append(changed, fieldContextManifest)
 	}
 	if req.ExecutionPolicy != latest.ExecutionPolicy {
-		changed = append(changed, "executionPolicy")
+		changed = append(changed, fieldExecutionPolicy)
 	}
 	if req.HeadSHA != latest.HeadSHA {
-		changed = append(changed, "headSha")
+		changed = append(changed, fieldHeadSHA)
 	}
 	if req.ArtifactManifest != latest.ArtifactManifest {
-		changed = append(changed, "artifactManifest")
+		changed = append(changed, fieldArtifactManifest)
 	}
 	if !slices.Equal(canonicalStringSet(req.PolicyRefs), canonicalStringSet(latest.PolicyRefs)) {
-		changed = append(changed, "policyRefs")
+		changed = append(changed, fieldPolicyRefs)
 	}
 	return newSemanticDifference(changed, req.Observation != latest.Observation), nil
 }

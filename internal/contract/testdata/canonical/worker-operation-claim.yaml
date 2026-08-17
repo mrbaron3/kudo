@@ -7,7 +7,6 @@ contextManifest: null
 executionPolicy:
   schema: "kudo.execution-policy/v1alpha1"
   digest: "sha256:3b9f2163726f0420bc286602bea5ad9acb7085aba4a6bdc935138cd0d488feec"
-baseSha: null
 headSha: null
 inputArtifacts: []
 policyRefs: []

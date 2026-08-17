@@ -290,7 +290,6 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 		Issue           string     `json:"issue"`
 		ContextManifest *oracleRef `json:"contextManifest"`
 		ExecutionPolicy oracleRef  `json:"executionPolicy"`
-		BaseSHA         *string    `json:"baseSha"`
 		HeadSHA         *string    `json:"headSha"`
 		InputArtifacts  []string   `json:"inputArtifacts"`
 		PolicyRefs      []string   `json:"policyRefs"`
@@ -309,8 +308,8 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 	}) {
 		t.Fatalf("contextManifest = %+v", operation.ContextManifest)
 	}
-	if operation.BaseSHA == nil || *operation.BaseSHA != op.BaseSHA || operation.HeadSHA == nil {
-		t.Fatalf("base/head = %v / %v", operation.BaseSHA, operation.HeadSHA)
+	if operation.HeadSHA == nil || *operation.HeadSHA != op.HeadSHA {
+		t.Fatalf("head = %v", operation.HeadSHA)
 	}
 	if operation.Causation != op.CausationID || len(operation.PolicyRefs) != len(op.PolicyRefs) {
 		t.Fatalf("causation/policyRefs = %q / %v", operation.Causation, operation.PolicyRefs)
@@ -319,15 +318,27 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 	// claim は Context Manifest と base/head を null として区別できなければならない
 	claim := decodeOracle[struct {
 		ContextManifest *oracleRef `json:"contextManifest"`
-		BaseSHA         *string    `json:"baseSha"`
 		HeadSHA         *string    `json:"headSha"`
 		InputArtifacts  []string   `json:"inputArtifacts"`
 	}](t, yamlOracle(t, encodeOperationIdentity(sampleClaimOperation(t))))
-	if claim.ContextManifest != nil || claim.BaseSHA != nil || claim.HeadSHA != nil {
+	if claim.ContextManifest != nil || claim.HeadSHA != nil {
 		t.Fatalf("claim の未解決 field が null として復元されない: %+v", claim)
 	}
 	if claim.InputArtifacts == nil || len(claim.InputArtifacts) != 0 {
 		t.Fatalf("空 list が %v として復元された", claim.InputArtifacts)
+	}
+
+	// stale_input Result は「どの field が変わったか」を独立した list として復元できる
+	stale := decodeOracle[struct {
+		Outcome            string   `json:"outcome"`
+		HeadSHA            *string  `json:"headSha"`
+		ChangedInputFields []string `json:"changedInputFields"`
+	}](t, yamlOracle(t, encodeOperationResultIdentity(sampleStaleOperationResult(t, op))))
+	if stale.Outcome != string(OutcomeStaleInput) || stale.HeadSHA != nil {
+		t.Fatalf("stale_input Result が復元されない: %+v", stale)
+	}
+	if !reflect.DeepEqual(stale.ChangedInputFields, []string{"executionPolicy", "headSha"}) {
+		t.Fatalf("changedInputFields = %v", stale.ChangedInputFields)
 	}
 
 	req := sampleReviewRequest(t)

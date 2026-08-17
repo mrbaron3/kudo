@@ -31,20 +31,29 @@ const (
 
 // operationKindRule は kind ごとの field 要件を固定する。
 type operationKindRule struct {
-	// resolvedContext は Issue Observation、Context Manifest、base/head SHA を必須にする。
+	// resolvedContext は Issue Observation、Context Manifest、head SHA を必須にする。
 	// claim はこれらを作る Operation なので開始時点では持てず、Result も head を返さない。
 	resolvedContext bool
 	// priorArtifacts は Required input が先行 artifact を名指しする kind で true。
 	priorArtifacts bool
+	// outputArtifacts は succeeded が新しい artifact（Context Manifest、test plan、
+	// evidence 等）を固定しなければならない kind で true。空の成功を通すと、後続 gate は
+	// 存在しない artifact を前提に進む。どの logical name を必須にするかは protocol 文書側の
+	// 規定であり、binding 境界では「output を残したか」だけを検証する。
+	outputArtifacts bool
+	// preservesHead は承認済み head を進めず観測するだけの kind で true。
+	preservesHead bool
+	// externalRefs は成功が外部 mutation の reference を残す kind で true。
+	externalRefs bool
 }
 
 var operationKindRules = map[OperationKind]operationKindRule{
-	OperationClaim:                {},
-	OperationAuthorTests:          {resolvedContext: true},
-	OperationReviseTests:          {resolvedContext: true, priorArtifacts: true},
-	OperationImplement:            {resolvedContext: true, priorArtifacts: true},
-	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true},
-	OperationCreatePullRequest:    {resolvedContext: true, priorArtifacts: true},
+	OperationClaim:                {outputArtifacts: true},
+	OperationAuthorTests:          {resolvedContext: true, outputArtifacts: true},
+	OperationReviseTests:          {resolvedContext: true, priorArtifacts: true, outputArtifacts: true},
+	OperationImplement:            {resolvedContext: true, priorArtifacts: true, outputArtifacts: true},
+	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true, outputArtifacts: true},
+	OperationCreatePullRequest:    {resolvedContext: true, priorArtifacts: true, preservesHead: true, externalRefs: true},
 }
 
 // WorkerOperation は Controller が queue へ記録する run-once Operation である。
@@ -53,6 +62,11 @@ var operationKindRules = map[OperationKind]operationKindRule{
 // 変わった再観測で Operation identity が変わると、HTML comment の編集や retry のたびに
 // 別 Operation になり、既存 approval と重複判定が壊れる。semantic input は
 // ContextManifest に閉じており、validator はその ref を opaque な組として扱う。
+//
+// base SHA を持たないのは意図的である。base は claim が Context Manifest へ pin する
+// 解決結果であり、envelope へ複製すると、validator が opaque に扱う manifest ref と
+// cross-check できない identity を二重に抱える。repository を Issue reference から
+// 導出するのと同じ理由で、同じ値の出所は一つに保つ。
 //
 // OperationID は logical Operation の stable identity であり、content identity である
 // digest とも execution attempt とも別である。CreatedAt は queue 時刻であり、
@@ -70,7 +84,6 @@ type WorkerOperation struct {
 	ContextManifest *ContextManifestRef
 	ExecutionPolicy ExecutionPolicyRef
 
-	BaseSHA        string
 	HeadSHA        string
 	InputArtifacts []Digest
 	PolicyRefs     []string
@@ -127,8 +140,8 @@ func validateOperationContext(op WorkerOperation, rule operationKindRule) error 
 			return fmt.Errorf("kind %q はまだ Issue Observation を持てない", op.Kind)
 		case op.ContextManifest != nil:
 			return fmt.Errorf("kind %q はまだ Context Manifest を持てない", op.Kind)
-		case op.BaseSHA != "" || op.HeadSHA != "":
-			return fmt.Errorf("kind %q はまだ base/head を持てない", op.Kind)
+		case op.HeadSHA != "":
+			return fmt.Errorf("kind %q はまだ head を持てない", op.Kind)
 		case len(op.InputArtifacts) > 0:
 			return fmt.Errorf("kind %q はまだ input artifact を持てない", op.Kind)
 		}
@@ -146,9 +159,6 @@ func validateOperationContext(op WorkerOperation, rule operationKindRule) error 
 	}
 	if err := validateVersionedRef("contextManifest", op.ContextManifest.Schema, op.ContextManifest.Digest, contextManifestSchemaPrefix); err != nil {
 		return err
-	}
-	if !validGitSHA(op.BaseSHA) {
-		return fmt.Errorf("baseSha が不正: %q", op.BaseSHA)
 	}
 	if !validGitSHA(op.HeadSHA) {
 		return fmt.Errorf("headSha が不正: %q", op.HeadSHA)
@@ -183,7 +193,6 @@ func encodeOperationIdentity(op WorkerOperation) []byte {
 		writeYAMLRef(&b, 0, "contextManifest", op.ContextManifest.Schema, op.ContextManifest.Digest)
 	}
 	writeYAMLRef(&b, 0, "executionPolicy", op.ExecutionPolicy.Schema, op.ExecutionPolicy.Digest)
-	writeYAMLOptionalString(&b, 0, "baseSha", op.BaseSHA)
 	writeYAMLOptionalString(&b, 0, "headSha", op.HeadSHA)
 	writeYAMLStringList(&b, 0, "inputArtifacts", canonicalDigestStrings(op.InputArtifacts))
 	writeYAMLStringList(&b, 0, "policyRefs", canonicalStringSet(op.PolicyRefs))
@@ -215,15 +224,19 @@ var operationOutcomes = map[OperationOutcome]bool{
 // HeadSHA は Operation が固定した head であり、入力 head と一致するとは限らない。
 // AttemptID と CompletedAt は attempt の記録であり、content identity へ含めない。
 // retry 可能な失敗は Result にせず、AttemptFailure として記録する。
+// ChangedInputFields は stale_input と判定した根拠であり、CompareOperationInput が
+// 返す SemanticDifference.ChangedFields をそのまま載せる。Controller が「何が変わって
+// 止まったか」を Result 以外の経路から補う必要をなくすため、他の outcome では空にする。
 type OperationResult struct {
-	Schema          string
-	OperationDigest Digest
-	AttemptID       string
-	Outcome         OperationOutcome
-	HeadSHA         string
-	OutputArtifacts []Digest
-	ExternalRefs    []string
-	CompletedAt     time.Time
+	Schema             string
+	OperationDigest    Digest
+	AttemptID          string
+	Outcome            OperationOutcome
+	HeadSHA            string
+	ChangedInputFields []string
+	OutputArtifacts    []Digest
+	ExternalRefs       []string
+	CompletedAt        time.Time
 }
 
 // ValidateOperationResult は Result 単体の整合性を検証する。
@@ -246,10 +259,39 @@ func ValidateOperationResult(result OperationResult) error {
 	if result.CompletedAt.IsZero() {
 		return errors.New("completedAt が空")
 	}
+	if err := validateChangedInputFields(result.Outcome, result.ChangedInputFields); err != nil {
+		return err
+	}
 	if err := validateDigestSet("outputArtifacts", result.OutputArtifacts); err != nil {
 		return err
 	}
 	return validateLineSet("externalRefs", result.ExternalRefs)
+}
+
+// validateChangedInputFields は stale_input の根拠が comparison と同じ語彙で記録されて
+// いることを保証する。自由文字列を許すと、Controller は Result の値を comparison 結果と
+// 突き合わせられず、根拠の記録が飾りになる。
+func validateChangedInputFields(outcome OperationOutcome, fields []string) error {
+	if outcome != OutcomeStaleInput {
+		if len(fields) > 0 {
+			return fmt.Errorf("outcome %q は changedInputFields を持てない", outcome)
+		}
+		return nil
+	}
+	if len(fields) == 0 {
+		return errors.New("stale_input はどの field が変わったかを記録しなければならない")
+	}
+	seen := map[string]bool{}
+	for i, field := range fields {
+		if !operationInputFields[field] {
+			return fmt.Errorf("changedInputFields[%d] が semantic input field でない: %q", i, field)
+		}
+		if seen[field] {
+			return fmt.Errorf("changedInputFields[%d] が重複: %s", i, field)
+		}
+		seen[field] = true
+	}
+	return nil
 }
 
 // OperationResultDigest は Result の content identity を返す。
@@ -268,6 +310,7 @@ func encodeOperationResultIdentity(result OperationResult) []byte {
 	writeYAMLString(&b, 0, "operationDigest", string(result.OperationDigest))
 	writeYAMLString(&b, 0, "outcome", string(result.Outcome))
 	writeYAMLOptionalString(&b, 0, "headSha", result.HeadSHA)
+	writeYAMLStringList(&b, 0, "changedInputFields", canonicalStringSet(result.ChangedInputFields))
 	writeYAMLStringList(&b, 0, "outputArtifacts", canonicalDigestStrings(result.OutputArtifacts))
 	writeYAMLStringList(&b, 0, "externalRefs", canonicalStringSet(result.ExternalRefs))
 	return []byte(b.String())
@@ -275,7 +318,7 @@ func encodeOperationResultIdentity(result OperationResult) []byte {
 
 // BindOperationResult は Result が参照する Operation identity を再計算して照合する。
 //
-// digest は Context Manifest ref、Execution Policy ref、base/head、input artifact、
+// digest は Context Manifest ref、Execution Policy ref、head、input artifact、
 // policy ref を含む semantic identity 全体を覆うため、いずれかが変わった Operation へ
 // 以前の Result を bind できない。Issue Observation だけの差分は identity ではないため
 // binding を壊さない。
@@ -299,5 +342,50 @@ func BindOperationResult(op WorkerOperation, result OperationResult) error {
 	case rule.resolvedContext && result.Outcome == OutcomeSucceeded && result.HeadSHA == "":
 		return fmt.Errorf("kind %q の succeeded Result は head を固定しなければならない", op.Kind)
 	}
+	if result.Outcome != OutcomeSucceeded {
+		return nil
+	}
+	return bindSucceededOutput(op, result, rule)
+}
+
+// bindSucceededOutput は kind ごとの成功条件を binding 境界で検証する。
+//
+// terminal success はそのまま次 gate の前提になるため、成功したと主張するだけで output を
+// 残さない Result を通すと、後続 Operation と review は存在しない artifact を入力に選ぶ。
+func bindSucceededOutput(op WorkerOperation, result OperationResult, rule operationKindRule) error {
+	if rule.outputArtifacts && len(result.OutputArtifacts) == 0 {
+		return fmt.Errorf("kind %q の succeeded Result は output artifact を固定しなければならない", op.Kind)
+	}
+	if rule.externalRefs && len(result.ExternalRefs) == 0 {
+		return fmt.Errorf("kind %q の succeeded Result は外部 mutation の reference を残さなければならない", op.Kind)
+	}
+	// head を進めない kind が別 head を報告できると、review していない head に対する
+	// 外部 mutation が gate を通る。
+	if rule.preservesHead && result.HeadSHA != op.HeadSHA {
+		return fmt.Errorf("kind %q の Result head は承認済み head と一致しなければならない: got %s, want %s",
+			op.Kind, result.HeadSHA, op.HeadSHA)
+	}
 	return nil
+}
+
+// OperationAttemptOutcome は 1 attempt の結末である。Review 側の ReviewAttemptOutcome と
+// 同じく、terminal Result と execution failure を同時に持つ attempt を型で禁止する。
+// 両方を持てると、失敗した attempt が terminal Result として commit されうる。
+type OperationAttemptOutcome struct {
+	Result  *OperationResult
+	Failure *AttemptFailure
+}
+
+// Validate は結末が Result と failure のどちらか一方だけであることを保証する。
+func (o OperationAttemptOutcome) Validate() error {
+	switch {
+	case o.Result != nil && o.Failure != nil:
+		return errors.New("terminal Result と attempt failure を同時に持てない")
+	case o.Result != nil:
+		return ValidateOperationResult(*o.Result)
+	case o.Failure != nil:
+		return o.Failure.Validate()
+	default:
+		return errors.New("attempt outcome が Result も failure も持たない")
+	}
 }

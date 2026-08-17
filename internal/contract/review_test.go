@@ -425,6 +425,33 @@ func TestReviewResultDigest(t *testing.T) {
 		})
 	}
 
+	// finding の並びは reviewer の出力順であり「同じ判断」の一部ではない。
+	// model provider は順序を再現しないため、並びが identity に効くと同じ判断が
+	// 別 Result として記録され、重複判定と再利用が壊れる。
+	t.Run("findings 並び替え", func(t *testing.T) {
+		second := base.Findings[0]
+		second.ID = "F-2"
+		second.Severity = SeverityAdvisory
+		second.Summary = "test 名が AC を参照していない"
+
+		ordered := base
+		ordered.Findings = []ReviewFinding{base.Findings[0], second}
+		reordered := base
+		reordered.Findings = []ReviewFinding{second, base.Findings[0]}
+
+		orderedDigest, err := ReviewResultDigest(ordered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reorderedDigest, err := ReviewResultDigest(reordered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if orderedDigest != reorderedDigest {
+			t.Fatal("finding の並び替えで Review Result digest が変化")
+		}
+	})
+
 	invalid := base
 	invalid.Verdict = VerdictApprove
 	if _, err := ReviewResultDigest(invalid); err == nil {

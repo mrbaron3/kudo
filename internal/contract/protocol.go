@@ -24,6 +24,10 @@ const (
 // validProtocolID は Operation、Run、attempt、finding 等の identifier を検証する。
 // canonical bytes と database key の両方へ載るため、空白・control character・
 // 長大な値を受け付けない。
+//
+// 先頭は英数字に限る。Run は workspace を持つため identifier は path segment へも
+// 載りうるが、`.` や `..` は protocol 層を通ってから filesystem 層で弾かれる（あるいは
+// 弾かれない）ことになる。信頼境界で拒否して、失敗を保存段階まで遅らせない。
 func validProtocolID(value string) bool {
 	if value == "" || len(value) > 128 {
 		return false
@@ -33,6 +37,9 @@ func validProtocolID(value string) bool {
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
 		case c == '-', c == '_', c == '.':
+			if i == 0 {
+				return false
+			}
 		default:
 			return false
 		}

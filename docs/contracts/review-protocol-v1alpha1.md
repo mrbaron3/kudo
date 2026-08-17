@@ -65,7 +65,7 @@ entries:
     digest: "sha256:<digest>"
 ```
 
-manifestはlogical nameで引くtableである。nameは`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`だけを許可し、重複を拒否する。canonical encodeではnameのlexicographic順へ並べ替えるため、producerの列挙順はmanifest identityを変えない。`length`はcanonical encodingの規則に従い、implicit intではなくdecimal stringとしてencodeする。payloadを持つartifactは、bytesとmetadataが食い違ったままreviewへ渡らないよう、length・media type・digestをpayloadから導出する。
+manifestはlogical nameで引くtableである。nameは`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`だけを許可し、重複を拒否する。加えてnameはrelative pathとして正規形でなければならない。空segment、`.`、`..`、末尾`/`を含む形は受理しない。Review Workerはimmutable snapshotをdisposable checkoutへ展開するため、nameが展開先の名前として使われうる。traversal形状はmanifestの入口で拒否し、下流実装の規律に委ねない。canonical encodeではnameのlexicographic順へ並べ替えるため、producerの列挙順はmanifest identityを変えない。`length`はcanonical encodingの規則に従い、implicit intではなくdecimal stringとしてencodeする。payloadを持つartifactは、bytesとmetadataが食い違ったままreviewへ渡らないよう、length・media type・digestをpayloadから導出する。
 
 `test_validity`では最低限、次を参照できるようにする。
 
@@ -86,6 +86,8 @@ manifestはlogical nameで引くtableである。nameは`[a-z0-9]`で始まる�
 - GREEN command evidence
 - refactor後のrequired checksとIssue Verification evidence
 - Pull Requestに記載するsummary、risk、manual verificationのdraft artifact
+
+上記のartifactに対応するlogical nameの必須集合をrequest bindingで検証するかは、命名規約を確定させる別change（[#43](https://github.com/mrbaron3/kudo/issues/43)）で決める。現時点のvalidatorはmanifestが非空であることと、各entryのname・media type・length・digestの形だけを検証する。
 
 artifactのbytesが変われば新しいdigest、Artifact Manifest、Review Requestを作る。test patchをimplementation phaseで変更した場合、以前のtest validity approvalを再利用せず、test review gateへ戻る。
 
@@ -119,7 +121,7 @@ verdictは次のいずれかとする。
 
 findingは`expected`、`observed`、`evidenceRefs`を持ち、単なる感想にしない。Review Resultはproducerのworktree、branch、PRを変更せず、新しいartifactとして保存する。
 
-Result identityは、schema、参照するrequest digest、verdict、findingから決まる。`reviewRunId`と`createdAt`は含めないため、同じrequestへの同じ判断は同じcontent identityを持つ。binding検証はResultが参照するrequest digestの一致で行う。
+Result identityは、schema、参照するrequest digest、verdict、findingから決まる。`reviewRunId`と`createdAt`は含めないため、同じrequestへの同じ判断は同じcontent identityを持つ。findingは`id`のlexicographic順へ正規化してencodeする。reviewerが列挙した順序は判断の一部ではなく、model providerは同じ判断でも順序を再現しないため、並びだけが違うResultを別identityにしない。`evidenceRefs`も同じ理由で順序を持たない集合として扱う。binding検証はResultが参照するrequest digestの一致で行う。
 
 `request_changes`後の修正Operationには、Issue Observation、Context Manifestが指すTask Context、対象head、Review Result、必要なartifact referenceだけを渡す。以前のImplementation/Review sessionをresumeしない。修正後は新しいheadとrequest digestで再reviewする。
 

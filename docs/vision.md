@@ -28,7 +28,7 @@ Kudo は、テスト作成、独立 review、実装、refactor、検証、PR 作
 - 最終 head に対する独立した final implementation approval
 - 実行した必須 check、その結果、残存 risk を含む Pull Request
 
-artifact、Review Request、Review Result は immutable identity を持つ。Issue Observation、head SHA、artifact digest のいずれかが変われば、以前の review approval は再利用しない。
+artifact、Review Request、Review Result は immutable identity を持つ。Context Manifest、Execution Policy、head SHA、artifact digest、policy reference のいずれかが変われば、以前の review approval は再利用しない。Issue Observation だけの変化は audit lineage への追記であり、approval を stale にしない。
 
 ## Product behavior
 

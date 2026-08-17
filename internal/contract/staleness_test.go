@@ -2,6 +2,7 @@ package contract
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -167,6 +168,93 @@ func TestTaskContextDifferenceIsStale(t *testing.T) {
 	if !got.ObservationChanged {
 		t.Fatal("Observation の変化が報告されない")
 	}
+}
+
+// requireFieldPartition は type の field 名が、渡した group の和集合とちょうど一致することを検証する。
+// 分類漏れの field をそのまま通すと、この test は「意図した集合」ではなく「今の実装」を写すだけになる。
+func requireFieldPartition(t *testing.T, typ reflect.Type, groups ...[]string) {
+	t.Helper()
+	want := map[string]bool{}
+	for _, group := range groups {
+		for _, name := range group {
+			if want[name] {
+				t.Fatalf("%s: field %q が複数の group に属している", typ.Name(), name)
+			}
+			want[name] = true
+		}
+	}
+	for i := range typ.NumField() {
+		name := typ.Field(i).Name
+		if !want[name] {
+			t.Fatalf("%s.%s が semantic input / audit / 非入力のどれにも分類されていない", typ.Name(), name)
+		}
+		delete(want, name)
+	}
+	for name := range want {
+		t.Fatalf("%s に存在しない field %q を分類している", typ.Name(), name)
+	}
+}
+
+// content identity が覆う semantic input と、staleness 比較が覆う入力は同じ集合でなければならない。
+// 片側にだけ field を足すと「digest は別 identity、comparison は同じ入力」という状態が作れ、
+// 変わった入力へ古い Result と approval を再利用する経路になる。
+func TestOperationIdentityAndComparisonCoverSameInput(t *testing.T) {
+	semantic := []string{"ContextManifest", "ExecutionPolicy", "HeadSHA", "InputArtifacts", "PolicyRefs"}
+	// Observation は identity ではないが、lineage へ追記する signal として比較入力に含む。
+	auditOnly := []string{"Observation"}
+	requireFieldPartition(t, reflect.TypeOf(WorkerOperation{}), semantic, auditOnly,
+		[]string{"Schema", "OperationID", "RunID", "Kind", "Issue", "CausationID", "CreatedAt"})
+	requireFieldPartition(t, reflect.TypeOf(LatestOperationInput{}), semantic, auditOnly)
+
+	op := sampleWorkerOperation(t)
+	baseDigest := requireOperationDigest(t, op)
+	tests := map[string]struct {
+		field  string
+		change func(*WorkerOperation, *LatestOperationInput)
+	}{
+		"context manifest": {"contextManifest", func(o *WorkerOperation, l *LatestOperationInput) {
+			ref := ContextManifestRef{Schema: o.ContextManifest.Schema, Digest: SHA256([]byte("別 manifest"))}
+			o.ContextManifest, l.ContextManifest = &ref, ref
+		}},
+		"execution policy": {"executionPolicy", func(o *WorkerOperation, l *LatestOperationInput) {
+			o.ExecutionPolicy.Digest = SHA256([]byte("別 policy"))
+			l.ExecutionPolicy = o.ExecutionPolicy
+		}},
+		"head": {"headSha", func(o *WorkerOperation, l *LatestOperationInput) {
+			o.HeadSHA, l.HeadSHA = sampleNextSHA, sampleNextSHA
+		}},
+		"input artifacts": {"inputArtifacts", func(o *WorkerOperation, l *LatestOperationInput) {
+			o.InputArtifacts = []Digest{SHA256([]byte("別 input"))}
+			l.InputArtifacts = append([]Digest(nil), o.InputArtifacts...)
+		}},
+		"policy refs": {"policyRefs", func(o *WorkerOperation, l *LatestOperationInput) {
+			o.PolicyRefs = []string{"docs/workflow.md"}
+			l.PolicyRefs = append([]string(nil), o.PolicyRefs...)
+		}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			changed := sampleWorkerOperation(t)
+			latest := latestFromOperation(changed)
+			tt.change(&changed, &latest)
+
+			if requireOperationDigest(t, changed) == baseDigest {
+				t.Fatalf("%s の変更で Operation digest が変わらない", tt.field)
+			}
+			// 変更後の入力を「最新入力」として渡した元の Operation は stale でなければならない
+			if got := requireOperationComparison(t, op, latest); !slices.Contains(got.ChangedFields, tt.field) {
+				t.Fatalf("digest が identity と認めた %s を comparison が報告しない: %+v", tt.field, got)
+			}
+		})
+	}
+}
+
+func TestReviewIdentityAndComparisonCoverSameInput(t *testing.T) {
+	semantic := []string{"ContextManifest", "ExecutionPolicy", "HeadSHA", "ArtifactManifest", "PolicyRefs"}
+	auditOnly := []string{"Observation"}
+	requireFieldPartition(t, reflect.TypeOf(ReviewRequest{}), semantic, auditOnly,
+		[]string{"Schema", "RequestID", "Kind", "ProducerRunID", "Issue", "CreatedAt"})
+	requireFieldPartition(t, reflect.TypeOf(LatestReviewInput{}), semantic, auditOnly)
 }
 
 func TestOperationSemanticDifferenceMatrix(t *testing.T) {
