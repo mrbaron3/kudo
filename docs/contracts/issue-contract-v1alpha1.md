@@ -210,7 +210,7 @@ claim成功時に、少なくとも次を固定する。
 
 model sessionはraw Issue本文ではなくcanonical Task Contextと、Context Manifestが明示するauthority contentを読む。Controllerが契約内容を自然言語で再解釈してpromptへ置き換えたり、parserのsection titleを読み直したりしてはならない。raw bodyとIssue Observationは監査とlive変更検知に使う。
 
-実行中にIssue本文、dependency completion、base commit、authority referenceの内容が変わった場合は、進行中runへ暗黙に取り込まない。raw bodyの非意味的差分でTask Context/Context Manifestが同じ場合もIssue Observationのlive freshnessは一致しないため、現在入力との不一致をstaleとして記録し、新しいclaimまたは人間判断へ戻す。実装入力ではない親Issue本文の編集だけではrunをstaleにしない。
+実行中にIssue本文、dependency completion、base commit、authority referenceの内容が変わった場合は、進行中runへ暗黙に取り込まない。Task ContextまたはContext Manifestが変わる差分はstaleとして記録し、新しいclaimまたは人間判断へ戻す。raw bodyの非意味的差分でTask Context/Context Manifestが変わらない場合は、Issue Observationのlive freshness不一致を検出したうえで、新しい観測をaudit lineageへ追記して進行中runを維持する。実装入力ではない親Issue本文の編集だけではrunをstaleにしない。
 
 ## Claim rejection
 

@@ -85,6 +85,6 @@ Kudo が担当するのは、実行依頼の検出から reviewable PR の hando
 - RED、GREEN、refactor 後 checks、二つの review approval が対象 digest と一致する
 - dependency のない複数 Issue は同時実行でき、同じ Issue は二重実行されない
 - Review Worker は implementation worktree と write credential を持たない
-- Issue 変更または head 変更が以前の approval を stale にする
+- Task Context に影響する Issue 変更、または head 変更が以前の approval を stale にする
 - PR と`ai-review-waiting` projection が crash/retry 下でも一度だけ成立する
 - Compose stack の health、migration、backup/restore、graceful shutdown 手順が検証されている

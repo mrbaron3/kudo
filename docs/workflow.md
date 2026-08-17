@@ -180,4 +180,4 @@ stateDiagram-v2
 - worktree/branch/PR mutation は Issue Worker の idempotency key で重複を防ぐ。
 - state transition と external projection intent は同じ database transaction に記録し、outbox が GitHub へ再送する。
 - process 停止で lease が失効した場合、別 worker が immutable checkpoint から Operation を再取得する。
-- Run 中に Issue Observation、authority digest、base/head が変われば進行を止め、以前の review を stale にする。
+- Run 中に Context Manifest ref、Execution Policy ref、base/head、artifact manifest、policy ref が変われば進行を止め、以前の review を stale にする。Issue Observation だけの差分は audit lineage へ追記し、Operation identity と approval を維持する。

@@ -1,0 +1,11 @@
+schema: "kudo.review-result/v1alpha1"
+requestDigest: "sha256:78a505e9a26019d8d048793cae9286c2487e435e30e99ce84415f615847db7d9"
+verdict: "request_changes"
+findings:
+  - id: "F-1"
+    severity: "blocking"
+    summary: "AC-2 を検証する test が無い"
+    expected: "AC-1 と AC-2 の観測可能な結果を検証する"
+    observed: "test plan と patch は AC-1 のみを参照している"
+    evidenceRefs:
+      - "sha256:e45b022999ae12524b2140146c9b2f9d6f4365f9057d810328aeb81815ec6f23"

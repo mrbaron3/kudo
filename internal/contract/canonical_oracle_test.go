@@ -271,3 +271,114 @@ func TestManifestAndPolicyParseWithExternalYAMLParser(t *testing.T) {
 		t.Fatalf("timeout = %q", policy.IssueWorker.Timeout)
 	}
 }
+
+// oracleRef は versioned ref の入れ子 mapping を表す。
+type oracleRef struct {
+	Schema string `json:"schema"`
+	Digest string `json:"digest"`
+}
+
+// Operation / Review の identity bytes も digest 入力として保存・監査されるため、
+// golden fixture だけでなく独立実装で parse できることを確認する。
+func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
+	op := sampleWorkerOperation(t)
+	operation := decodeOracle[struct {
+		Schema          string     `json:"schema"`
+		Kind            string     `json:"kind"`
+		Run             string     `json:"run"`
+		Repository      string     `json:"repository"`
+		Issue           string     `json:"issue"`
+		ContextManifest *oracleRef `json:"contextManifest"`
+		ExecutionPolicy oracleRef  `json:"executionPolicy"`
+		BaseSHA         *string    `json:"baseSha"`
+		HeadSHA         *string    `json:"headSha"`
+		InputArtifacts  []string   `json:"inputArtifacts"`
+		PolicyRefs      []string   `json:"policyRefs"`
+		Causation       string     `json:"causation"`
+	}](t, yamlOracle(t, encodeOperationIdentity(op)))
+
+	if operation.Schema != WorkerOperationSchemaV1Alpha1 || operation.Kind != string(OperationAuthorTests) {
+		t.Fatalf("Operation identity が復元されない: %+v", operation)
+	}
+	if operation.Repository != op.Issue.repositoryURL() || operation.Issue != op.Issue.String() {
+		t.Fatalf("repository/issue = %q / %q", operation.Repository, operation.Issue)
+	}
+	if operation.ContextManifest == nil || *operation.ContextManifest != (oracleRef{
+		Schema: op.ContextManifest.Schema,
+		Digest: string(op.ContextManifest.Digest),
+	}) {
+		t.Fatalf("contextManifest = %+v", operation.ContextManifest)
+	}
+	if operation.BaseSHA == nil || *operation.BaseSHA != op.BaseSHA || operation.HeadSHA == nil {
+		t.Fatalf("base/head = %v / %v", operation.BaseSHA, operation.HeadSHA)
+	}
+	if operation.Causation != op.CausationID || len(operation.PolicyRefs) != len(op.PolicyRefs) {
+		t.Fatalf("causation/policyRefs = %q / %v", operation.Causation, operation.PolicyRefs)
+	}
+
+	// claim は Context Manifest と base/head を null として区別できなければならない
+	claim := decodeOracle[struct {
+		ContextManifest *oracleRef `json:"contextManifest"`
+		BaseSHA         *string    `json:"baseSha"`
+		HeadSHA         *string    `json:"headSha"`
+		InputArtifacts  []string   `json:"inputArtifacts"`
+	}](t, yamlOracle(t, encodeOperationIdentity(sampleClaimOperation(t))))
+	if claim.ContextManifest != nil || claim.BaseSHA != nil || claim.HeadSHA != nil {
+		t.Fatalf("claim の未解決 field が null として復元されない: %+v", claim)
+	}
+	if claim.InputArtifacts == nil || len(claim.InputArtifacts) != 0 {
+		t.Fatalf("空 list が %v として復元された", claim.InputArtifacts)
+	}
+
+	req := sampleReviewRequest(t)
+	request := decodeOracle[struct {
+		Schema           string    `json:"schema"`
+		Kind             string    `json:"kind"`
+		HeadSHA          string    `json:"headSha"`
+		ArtifactManifest oracleRef `json:"artifactManifest"`
+		PolicyRefs       []string  `json:"policyRefs"`
+	}](t, yamlOracle(t, encodeReviewRequestIdentity(req)))
+	if request.Schema != ReviewRequestSchemaV1Alpha1 || request.Kind != string(req.Kind) || request.HeadSHA != req.HeadSHA {
+		t.Fatalf("Review Request identity が復元されない: %+v", request)
+	}
+	if request.ArtifactManifest.Digest != string(req.ArtifactManifest.Digest) {
+		t.Fatalf("artifactManifest = %+v", request.ArtifactManifest)
+	}
+
+	result := decodeOracle[struct {
+		Verdict  string `json:"verdict"`
+		Findings []struct {
+			ID           string   `json:"id"`
+			Severity     string   `json:"severity"`
+			Summary      string   `json:"summary"`
+			EvidenceRefs []string `json:"evidenceRefs"`
+		} `json:"findings"`
+	}](t, yamlOracle(t, encodeReviewResultIdentity(sampleReviewResult(t, req))))
+	if result.Verdict != string(VerdictRequestChanges) || len(result.Findings) != 1 {
+		t.Fatalf("Review Result identity が復元されない: %+v", result)
+	}
+	if result.Findings[0].Severity != string(SeverityBlocking) || result.Findings[0].Summary != "AC-2 を検証する test が無い" {
+		t.Fatalf("finding が escape 前の値へ戻らない: %+v", result.Findings[0])
+	}
+
+	_, manifestPayload, err := EncodeArtifactManifest(sampleArtifactManifest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := decodeOracle[struct {
+		Schema  string `json:"schema"`
+		Entries []struct {
+			Name      string `json:"name"`
+			MediaType string `json:"mediaType"`
+			Length    string `json:"length"`
+			Digest    string `json:"digest"`
+		} `json:"entries"`
+	}](t, yamlOracle(t, manifestPayload.Data))
+	if artifacts.Schema != ArtifactManifestSchemaV1Alpha1 || len(artifacts.Entries) != 5 {
+		t.Fatalf("Artifact Manifest が復元されない: %+v", artifacts)
+	}
+	// length は implicit int にせず decimal string として復元される
+	if artifacts.Entries[0].Name != "context-manifest" || artifacts.Entries[0].Length == "" {
+		t.Fatalf("entries[0] = %+v", artifacts.Entries[0])
+	}
+}

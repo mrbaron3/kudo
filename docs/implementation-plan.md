@@ -8,9 +8,8 @@
 
 ## Current status
 
-現在repositoryに実装済みなのは、`kudo help`/`kudo version`のCLI bootstrap、Milestone 0のCompose開発基盤（multi-stage Dockerfile、PostgreSQL 18.4付き開発用Compose、container内check/integration test入口）、`kudo.issue/v1alpha1`のstrict parser、およびIssue Observation・canonical Task Context・Context Manifest・Execution Policyを作るpure compiler coreである。Issue/Review protocolとtarget architectureは文書化されているが、次は未実装である。
+現在repositoryに実装済みなのは、`kudo help`/`kudo version`のCLI bootstrap、Milestone 0のCompose開発基盤（multi-stage Dockerfile、PostgreSQL 18.4付き開発用Compose、container内check/integration test入口）、`kudo.issue/v1alpha1`のstrict parser、Issue Observation・canonical Task Context・Context Manifest・Execution Policyを作るpure compiler core、およびWorker Operation/Review protocolのcanonical identity・binding・semantic staleness判定である。target architectureは文書化されているが、次は未実装である。
 
-- Worker Operation、Review Request/Result、Artifact Manifestのparserとcanonical identity
 - PostgreSQL schema、Operation queue、lease、inbox/outbox
 - GitHub webhook/poller/reconciliation
 - Artifact Store と Run workspace
@@ -70,7 +69,8 @@ IssueRef から Task の execution context と review identity を決定論的�
 ### Milestone 1 exit criteria
 
 - 同じ input は常に同じ digest になり、whitespace と ordering rule が fixture で固定される。
-- changed Issue Observation、authority content、Execution Policy、head SHA、artifact bytes が以前の review を stale にする。
+- changed Context Manifest（Task Context または authority content の変化を含む）、Execution Policy、head SHA、artifact manifest、policy ref が以前の review を stale にする。
+- Issue Observation だけの変化は audit lineage へ追記され、Operation identity と approval を stale にしない。
 - malformed contract、human decision、transport failure、review finding が混同されない。
 - GitHub/network/filesystem/provider なしで全 behavior を unit test できる。
 

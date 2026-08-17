@@ -172,7 +172,7 @@ Artifact Storeへ渡すpayloadは少なくとも次を持つ。
 
 | Field | Meaning |
 | --- | --- |
-| `kind` | `raw-issue-body`、`issue-observation`、`task-context`、`context-manifest`、`execution-policy` |
+| `kind` | `raw-issue-body`、`issue-observation`、`task-context`、`context-manifest`、`execution-policy`、`artifact-manifest` |
 | `schema` | versioned YAML artifactのschema。raw bodyは空 |
 | `mediaType` | raw bodyは`text/markdown; charset=utf-8`、canonical artifactは`application/yaml; charset=utf-8` |
 | `digest` | `data`のSHA-256 |

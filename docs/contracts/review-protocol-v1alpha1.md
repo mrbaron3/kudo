@@ -29,7 +29,9 @@ contextManifest:
 executionPolicy:
   schema: kudo.execution-policy/v1alpha1
   digest: sha256:<digest>
-artifactManifest: sha256:<digest>
+artifactManifest:
+  schema: kudo.artifact-manifest/v1alpha1
+  digest: sha256:<digest>
 policyRefs:
   - docs/contracts/issue-contract-v1alpha1.md
 createdAt: 2026-08-11T00:00:00Z
@@ -44,13 +46,26 @@ Review Workerは`issueObservation`が指すIssue Observation artifactを検証�
 
 Review Workerがsource treeを必要とする場合、artifact manifestに含まれるimmutable source bundle/snapshotから`headSha`を検証したdisposable checkoutを構築する。既にread-only remoteから同一commitを取得できる場合はそれを利用してよい。Issue Workerのworktree pathをRequestへ含めず、mutable worktreeをmountしない。
 
-Request identityは、schema、kind、repository、Issue reference、Issue Observation ref、head SHA、Context Manifest ref、Execution Policy ref、artifact manifest digest、policy refsから決まる。同じ`requestId`でもこれらが異なる入力を同一requestとして扱ってはならない。versioned refはschemaとdigestを組で比較する。
+Request identityは、schema、kind、repository、Issue reference、head SHA、Context Manifest ref、Execution Policy ref、Artifact Manifest ref、policy refsから決まる。同じ`requestId`でもこれらが異なる入力を同一requestとして扱ってはならない。versioned refはschemaとdigestを組で比較し、digestが同じでもschemaが異なるrefを同一視しない。
+
+`requestId`、`producerRunId`、`createdAt`、`issueObservation`はidentityに含めない。`issueObservation`と`bodyDigest`はexact観測のaudit lineageであり、raw bodyの非意味的差分だけでrequest identityと既存approvalをstaleにしない。意味のある変更はTask Context refを通じてContext Manifest refを変えるため、semantic stalenessはContext Manifest refの比較で判定できる。`policyRefs`は順序を持たない集合としてcanonical順へ正規化し、重複を拒否する。reviewerが評価基準を推測しないよう、`policyRefs`は1件以上必須とする。
 
 local path、provider session ID、会話履歴、application-private database record、credentialをreviewの必須入力にしない。
 
 ## Artifact Manifest
 
-manifestは、reviewに必要なartifactのlogical name、media type、byte length、SHA-256 digestを列挙する。各bytesはcontent-addressed storeのwrite-once objectであり、producerが後から上書きできない。
+manifestは`kudo.artifact-manifest/v1alpha1`としてversion付けし、reviewに必要なartifactのlogical name、media type、byte length、SHA-256 digestを列挙する。各bytesはcontent-addressed storeのwrite-once objectであり、producerが後から上書きできない。
+
+```yaml
+schema: "kudo.artifact-manifest/v1alpha1"
+entries:
+  - name: "task-context"
+    mediaType: "application/yaml; charset=utf-8"
+    length: "1647"
+    digest: "sha256:<digest>"
+```
+
+manifestはlogical nameで引くtableである。nameは`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`だけを許可し、重複を拒否する。canonical encodeではnameのlexicographic順へ並べ替えるため、producerの列挙順はmanifest identityを変えない。`length`はcanonical encodingの規則に従い、implicit intではなくdecimal stringとしてencodeする。payloadを持つartifactは、bytesとmetadataが食い違ったままreviewへ渡らないよう、length・media type・digestをpayloadから導出する。
 
 `test_validity`では最低限、次を参照できるようにする。
 
@@ -100,7 +115,11 @@ verdictは次のいずれかとする。
 - `request_changes`: Issue Workerの新しい修正Operationで対応可能なblocking findingがある
 - `needs_human`: authority conflict、安全判断、仕様決定等、人の決定なしに修正方針を選べない
 
+`severity`は`blocking`と`advisory`の2種類とする。`approve`はblocking findingを持てず、`request_changes`と`needs_human`はblocking findingを1件以上必要とする。verdictとfindingが矛盾するResultは、Controllerがfindingを読まずに誤ったgate判断をするため受理しない。
+
 findingは`expected`、`observed`、`evidenceRefs`を持ち、単なる感想にしない。Review Resultはproducerのworktree、branch、PRを変更せず、新しいartifactとして保存する。
+
+Result identityは、schema、参照するrequest digest、verdict、findingから決まる。`reviewRunId`と`createdAt`は含めないため、同じrequestへの同じ判断は同じcontent identityを持つ。binding検証はResultが参照するrequest digestの一致で行う。
 
 `request_changes`後の修正Operationには、Issue Observation、Context Manifestが指すTask Context、対象head、Review Result、必要なartifact referenceだけを渡す。以前のImplementation/Review sessionをresumeしない。修正後は新しいheadとrequest digestで再reviewする。
 
@@ -114,8 +133,10 @@ Review approveはGitHub Issueの完了またはmergeを意味しない。final a
 
 ## Failure and staleness
 
-timeout、rate limit、network error、provider crash、invalid responseはtransport/execution failureであり、`request_changes`や`needs_human`という品質verdictに変換しない。Issueを取得できない場合もtransport failureであり、保存済み本文だけでreviewを続けない。
+timeout、rate limit、network error、provider crash、invalid responseはtransport/execution failureであり、`request_changes`や`needs_human`という品質verdictに変換しない。Issueを取得できない場合もtransport failureであり、保存済み本文だけでreviewを続けない。execution failureはquality verdictのfieldを持たない別の型で表現し、1回のattemptの結末はverdictかfailureのどちらか一方だけを持つ。
 
-Issue Observation、Context Manifest、Execution Policy、commit SHA、artifact manifest、policy refのいずれかが変わった時点で既存Resultはstaleになる。live Issueのbody digestがIssue Observation artifact内の`bodyDigest`と一致しない場合は品質verdictを返さず、stale inputとしてControllerへ返す。修正後は新しいReview Requestを発行し、古いResultを新しい入力のapprovalとして再利用しない。raw bodyの非意味的差分でTask Context/Context Manifestが変わらない場合も、このlive freshness判定は省略しない。
+Context Manifest ref、Execution Policy ref、commit SHA、Artifact Manifest ref、policy refのいずれかが変わった時点で既存Resultはstaleになる。Issue Observationの変化だけではstaleにしない。
+
+live Issueのbody digestがIssue Observation artifact内の`bodyDigest`と一致しない場合は品質verdictを返さず、Controllerへ返す。raw bodyの非意味的差分でTask Context/Context Manifestが変わらない場合も、このlive freshness判定は省略しない。Controllerは最新のcompile結果と解決済みrefでsemantic comparisonを行い、`SameSemanticInput`なら新しいIssue Observationをaudit lineageへ追記して同じrequestを続行し、`ChangedSemanticInput`ならstale inputとして扱う。stale後は新しいReview Requestを発行し、古いResultを新しい入力のapprovalとして再利用しない。review開始後の既存Requestへ最新refを上書きしない。
 
 retry可能なexecution failureは同じlogical Review Requestに対する新しいattemptとして記録できるが、provider sessionはattemptごとに新規作成する。quality verdictとattempt failureを同じfieldで表現しない。

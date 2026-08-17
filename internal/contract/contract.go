@@ -1,8 +1,12 @@
 // Package contract は versioned Issue Contract を strict に parse・compile し、
-// immutable な実行入力の canonical identity を構築する pure core である。
+// immutable な実行入力と Worker Operation / Review protocol の canonical identity を
+// 構築する pure core である。identity の比較だけで staleness を判定できるよう、
+// exact Issue 観測（audit lineage）と semantic input を分けて扱う。
 //
 // 正本は docs/contracts/issue-contract-v1alpha1.md、
-// docs/contracts/task-context-v1alpha1.md、.github/ISSUE_TEMPLATE/kudo-task.md である。
+// docs/contracts/task-context-v1alpha1.md、
+// docs/contracts/operation-protocol-v1alpha1.md、
+// docs/contracts/review-protocol-v1alpha1.md、.github/ISSUE_TEMPLATE/kudo-task.md である。
 // 本 package は GitHub API、filesystem、clock 等の外部境界へ接続しない。
 package contract
 
@@ -61,6 +65,14 @@ func (r IssueRef) canonical() IssueRef {
 func (r IssueRef) String() string {
 	c := r.canonical()
 	return fmt.Sprintf("github://%s/%s/issues/%d", c.Owner, c.Repository, c.Number)
+}
+
+// repositoryURL は Issue が属する repository の canonical な github:// 表記を返す。
+// protocol envelope は repository を独立 field として保持せず Issue から導出する。
+// 同じ envelope に食い違いうる identity を二重に持たせないためである。
+func (r IssueRef) repositoryURL() string {
+	c := r.canonical()
+	return fmt.Sprintf("github://%s/%s", c.Owner, c.Repository)
 }
 
 // AuthorityRef は authorityRefs の 1 要素を表す。repository 内 relative path か、

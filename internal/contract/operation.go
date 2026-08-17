@@ -1,0 +1,303 @@
+package contract
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// 正本は docs/contracts/operation-protocol-v1alpha1.md である。
+
+const (
+	// WorkerOperationSchemaV1Alpha1 は Controller が Issue Worker へ渡す
+	// run-once Operation envelope の schema である。
+	WorkerOperationSchemaV1Alpha1 = "kudo.worker-operation/v1alpha1"
+	// WorkerResultSchemaV1Alpha1 は Operation の terminal Result の schema である。
+	WorkerResultSchemaV1Alpha1 = "kudo.worker-result/v1alpha1"
+)
+
+// OperationKind は Issue Worker が実行する run-once 作業の種類である。
+type OperationKind string
+
+const (
+	OperationClaim                OperationKind = "claim"
+	OperationAuthorTests          OperationKind = "author_tests"
+	OperationReviseTests          OperationKind = "revise_tests"
+	OperationImplement            OperationKind = "implement"
+	OperationRepairImplementation OperationKind = "repair_implementation"
+	OperationCreatePullRequest    OperationKind = "create_pull_request"
+)
+
+// operationKindRule は kind ごとの field 要件を固定する。
+type operationKindRule struct {
+	// resolvedContext は Issue Observation、Context Manifest、base/head SHA を必須にする。
+	// claim はこれらを作る Operation なので開始時点では持てず、Result も head を返さない。
+	resolvedContext bool
+	// priorArtifacts は Required input が先行 artifact を名指しする kind で true。
+	priorArtifacts bool
+}
+
+var operationKindRules = map[OperationKind]operationKindRule{
+	OperationClaim:                {},
+	OperationAuthorTests:          {resolvedContext: true},
+	OperationReviseTests:          {resolvedContext: true, priorArtifacts: true},
+	OperationImplement:            {resolvedContext: true, priorArtifacts: true},
+	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true},
+	OperationCreatePullRequest:    {resolvedContext: true, priorArtifacts: true},
+}
+
+// WorkerOperation は Controller が queue へ記録する run-once Operation である。
+//
+// Observation は audit lineage であり content identity へ寄与しない。exact body だけが
+// 変わった再観測で Operation identity が変わると、HTML comment の編集や retry のたびに
+// 別 Operation になり、既存 approval と重複判定が壊れる。semantic input は
+// ContextManifest に閉じており、validator はその ref を opaque な組として扱う。
+//
+// OperationID は logical Operation の stable identity であり、content identity である
+// digest とも execution attempt とも別である。CreatedAt は queue 時刻であり、
+// caller が clock 境界から明示的に渡す。
+type WorkerOperation struct {
+	Schema      string
+	OperationID string
+	RunID       string
+	Kind        OperationKind
+	Issue       IssueRef
+
+	// Observation と ContextManifest は claim では nil にする。claim はこれらを作る
+	// Operation であり、空文字や直前 Run の値から推測してはならない。
+	Observation     *IssueObservationRef
+	ContextManifest *ContextManifestRef
+	ExecutionPolicy ExecutionPolicyRef
+
+	BaseSHA        string
+	HeadSHA        string
+	InputArtifacts []Digest
+	PolicyRefs     []string
+
+	CausationID string
+	CreatedAt   time.Time
+}
+
+// ValidateWorkerOperation は envelope 単体の整合性を検証する。
+// ContextManifest と ExecutionPolicy は schema と digest の組としてのみ検証し、
+// 参照先の canonical YAML は parse しない。
+func ValidateWorkerOperation(op WorkerOperation) error {
+	if op.Schema != WorkerOperationSchemaV1Alpha1 {
+		return fmt.Errorf("worker operation schema は %q でなければならない: %q", WorkerOperationSchemaV1Alpha1, op.Schema)
+	}
+	rule, ok := operationKindRules[op.Kind]
+	if !ok {
+		return fmt.Errorf("operation kind が不正: %q", op.Kind)
+	}
+	for _, field := range []struct{ name, value string }{
+		{"operationId", op.OperationID},
+		{"runId", op.RunID},
+		{"causationId", op.CausationID},
+	} {
+		if !validProtocolID(field.value) {
+			return fmt.Errorf("%s が不正: %q", field.name, field.value)
+		}
+	}
+	if !validIssueRef(op.Issue) {
+		return errors.New("issue が不正")
+	}
+	if err := validateVersionedRef("executionPolicy", op.ExecutionPolicy.Schema, op.ExecutionPolicy.Digest, executionPolicySchemaPrefix); err != nil {
+		return err
+	}
+	if op.CreatedAt.IsZero() {
+		return errors.New("createdAt が空")
+	}
+	if err := validateOperationContext(op, rule); err != nil {
+		return err
+	}
+	if err := validateDigestSet("inputArtifacts", op.InputArtifacts); err != nil {
+		return err
+	}
+	if rule.priorArtifacts && len(op.InputArtifacts) == 0 {
+		return fmt.Errorf("kind %q は先行 artifact の参照を必須とする", op.Kind)
+	}
+	return validatePolicyRefs(op.PolicyRefs)
+}
+
+func validateOperationContext(op WorkerOperation, rule operationKindRule) error {
+	if !rule.resolvedContext {
+		switch {
+		case op.Observation != nil:
+			return fmt.Errorf("kind %q はまだ Issue Observation を持てない", op.Kind)
+		case op.ContextManifest != nil:
+			return fmt.Errorf("kind %q はまだ Context Manifest を持てない", op.Kind)
+		case op.BaseSHA != "" || op.HeadSHA != "":
+			return fmt.Errorf("kind %q はまだ base/head を持てない", op.Kind)
+		case len(op.InputArtifacts) > 0:
+			return fmt.Errorf("kind %q はまだ input artifact を持てない", op.Kind)
+		}
+		return nil
+	}
+
+	if op.Observation == nil {
+		return fmt.Errorf("kind %q は Issue Observation を省略できない", op.Kind)
+	}
+	if err := validateVersionedRef("issueObservation", op.Observation.Schema, op.Observation.Digest, issueObservationSchemaPrefix); err != nil {
+		return err
+	}
+	if op.ContextManifest == nil {
+		return fmt.Errorf("kind %q は Context Manifest を省略できない", op.Kind)
+	}
+	if err := validateVersionedRef("contextManifest", op.ContextManifest.Schema, op.ContextManifest.Digest, contextManifestSchemaPrefix); err != nil {
+		return err
+	}
+	if !validGitSHA(op.BaseSHA) {
+		return fmt.Errorf("baseSha が不正: %q", op.BaseSHA)
+	}
+	if !validGitSHA(op.HeadSHA) {
+		return fmt.Errorf("headSha が不正: %q", op.HeadSHA)
+	}
+	return nil
+}
+
+// OperationDigest は Operation の content identity を返す。
+//
+// queue 時刻、operation ID、attempt、lease owner、provider session、workspace path、
+// および audit lineage である Issue Observation は含まない。したがって、raw body だけが
+// 変わった再観測や retry では digest が変わらない。
+func OperationDigest(op WorkerOperation) (Digest, error) {
+	if err := ValidateWorkerOperation(op); err != nil {
+		return "", err
+	}
+	return SHA256(encodeOperationIdentity(op)), nil
+}
+
+// encodeOperationIdentity は validate 済み Operation の identity bytes を返す。
+// 保存する envelope 全体ではなく、digest 計算のための canonical 表現である。
+func encodeOperationIdentity(op WorkerOperation) []byte {
+	var b strings.Builder
+	writeYAMLString(&b, 0, "schema", op.Schema)
+	writeYAMLString(&b, 0, "kind", string(op.Kind))
+	writeYAMLString(&b, 0, "run", op.RunID)
+	writeYAMLString(&b, 0, "repository", op.Issue.repositoryURL())
+	writeYAMLString(&b, 0, "issue", op.Issue.String())
+	if op.ContextManifest == nil {
+		writeYAMLNull(&b, 0, "contextManifest")
+	} else {
+		writeYAMLRef(&b, 0, "contextManifest", op.ContextManifest.Schema, op.ContextManifest.Digest)
+	}
+	writeYAMLRef(&b, 0, "executionPolicy", op.ExecutionPolicy.Schema, op.ExecutionPolicy.Digest)
+	writeYAMLOptionalString(&b, 0, "baseSha", op.BaseSHA)
+	writeYAMLOptionalString(&b, 0, "headSha", op.HeadSHA)
+	writeYAMLStringList(&b, 0, "inputArtifacts", canonicalDigestStrings(op.InputArtifacts))
+	writeYAMLStringList(&b, 0, "policyRefs", canonicalStringSet(op.PolicyRefs))
+	writeYAMLString(&b, 0, "causation", op.CausationID)
+	return []byte(b.String())
+}
+
+// OperationOutcome は Operation の terminal な実行結果である。
+// approve / request_changes は Review Worker だけが返す品質 verdict であり、
+// ここには存在しない。
+type OperationOutcome string
+
+const (
+	OutcomeSucceeded      OperationOutcome = "succeeded"
+	OutcomeStaleInput     OperationOutcome = "stale_input"
+	OutcomeNeedsHuman     OperationOutcome = "needs_human"
+	OutcomeFailedTerminal OperationOutcome = "failed_terminal"
+)
+
+var operationOutcomes = map[OperationOutcome]bool{
+	OutcomeSucceeded:      true,
+	OutcomeStaleInput:     true,
+	OutcomeNeedsHuman:     true,
+	OutcomeFailedTerminal: true,
+}
+
+// OperationResult は Operation の terminal Result である。
+//
+// HeadSHA は Operation が固定した head であり、入力 head と一致するとは限らない。
+// AttemptID と CompletedAt は attempt の記録であり、content identity へ含めない。
+// retry 可能な失敗は Result にせず、AttemptFailure として記録する。
+type OperationResult struct {
+	Schema          string
+	OperationDigest Digest
+	AttemptID       string
+	Outcome         OperationOutcome
+	HeadSHA         string
+	OutputArtifacts []Digest
+	ExternalRefs    []string
+	CompletedAt     time.Time
+}
+
+// ValidateOperationResult は Result 単体の整合性を検証する。
+func ValidateOperationResult(result OperationResult) error {
+	if result.Schema != WorkerResultSchemaV1Alpha1 {
+		return fmt.Errorf("worker result schema は %q でなければならない: %q", WorkerResultSchemaV1Alpha1, result.Schema)
+	}
+	if !result.OperationDigest.Valid() {
+		return fmt.Errorf("operationDigest が不正: %q", result.OperationDigest)
+	}
+	if !validProtocolID(result.AttemptID) {
+		return fmt.Errorf("attemptId が不正: %q", result.AttemptID)
+	}
+	if !operationOutcomes[result.Outcome] {
+		return fmt.Errorf("operation outcome が不正: %q", result.Outcome)
+	}
+	if result.HeadSHA != "" && !validGitSHA(result.HeadSHA) {
+		return fmt.Errorf("headSha が不正: %q", result.HeadSHA)
+	}
+	if result.CompletedAt.IsZero() {
+		return errors.New("completedAt が空")
+	}
+	if err := validateDigestSet("outputArtifacts", result.OutputArtifacts); err != nil {
+		return err
+	}
+	return validateLineSet("externalRefs", result.ExternalRefs)
+}
+
+// OperationResultDigest は Result の content identity を返す。
+// attempt ID と完了時刻は含めないため、同じ入力から同じ結果を再生成した attempt は
+// 同じ digest を持つ。
+func OperationResultDigest(result OperationResult) (Digest, error) {
+	if err := ValidateOperationResult(result); err != nil {
+		return "", err
+	}
+	return SHA256(encodeOperationResultIdentity(result)), nil
+}
+
+func encodeOperationResultIdentity(result OperationResult) []byte {
+	var b strings.Builder
+	writeYAMLString(&b, 0, "schema", result.Schema)
+	writeYAMLString(&b, 0, "operationDigest", string(result.OperationDigest))
+	writeYAMLString(&b, 0, "outcome", string(result.Outcome))
+	writeYAMLOptionalString(&b, 0, "headSha", result.HeadSHA)
+	writeYAMLStringList(&b, 0, "outputArtifacts", canonicalDigestStrings(result.OutputArtifacts))
+	writeYAMLStringList(&b, 0, "externalRefs", canonicalStringSet(result.ExternalRefs))
+	return []byte(b.String())
+}
+
+// BindOperationResult は Result が参照する Operation identity を再計算して照合する。
+//
+// digest は Context Manifest ref、Execution Policy ref、base/head、input artifact、
+// policy ref を含む semantic identity 全体を覆うため、いずれかが変わった Operation へ
+// 以前の Result を bind できない。Issue Observation だけの差分は identity ではないため
+// binding を壊さない。
+func BindOperationResult(op WorkerOperation, result OperationResult) error {
+	digest, err := OperationDigest(op)
+	if err != nil {
+		return err
+	}
+	if err := ValidateOperationResult(result); err != nil {
+		return err
+	}
+	if result.OperationDigest != digest {
+		return fmt.Errorf("result が別の Operation identity を参照している: got %s, want %s",
+			result.OperationDigest, digest)
+	}
+
+	rule := operationKindRules[op.Kind]
+	switch {
+	case !rule.resolvedContext && result.HeadSHA != "":
+		return fmt.Errorf("kind %q の Result は head を固定しない", op.Kind)
+	case rule.resolvedContext && result.Outcome == OutcomeSucceeded && result.HeadSHA == "":
+		return fmt.Errorf("kind %q の succeeded Result は head を固定しなければならない", op.Kind)
+	}
+	return nil
+}

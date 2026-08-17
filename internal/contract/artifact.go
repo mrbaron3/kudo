@@ -37,6 +37,7 @@ const (
 	ArtifactKindTaskContext      ArtifactKind = "task-context"
 	ArtifactKindContextManifest  ArtifactKind = "context-manifest"
 	ArtifactKindExecutionPolicy  ArtifactKind = "execution-policy"
+	ArtifactKindArtifactManifest ArtifactKind = "artifact-manifest"
 )
 
 const (
@@ -77,32 +78,39 @@ func (p ArtifactPayload) Validate() error {
 			return fmt.Errorf("raw Issue body media type が不正: %q", p.MediaType)
 		}
 	case ArtifactKindIssueObservation:
-		if !validSchemaIdentity(p.Schema, "kudo.issue-observation/") {
+		if !validSchemaIdentity(p.Schema, issueObservationSchemaPrefix) {
 			return fmt.Errorf("Issue Observation artifact schema が不正: %q", p.Schema)
 		}
 		if p.MediaType != MediaTypeYAML {
 			return fmt.Errorf("Issue Observation media type が不正: %q", p.MediaType)
 		}
 	case ArtifactKindTaskContext:
-		if !validSchemaIdentity(p.Schema, "kudo.task-context/") {
+		if !validSchemaIdentity(p.Schema, taskContextSchemaPrefix) {
 			return fmt.Errorf("Task Context artifact schema が不正: %q", p.Schema)
 		}
 		if p.MediaType != MediaTypeYAML {
 			return fmt.Errorf("Task Context media type が不正: %q", p.MediaType)
 		}
 	case ArtifactKindContextManifest:
-		if !validSchemaIdentity(p.Schema, "kudo.context-manifest/") {
+		if !validSchemaIdentity(p.Schema, contextManifestSchemaPrefix) {
 			return fmt.Errorf("Context Manifest artifact schema が不正: %q", p.Schema)
 		}
 		if p.MediaType != MediaTypeYAML {
 			return fmt.Errorf("Context Manifest media type が不正: %q", p.MediaType)
 		}
 	case ArtifactKindExecutionPolicy:
-		if !validSchemaIdentity(p.Schema, "kudo.execution-policy/") {
+		if !validSchemaIdentity(p.Schema, executionPolicySchemaPrefix) {
 			return fmt.Errorf("Execution Policy artifact schema が不正: %q", p.Schema)
 		}
 		if p.MediaType != MediaTypeYAML {
 			return fmt.Errorf("Execution Policy media type が不正: %q", p.MediaType)
+		}
+	case ArtifactKindArtifactManifest:
+		if !validSchemaIdentity(p.Schema, artifactManifestSchemaPrefix) {
+			return fmt.Errorf("Artifact Manifest artifact schema が不正: %q", p.Schema)
+		}
+		if p.MediaType != MediaTypeYAML {
+			return fmt.Errorf("Artifact Manifest media type が不正: %q", p.MediaType)
 		}
 	default:
 		return fmt.Errorf("artifact kind が不正: %q", p.Kind)

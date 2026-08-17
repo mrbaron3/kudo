@@ -65,7 +65,7 @@ func validateContextManifest(manifest ContextManifest) error {
 	if manifest.Schema != ContextManifestSchemaV1Alpha1 {
 		return fmt.Errorf("context manifest schema は %q でなければならない", ContextManifestSchemaV1Alpha1)
 	}
-	if !validSchemaIdentity(manifest.TaskContext.Schema, "kudo.task-context/") {
+	if !validSchemaIdentity(manifest.TaskContext.Schema, taskContextSchemaPrefix) {
 		return errors.New("TaskContextRef schema が不正")
 	}
 	if !manifest.TaskContext.Digest.Valid() {
@@ -190,9 +190,7 @@ func validateAuthorityIdentity(ref AuthorityRef) (string, error) {
 func encodeContextManifest(manifest ContextManifest) []byte {
 	var b strings.Builder
 	writeYAMLString(&b, 0, "schema", manifest.Schema)
-	b.WriteString("taskContext:\n")
-	writeYAMLString(&b, 2, "schema", manifest.TaskContext.Schema)
-	writeYAMLString(&b, 2, "digest", string(manifest.TaskContext.Digest))
+	writeYAMLRef(&b, 0, "taskContext", manifest.TaskContext.Schema, manifest.TaskContext.Digest)
 	writeYAMLString(&b, 0, "baseSha", manifest.BaseSHA)
 	if manifest.Parent == nil {
 		writeYAMLNull(&b, 0, "parent")
@@ -226,7 +224,7 @@ func encodeContextManifest(manifest ContextManifest) []byte {
 
 // ReadContextManifestArtifact は ref/payload を照合して保存 bytes を返す。
 func ReadContextManifestArtifact(ref ContextManifestRef, payload ArtifactPayload) ([]byte, error) {
-	if !validSchemaIdentity(ref.Schema, "kudo.context-manifest/") {
+	if !validSchemaIdentity(ref.Schema, contextManifestSchemaPrefix) {
 		return nil, fmt.Errorf("ContextManifestRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindContextManifest, ref.Schema, ref.Digest, payload)
