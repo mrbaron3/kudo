@@ -65,7 +65,7 @@ entries:
     digest: "sha256:<digest>"
 ```
 
-manifestはlogical nameで引くtableである。nameは`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`だけを許可し、重複を拒否する。加えてnameはrelative pathとして正規形でなければならない。空segment、`.`、`..`、末尾`/`を含む形は受理しない。Review Workerはimmutable snapshotをdisposable checkoutへ展開するため、nameが展開先の名前として使われうる。traversal形状はmanifestの入口で拒否し、下流実装の規律に委ねない。canonical encodeではnameのlexicographic順へ並べ替えるため、producerの列挙順はmanifest identityを変えない。`length`はcanonical encodingの規則に従い、implicit intではなくdecimal stringとしてencodeする。payloadを持つartifactは、bytesとmetadataが食い違ったままreviewへ渡らないよう、length・media type・digestをpayloadから導出する。
+manifestはlogical nameで引くtableである。nameは`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`だけを許可し、重複を拒否する。加えてnameはrelative pathとして正規形でなければならない。空segment、`.`、`..`、末尾`/`、改行やcontrol characterを含む形は受理しない（policy refやauthority refと同じpath規則を使う）。Review Workerはimmutable snapshotをdisposable checkoutへ展開するため、nameが展開先の名前として使われうる。traversal形状はmanifestの入口で拒否し、下流実装の規律に委ねない。canonical encodeではnameのlexicographic順へ並べ替えるため、producerの列挙順はmanifest identityを変えない。`length`はcanonical encodingの規則に従い、implicit intではなくdecimal stringとしてencodeする。payloadを持つartifactは、bytesとmetadataが食い違ったままreviewへ渡らないよう、length・media type・digestをpayloadから導出する。
 
 `test_validity`では最低限、次を参照できるようにする。
 

@@ -75,6 +75,37 @@ func (r IssueRef) repositoryURL() string {
 	return fmt.Sprintf("github://%s/%s", c.Owner, c.Repository)
 }
 
+// PullRequestRef は github://owner/repository/pull/number 形式の Pull Request reference を表す。
+//
+// Issue number と PR number は別 namespace であり、同じ数値でも別 object を指す。
+// IssueRef と型を分けて、Operation Result の external reference が Issue reference で
+// 満たされることを防ぐ。
+type PullRequestRef struct {
+	Owner      string
+	Repository string
+	Number     int
+}
+
+func (r PullRequestRef) canonical() PullRequestRef {
+	return PullRequestRef{
+		Owner:      strings.ToLower(r.Owner),
+		Repository: strings.ToLower(r.Repository),
+		Number:     r.Number,
+	}
+}
+
+// String は canonical な github:// 表記を返す。
+func (r PullRequestRef) String() string {
+	c := r.canonical()
+	return fmt.Sprintf("github://%s/%s/pull/%d", c.Owner, c.Repository, c.Number)
+}
+
+// sameRepository は PR が Issue と同じ repository に属するかを、GitHub の
+// case-insensitive な identity に合わせて判定する。
+func (r PullRequestRef) sameRepository(issue IssueRef) bool {
+	return sameRepository(issue, repositoryRef{Owner: r.Owner, Name: r.Repository})
+}
+
 // AuthorityRef は authorityRefs の 1 要素を表す。repository 内 relative path か、
 // 同一 repository の Issue reference のどちらか一方だけを持つ。
 type AuthorityRef struct {

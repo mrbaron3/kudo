@@ -122,62 +122,14 @@ func TestReviewCanonicalGolden(t *testing.T) {
 	}
 }
 
-func TestReviewRequestDigestExcludesAuditAndRunFields(t *testing.T) {
-	base := sampleReviewRequest(t)
-	want := requireReviewRequestDigest(t, base)
+func TestReviewRequestDigestCanonicalizesIssueReferenceCase(t *testing.T) {
+	req := sampleReviewRequest(t)
+	want := requireReviewRequestDigest(t, req)
 
-	variants := map[string]func(*ReviewRequest){
-		"issue observation": func(r *ReviewRequest) { r.Observation.Digest = SHA256([]byte("別 raw body")) },
-		"request id":        func(r *ReviewRequest) { r.RequestID = "01KUDOOTHER" },
-		"producer run":      func(r *ReviewRequest) { r.ProducerRunID = "run-02" },
-		"created at":        func(r *ReviewRequest) { r.CreatedAt = sampleCreatedAt.Add(time.Hour) },
-		"issue reference case": func(r *ReviewRequest) {
-			r.Issue = IssueRef{Owner: "MrBaron3", Repository: "Kudo", Number: r.Issue.Number}
-		},
-	}
-	for name, mutate := range variants {
-		t.Run(name, func(t *testing.T) {
-			got := sampleReviewRequest(t)
-			mutate(&got)
-			if digest := requireReviewRequestDigest(t, got); digest != want {
-				t.Fatalf("identity に寄与しない差分で digest が変化: got %s, want %s", digest, want)
-			}
-		})
-	}
-}
-
-func TestReviewRequestDigestCoversSemanticIdentity(t *testing.T) {
-	base := sampleReviewRequest(t)
-	want := requireReviewRequestDigest(t, base)
-
-	changedManifest := sampleArtifactManifest(t)
-	changedManifest.Entries[0].Digest = SHA256([]byte("別 artifact"))
-
-	variants := map[string]func(*ReviewRequest){
-		"kind":             func(r *ReviewRequest) { r.Kind = ReviewFinalImplementation },
-		"issue":            func(r *ReviewRequest) { r.Issue.Number = 11 },
-		"head":             func(r *ReviewRequest) { r.HeadSHA = sampleNextSHA },
-		"context manifest": func(r *ReviewRequest) { r.ContextManifest.Digest = SHA256([]byte("別 manifest")) },
-		"manifest ref schema": func(r *ReviewRequest) {
-			r.ContextManifest.Schema = "kudo.context-manifest/v1beta1"
-		},
-		"execution policy": func(r *ReviewRequest) { r.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) },
-		"artifact manifest": func(r *ReviewRequest) {
-			r.ArtifactManifest = requireArtifactManifestRef(t, changedManifest)
-		},
-		"artifact manifest schema": func(r *ReviewRequest) {
-			r.ArtifactManifest.Schema = "kudo.artifact-manifest/v1beta1"
-		},
-		"policy refs": func(r *ReviewRequest) { r.PolicyRefs = []string{"docs/workflow.md"} },
-	}
-	for name, mutate := range variants {
-		t.Run(name, func(t *testing.T) {
-			got := sampleReviewRequest(t)
-			mutate(&got)
-			if requireReviewRequestDigest(t, got) == want {
-				t.Fatal("semantic identity の変更で Review Request digest が変わらない")
-			}
-		})
+	got := sampleReviewRequest(t)
+	got.Issue = IssueRef{Owner: "MrBaron3", Repository: "Kudo", Number: req.Issue.Number}
+	if digest := requireReviewRequestDigest(t, got); digest != want {
+		t.Fatalf("issue reference の case 差分で digest が変化: got %s, want %s", digest, want)
 	}
 }
 

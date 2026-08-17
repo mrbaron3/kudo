@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // recompile は同じ Issue identity で body を compile し直し、Context Manifest まで
@@ -170,91 +171,244 @@ func TestTaskContextDifferenceIsStale(t *testing.T) {
 	}
 }
 
+// identityRole は envelope の field が content identity と staleness 比較に対して持つ役割である。
+//
+// 分類を宣言だけで済ませると、新しい field を「その他」へ入れるだけで test が通り、
+// 「digest は別 identity と言うのに comparison は同じ入力と言う」状態が再び作れる。
+// そのため各 role は digest と comparison の実際の振る舞いで検証する。
+type identityRole int
+
+const (
+	// roleSemanticInput は digest に効き、再取得入力として comparison も見る field。
+	roleSemanticInput identityRole = iota
+	// roleAuditLineage は digest に効かず、観測の変化として comparison が報告する field。
+	roleAuditLineage
+	// roleIdentityOnly は digest に効くが、再取得できる入力ではない field。
+	// Operation が「どの transition のどの Run のどの Issue に対する何の作業か」を
+	// 決める値であり、最新入力として取り直す対象ではない。
+	roleIdentityOnly
+	// roleNonIdentity は digest に効かない実行時 metadata。
+	roleNonIdentity
+	// roleFixedSchema は有効値が一つしかなく、mutation では役割を検証できない field。
+	roleFixedSchema
+)
+
+// identityCase は 1 field の役割と、それを確かめるための最小の変更である。
+// compared は roleSemanticInput のときに comparison が返す field 名である。
+type identityCase[T any, L any] struct {
+	field    string
+	role     identityRole
+	compared string
+	mutate   func(*T)
+	latest   func(*L)
+}
+
 // requireFieldPartition は type の field 名が、渡した group の和集合とちょうど一致することを検証する。
 // 分類漏れの field をそのまま通すと、この test は「意図した集合」ではなく「今の実装」を写すだけになる。
-func requireFieldPartition(t *testing.T, typ reflect.Type, groups ...[]string) {
+func requireFieldPartition(t *testing.T, typ reflect.Type, names map[string]bool) {
 	t.Helper()
-	want := map[string]bool{}
-	for _, group := range groups {
-		for _, name := range group {
-			if want[name] {
-				t.Fatalf("%s: field %q が複数の group に属している", typ.Name(), name)
-			}
-			want[name] = true
-		}
+	remaining := map[string]bool{}
+	for name := range names {
+		remaining[name] = true
 	}
 	for i := range typ.NumField() {
 		name := typ.Field(i).Name
-		if !want[name] {
-			t.Fatalf("%s.%s が semantic input / audit / 非入力のどれにも分類されていない", typ.Name(), name)
+		if !names[name] {
+			t.Fatalf("%s.%s が identity role のどれにも分類されていない", typ.Name(), name)
 		}
-		delete(want, name)
+		delete(remaining, name)
 	}
-	for name := range want {
+	for name := range remaining {
 		t.Fatalf("%s に存在しない field %q を分類している", typ.Name(), name)
+	}
+}
+
+func fieldNames[T any, L any](cases []identityCase[T, L], roles ...identityRole) map[string]bool {
+	names := map[string]bool{}
+	for _, c := range cases {
+		if len(roles) == 0 || slices.Contains(roles, c.role) {
+			names[c.field] = true
+		}
+	}
+	return names
+}
+
+// operationIdentityCases は WorkerOperation の全 field を role へ割り当てる。
+func operationIdentityCases() []identityCase[WorkerOperation, LatestOperationInput] {
+	otherManifest := func(o *WorkerOperation) ContextManifestRef {
+		return ContextManifestRef{Schema: o.ContextManifest.Schema, Digest: SHA256([]byte("別 manifest"))}
+	}
+	return []identityCase[WorkerOperation, LatestOperationInput]{
+		{field: "Schema", role: roleFixedSchema},
+		{field: "ContextManifest", role: roleSemanticInput, compared: fieldContextManifest,
+			mutate: func(o *WorkerOperation) { ref := otherManifest(o); o.ContextManifest = &ref },
+			latest: func(l *LatestOperationInput) { l.ContextManifest.Digest = SHA256([]byte("別 manifest")) }},
+		{field: "ContextManifest", role: roleSemanticInput, compared: fieldContextManifest,
+			mutate: func(o *WorkerOperation) {
+				ref := ContextManifestRef{Schema: "kudo.context-manifest/v1beta1", Digest: o.ContextManifest.Digest}
+				o.ContextManifest = &ref
+			},
+			latest: func(l *LatestOperationInput) { l.ContextManifest.Schema = "kudo.context-manifest/v1beta1" }},
+		{field: "ExecutionPolicy", role: roleSemanticInput, compared: fieldExecutionPolicy,
+			mutate: func(o *WorkerOperation) { o.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) },
+			latest: func(l *LatestOperationInput) { l.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) }},
+		{field: "HeadSHA", role: roleSemanticInput, compared: fieldHeadSHA,
+			mutate: func(o *WorkerOperation) { o.HeadSHA = sampleNextSHA },
+			latest: func(l *LatestOperationInput) { l.HeadSHA = sampleNextSHA }},
+		{field: "InputArtifacts", role: roleSemanticInput, compared: fieldInputArtifacts,
+			mutate: func(o *WorkerOperation) { o.InputArtifacts = []Digest{SHA256([]byte("別 input"))} },
+			latest: func(l *LatestOperationInput) { l.InputArtifacts = []Digest{SHA256([]byte("別 input"))} }},
+		{field: "PolicyRefs", role: roleSemanticInput, compared: fieldPolicyRefs,
+			mutate: func(o *WorkerOperation) { o.PolicyRefs = []string{"docs/workflow.md"} },
+			latest: func(l *LatestOperationInput) { l.PolicyRefs = []string{"docs/workflow.md"} }},
+		{field: "Observation", role: roleAuditLineage,
+			mutate: func(o *WorkerOperation) {
+				ref := IssueObservationRef{Schema: o.Observation.Schema, Digest: SHA256([]byte("別 raw body"))}
+				o.Observation = &ref
+			},
+			latest: func(l *LatestOperationInput) { l.Observation.Digest = SHA256([]byte("別 raw body")) }},
+		{field: "Kind", role: roleIdentityOnly, mutate: func(o *WorkerOperation) { o.Kind = OperationReviseTests }},
+		{field: "RunID", role: roleIdentityOnly, mutate: func(o *WorkerOperation) { o.RunID = "run-02" }},
+		{field: "Issue", role: roleIdentityOnly, mutate: func(o *WorkerOperation) { o.Issue.Number = 11 }},
+		{field: "CausationID", role: roleIdentityOnly, mutate: func(o *WorkerOperation) { o.CausationID = "transition-02" }},
+		{field: "OperationID", role: roleNonIdentity, mutate: func(o *WorkerOperation) { o.OperationID = "op-02" }},
+		{field: "CreatedAt", role: roleNonIdentity, mutate: func(o *WorkerOperation) { o.CreatedAt = sampleCreatedAt.Add(time.Hour) }},
 	}
 }
 
 // content identity が覆う semantic input と、staleness 比較が覆う入力は同じ集合でなければならない。
 // 片側にだけ field を足すと「digest は別 identity、comparison は同じ入力」という状態が作れ、
 // 変わった入力へ古い Result と approval を再利用する経路になる。
-func TestOperationIdentityAndComparisonCoverSameInput(t *testing.T) {
-	semantic := []string{"ContextManifest", "ExecutionPolicy", "HeadSHA", "InputArtifacts", "PolicyRefs"}
-	// Observation は identity ではないが、lineage へ追記する signal として比較入力に含む。
-	auditOnly := []string{"Observation"}
-	requireFieldPartition(t, reflect.TypeOf(WorkerOperation{}), semantic, auditOnly,
-		[]string{"Schema", "OperationID", "RunID", "Kind", "Issue", "CausationID", "CreatedAt"})
-	requireFieldPartition(t, reflect.TypeOf(LatestOperationInput{}), semantic, auditOnly)
+func TestOperationIdentityRolesAreEnforced(t *testing.T) {
+	cases := operationIdentityCases()
+	requireFieldPartition(t, reflect.TypeOf(WorkerOperation{}), fieldNames(cases))
+	requireFieldPartition(t, reflect.TypeOf(LatestOperationInput{}),
+		fieldNames(cases, roleSemanticInput, roleAuditLineage))
 
 	op := sampleWorkerOperation(t)
 	baseDigest := requireOperationDigest(t, op)
-	tests := map[string]struct {
-		field  string
-		change func(*WorkerOperation, *LatestOperationInput)
-	}{
-		"context manifest": {"contextManifest", func(o *WorkerOperation, l *LatestOperationInput) {
-			ref := ContextManifestRef{Schema: o.ContextManifest.Schema, Digest: SHA256([]byte("別 manifest"))}
-			o.ContextManifest, l.ContextManifest = &ref, ref
-		}},
-		"execution policy": {"executionPolicy", func(o *WorkerOperation, l *LatestOperationInput) {
-			o.ExecutionPolicy.Digest = SHA256([]byte("別 policy"))
-			l.ExecutionPolicy = o.ExecutionPolicy
-		}},
-		"head": {"headSha", func(o *WorkerOperation, l *LatestOperationInput) {
-			o.HeadSHA, l.HeadSHA = sampleNextSHA, sampleNextSHA
-		}},
-		"input artifacts": {"inputArtifacts", func(o *WorkerOperation, l *LatestOperationInput) {
-			o.InputArtifacts = []Digest{SHA256([]byte("別 input"))}
-			l.InputArtifacts = append([]Digest(nil), o.InputArtifacts...)
-		}},
-		"policy refs": {"policyRefs", func(o *WorkerOperation, l *LatestOperationInput) {
-			o.PolicyRefs = []string{"docs/workflow.md"}
-			l.PolicyRefs = append([]string(nil), o.PolicyRefs...)
-		}},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
+	for _, c := range cases {
+		if c.role == roleFixedSchema {
+			continue
+		}
+		t.Run(c.field+"/"+c.compared, func(t *testing.T) {
 			changed := sampleWorkerOperation(t)
-			latest := latestFromOperation(changed)
-			tt.change(&changed, &latest)
+			c.mutate(&changed)
+			digest := requireOperationDigest(t, changed)
 
-			if requireOperationDigest(t, changed) == baseDigest {
-				t.Fatalf("%s の変更で Operation digest が変わらない", tt.field)
+			switch c.role {
+			case roleSemanticInput, roleIdentityOnly:
+				if digest == baseDigest {
+					t.Fatalf("%s の変更で Operation digest が変わらない", c.field)
+				}
+			case roleAuditLineage, roleNonIdentity:
+				if digest != baseDigest {
+					t.Fatalf("identity に寄与しない %s の差分で digest が変化", c.field)
+				}
 			}
-			// 変更後の入力を「最新入力」として渡した元の Operation は stale でなければならない
-			if got := requireOperationComparison(t, op, latest); !slices.Contains(got.ChangedFields, tt.field) {
-				t.Fatalf("digest が identity と認めた %s を comparison が報告しない: %+v", tt.field, got)
+			if c.latest == nil {
+				return
+			}
+
+			latest := latestFromOperation(op)
+			c.latest(&latest)
+			got := requireOperationComparison(t, op, latest)
+			if c.role == roleSemanticInput {
+				if !slices.Contains(got.ChangedFields, c.compared) {
+					t.Fatalf("digest が identity と認めた %s を comparison が報告しない: %+v", c.field, got)
+				}
+				return
+			}
+			if !got.ObservationChanged || len(got.ChangedFields) != 0 {
+				t.Fatalf("audit lineage の差分が semantic 変化として報告された: %+v", got)
 			}
 		})
 	}
 }
 
-func TestReviewIdentityAndComparisonCoverSameInput(t *testing.T) {
-	semantic := []string{"ContextManifest", "ExecutionPolicy", "HeadSHA", "ArtifactManifest", "PolicyRefs"}
-	auditOnly := []string{"Observation"}
-	requireFieldPartition(t, reflect.TypeOf(ReviewRequest{}), semantic, auditOnly,
-		[]string{"Schema", "RequestID", "Kind", "ProducerRunID", "Issue", "CreatedAt"})
-	requireFieldPartition(t, reflect.TypeOf(LatestReviewInput{}), semantic, auditOnly)
+// reviewIdentityCases は ReviewRequest の全 field を role へ割り当てる。
+func reviewIdentityCases(t *testing.T) []identityCase[ReviewRequest, LatestReviewInput] {
+	t.Helper()
+	changedManifest := sampleArtifactManifest(t)
+	changedManifest.Entries[0].Digest = SHA256([]byte("別 artifact bytes"))
+	changedRef := requireArtifactManifestRef(t, changedManifest)
+
+	return []identityCase[ReviewRequest, LatestReviewInput]{
+		{field: "Schema", role: roleFixedSchema},
+		{field: "ContextManifest", role: roleSemanticInput, compared: fieldContextManifest,
+			mutate: func(r *ReviewRequest) { r.ContextManifest.Digest = SHA256([]byte("別 manifest")) },
+			latest: func(l *LatestReviewInput) { l.ContextManifest.Digest = SHA256([]byte("別 manifest")) }},
+		{field: "ExecutionPolicy", role: roleSemanticInput, compared: fieldExecutionPolicy,
+			mutate: func(r *ReviewRequest) { r.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) },
+			latest: func(l *LatestReviewInput) { l.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) }},
+		{field: "HeadSHA", role: roleSemanticInput, compared: fieldHeadSHA,
+			mutate: func(r *ReviewRequest) { r.HeadSHA = sampleNextSHA },
+			latest: func(l *LatestReviewInput) { l.HeadSHA = sampleNextSHA }},
+		{field: "ArtifactManifest", role: roleSemanticInput, compared: fieldArtifactManifest,
+			mutate: func(r *ReviewRequest) { r.ArtifactManifest = changedRef },
+			latest: func(l *LatestReviewInput) { l.ArtifactManifest = changedRef }},
+		{field: "ArtifactManifest", role: roleSemanticInput, compared: fieldArtifactManifest,
+			mutate: func(r *ReviewRequest) { r.ArtifactManifest.Schema = "kudo.artifact-manifest/v1beta1" },
+			latest: func(l *LatestReviewInput) { l.ArtifactManifest.Schema = "kudo.artifact-manifest/v1beta1" }},
+		{field: "PolicyRefs", role: roleSemanticInput, compared: fieldPolicyRefs,
+			mutate: func(r *ReviewRequest) { r.PolicyRefs = []string{"docs/workflow.md"} },
+			latest: func(l *LatestReviewInput) { l.PolicyRefs = []string{"docs/workflow.md"} }},
+		{field: "Observation", role: roleAuditLineage,
+			mutate: func(r *ReviewRequest) { r.Observation.Digest = SHA256([]byte("別 raw body")) },
+			latest: func(l *LatestReviewInput) { l.Observation.Digest = SHA256([]byte("別 raw body")) }},
+		{field: "Kind", role: roleIdentityOnly, mutate: func(r *ReviewRequest) { r.Kind = ReviewFinalImplementation }},
+		{field: "Issue", role: roleIdentityOnly, mutate: func(r *ReviewRequest) { r.Issue.Number = 11 }},
+		{field: "RequestID", role: roleNonIdentity, mutate: func(r *ReviewRequest) { r.RequestID = "01KUDOOTHER" }},
+		{field: "ProducerRunID", role: roleNonIdentity, mutate: func(r *ReviewRequest) { r.ProducerRunID = "run-02" }},
+		{field: "CreatedAt", role: roleNonIdentity, mutate: func(r *ReviewRequest) { r.CreatedAt = sampleCreatedAt.Add(time.Hour) }},
+	}
+}
+
+func TestReviewIdentityRolesAreEnforced(t *testing.T) {
+	cases := reviewIdentityCases(t)
+	requireFieldPartition(t, reflect.TypeOf(ReviewRequest{}), fieldNames(cases))
+	requireFieldPartition(t, reflect.TypeOf(LatestReviewInput{}),
+		fieldNames(cases, roleSemanticInput, roleAuditLineage))
+
+	req := sampleReviewRequest(t)
+	baseDigest := requireReviewRequestDigest(t, req)
+	for _, c := range cases {
+		if c.role == roleFixedSchema {
+			continue
+		}
+		t.Run(c.field+"/"+c.compared, func(t *testing.T) {
+			changed := sampleReviewRequest(t)
+			c.mutate(&changed)
+			digest := requireReviewRequestDigest(t, changed)
+
+			switch c.role {
+			case roleSemanticInput, roleIdentityOnly:
+				if digest == baseDigest {
+					t.Fatalf("%s の変更で Review Request digest が変わらない", c.field)
+				}
+			case roleAuditLineage, roleNonIdentity:
+				if digest != baseDigest {
+					t.Fatalf("identity に寄与しない %s の差分で digest が変化", c.field)
+				}
+			}
+			if c.latest == nil {
+				return
+			}
+
+			latest := latestFromRequest(req)
+			c.latest(&latest)
+			got := requireReviewComparison(t, req, latest)
+			if c.role == roleSemanticInput {
+				if !slices.Contains(got.ChangedFields, c.compared) {
+					t.Fatalf("digest が identity と認めた %s を comparison が報告しない: %+v", c.field, got)
+				}
+				return
+			}
+			if !got.ObservationChanged || len(got.ChangedFields) != 0 {
+				t.Fatalf("audit lineage の差分が semantic 変化として報告された: %+v", got)
+			}
+		})
+	}
 }
 
 func TestOperationSemanticDifferenceMatrix(t *testing.T) {

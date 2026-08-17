@@ -25,35 +25,56 @@ const schemaV1Alpha1 = IssueContractSchemaV1Alpha1
 
 // parseIssueRef は github://owner/repository/issues/number 形式の reference を解釈する。
 func parseIssueRef(s string) (IssueRef, bool) {
-	rest, ok := strings.CutPrefix(s, "github://")
+	owner, repo, number, ok := parseGitHubRef(s, "issues")
 	if !ok {
 		return IssueRef{}, false
 	}
-	parts := strings.Split(rest, "/")
-	if len(parts) != 4 || parts[2] != "issues" {
-		return IssueRef{}, false
+	// GitHub は owner / repository を case-insensitive に扱う。表記の case 差分が
+	// 別 identity として下流の digest まで伝播しないよう、parse 境界で正規化する。
+	return IssueRef{Owner: owner, Repository: repo, Number: number}.canonical(), true
+}
+
+// ParsePullRequestRef は github://owner/repository/pull/number 形式の reference を解釈する。
+// Operation Result の external reference から PR identity を復元するために使う。
+// 返す ref は owner / repository を小文字へ正規化済みである。
+func ParsePullRequestRef(s string) (PullRequestRef, bool) {
+	owner, repo, number, ok := parseGitHubRef(s, "pull")
+	if !ok {
+		return PullRequestRef{}, false
 	}
-	owner, repo, num := parts[0], parts[1], parts[3]
-	if !validOwner(owner) || !validRepoName(repo) {
-		return IssueRef{}, false
+	return PullRequestRef{Owner: owner, Repository: repo, Number: number}.canonical(), true
+}
+
+// parseGitHubRef は github://owner/repository/<segment>/number を分解する。
+// number は canonical な十進表記だけを許可し、先頭 0 や符号付き表記を別表記として通さない。
+func parseGitHubRef(s, segment string) (owner, repository string, number int, ok bool) {
+	rest, found := strings.CutPrefix(s, "github://")
+	if !found {
+		return "", "", 0, false
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 4 || parts[2] != segment {
+		return "", "", 0, false
+	}
+	owner, repository, num := parts[0], parts[1], parts[3]
+	if !validOwner(owner) || !validRepoName(repository) {
+		return "", "", 0, false
 	}
 	if len(num) == 0 || num[0] == '0' {
-		return IssueRef{}, false
+		return "", "", 0, false
 	}
 	// strconv.Atoi は符号（+31 等）を許容するため、digit だけを明示的に許可し
 	// canonical でない表現を排除する
 	for i := 0; i < len(num); i++ {
 		if num[i] < '0' || num[i] > '9' {
-			return IssueRef{}, false
+			return "", "", 0, false
 		}
 	}
 	n, err := strconv.Atoi(num)
 	if err != nil || n <= 0 {
-		return IssueRef{}, false
+		return "", "", 0, false
 	}
-	// GitHub は owner / repository を case-insensitive に扱う。表記の case 差分が
-	// 別 identity として下流の digest まで伝播しないよう、parse 境界で正規化する。
-	return IssueRef{Owner: owner, Repository: repo, Number: n}.canonical(), true
+	return owner, repository, n, true
 }
 
 func validOwner(s string) bool {
@@ -88,8 +109,15 @@ func sameRepository(r IssueRef, self repositoryRef) bool {
 }
 
 // validAuthorityPath は repository 内 relative path として許可される形かを検証する。
+//
+// path 形状に加えて canonical な単一行であることを要求する。この値は authority ref、
+// policy ref のいずれとしても canonical bytes と PostgreSQL text へ載るため、改行や
+// control character を含む値を通すと、拒否が保存段階まで遅れる。
 func validAuthorityPath(p string) bool {
-	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "\\") {
+	if !validCanonicalLine(p) {
+		return false
+	}
+	if strings.HasPrefix(p, "/") || strings.Contains(p, "\\") {
 		return false
 	}
 	if path.Clean(p) != p {

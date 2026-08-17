@@ -104,7 +104,9 @@ Result digestは、schema、参照するOperation digest、outcome、head SHA、
 | --- | --- | --- | --- |
 | `claim` | 返さない | 1件以上必須 | 任意 |
 | `author_tests`、`revise_tests`、`implement`、`repair_implementation` | 必須 | 1件以上必須 | 任意 |
-| `create_pull_request` | 入力`headSha`と一致 | 任意 | 1件以上必須 |
+| `create_pull_request` | 入力`headSha`と一致 | 任意 | 同じrepositoryのPR referenceを1件以上必須 |
+
+外部referenceは`github://owner/repository/pull/<number>`形式のcanonicalなPull Request referenceとする。非空判定だけでは、成功と主張するResultからPR numberとURLを復元できず、retry時の既存PR照合とdurable handoffが成立しない。Issue referenceと同じく、numberは先頭0や符号を含まない十進表記だけを許可し、owner/repositoryはcase-insensitiveに正規化する。Operationが対象とするrepository以外のPR referenceは成功の根拠にしない。
 
 `succeeded`は「Operation contractを満たすoutputがimmutableに固定された」ことを意味する。outputを残さない成功を受理すると、後続Operationとreviewが存在しないartifactを前提に進む。`create_pull_request`はsource headを進めずapproved headを観測してPRを作るOperationなので、Result headが入力headと一致しないことは、reviewしていないheadへ外部mutationを行ったことを意味する。binding境界で拒否する。
 
@@ -138,6 +140,8 @@ Issue Workerだけがimplementation worktree、branch、commit、Pull Requestを
 ## Validation
 
 unknown schema/version、unknown kind、欠落required field、kindに許されないfield combination、digest/bytes不一致をrejectする。invalid payloadをproviderへ渡さず、retry可能なtransport failureにも変換しない。
+
+`policyRefs`と`authorityRefs`のrepository-relative pathは、canonicalな単一行であることを要求する。改行やcontrol characterを含む値はcanonical bytesとPostgreSQL textの両方へ載るため、protocol層で拒否する。
 
 `operationId`、`runId`、`attemptId`、`causationId`等のidentifierは、英数字で始まり、英数字と`-`、`_`、`.`だけを含む128文字以内の値とする。Runはworkspaceを持つためidentifierはpath segmentへも載りうる。`.`や`..`のような値をprotocol層で通すと、拒否がfilesystem層まで遅れる。
 

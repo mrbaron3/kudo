@@ -43,8 +43,10 @@ type operationKindRule struct {
 	outputArtifacts bool
 	// preservesHead は承認済み head を進めず観測するだけの kind で true。
 	preservesHead bool
-	// externalRefs は成功が外部 mutation の reference を残す kind で true。
-	externalRefs bool
+	// pullRequestRef は成功が作成した Pull Request の canonical reference を
+	// 残さなければならない kind で true。非空判定だけでは PR identity を復元できず、
+	// retry 時の既存 PR 照合も durable handoff も成立しない。
+	pullRequestRef bool
 }
 
 var operationKindRules = map[OperationKind]operationKindRule{
@@ -53,7 +55,7 @@ var operationKindRules = map[OperationKind]operationKindRule{
 	OperationReviseTests:          {resolvedContext: true, priorArtifacts: true, outputArtifacts: true},
 	OperationImplement:            {resolvedContext: true, priorArtifacts: true, outputArtifacts: true},
 	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true, outputArtifacts: true},
-	OperationCreatePullRequest:    {resolvedContext: true, priorArtifacts: true, preservesHead: true, externalRefs: true},
+	OperationCreatePullRequest:    {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
 }
 
 // WorkerOperation は Controller が queue へ記録する run-once Operation である。
@@ -356,8 +358,9 @@ func bindSucceededOutput(op WorkerOperation, result OperationResult, rule operat
 	if rule.outputArtifacts && len(result.OutputArtifacts) == 0 {
 		return fmt.Errorf("kind %q の succeeded Result は output artifact を固定しなければならない", op.Kind)
 	}
-	if rule.externalRefs && len(result.ExternalRefs) == 0 {
-		return fmt.Errorf("kind %q の succeeded Result は外部 mutation の reference を残さなければならない", op.Kind)
+	if rule.pullRequestRef && !containsPullRequestRef(result.ExternalRefs, op.Issue) {
+		return fmt.Errorf("kind %q の succeeded Result は同じ repository の canonical な PR reference を残さなければならない: %v",
+			op.Kind, result.ExternalRefs)
 	}
 	// head を進めない kind が別 head を報告できると、review していない head に対する
 	// 外部 mutation が gate を通る。
@@ -366,6 +369,19 @@ func bindSucceededOutput(op WorkerOperation, result OperationResult, rule operat
 			op.Kind, result.HeadSHA, op.HeadSHA)
 	}
 	return nil
+}
+
+// containsPullRequestRef は Operation と同じ repository の PR reference が
+// external ref に含まれるかを返す。別 repository の PR を成功の根拠にできると、
+// Run が触っていない repository の PR が gate を通る。
+func containsPullRequestRef(refs []string, issue IssueRef) bool {
+	for _, ref := range refs {
+		pr, ok := ParsePullRequestRef(ref)
+		if ok && pr.sameRepository(issue) {
+			return true
+		}
+	}
+	return false
 }
 
 // OperationAttemptOutcome は 1 attempt の結末である。Review 側の ReviewAttemptOutcome と

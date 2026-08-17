@@ -115,32 +115,16 @@ func TestWorkerOperationCanonicalGolden(t *testing.T) {
 	}
 }
 
-// audit lineage と実行時 metadata は content identity へ混入させない。
-// 混入させると、HTML comment 編集や retry のたびに別 Operation になり、
-// 既存の approval と queue の重複判定が壊れる。
-func TestOperationDigestExcludesAuditAndAttemptFields(t *testing.T) {
+// GitHub は owner / repository を case-insensitive に扱う。同じ Issue を指す reference が
+// 表記の case 差分だけで別 Operation identity にならないことを固定する。
+func TestOperationDigestCanonicalizesIssueReferenceCase(t *testing.T) {
 	op := sampleWorkerOperation(t)
 	want := requireOperationDigest(t, op)
 
-	changedObservation := *op.Observation
-	changedObservation.Digest = SHA256([]byte("別 raw body"))
-
-	variants := map[string]func(*WorkerOperation){
-		"issue observation": func(o *WorkerOperation) { o.Observation = &changedObservation },
-		"operation id":      func(o *WorkerOperation) { o.OperationID = "op-02" },
-		"created at":        func(o *WorkerOperation) { o.CreatedAt = sampleCreatedAt.Add(time.Hour) },
-		"issue reference case": func(o *WorkerOperation) {
-			o.Issue = IssueRef{Owner: "MrBaron3", Repository: "Kudo", Number: o.Issue.Number}
-		},
-	}
-	for name, mutate := range variants {
-		t.Run(name, func(t *testing.T) {
-			got := sampleWorkerOperation(t)
-			mutate(&got)
-			if digest := requireOperationDigest(t, got); digest != want {
-				t.Fatalf("identity に寄与しない差分で digest が変化: got %s, want %s", digest, want)
-			}
-		})
+	got := sampleWorkerOperation(t)
+	got.Issue = IssueRef{Owner: "MrBaron3", Repository: "Kudo", Number: op.Issue.Number}
+	if digest := requireOperationDigest(t, got); digest != want {
+		t.Fatalf("issue reference の case 差分で digest が変化: got %s, want %s", digest, want)
 	}
 }
 
@@ -157,41 +141,6 @@ func TestOperationDigestCanonicalizesSetOrder(t *testing.T) {
 
 	if requireOperationDigest(t, ordered) != requireOperationDigest(t, reversed) {
 		t.Fatal("集合の並び替えで Operation digest が変化")
-	}
-}
-
-func TestOperationDigestCoversSemanticIdentity(t *testing.T) {
-	base := sampleWorkerOperation(t)
-	baseDigest := requireOperationDigest(t, base)
-
-	otherManifest := *base.ContextManifest
-	otherManifest.Digest = SHA256([]byte("別 manifest"))
-	sameDigestOtherSchema := *base.ContextManifest
-	sameDigestOtherSchema.Schema = "kudo.context-manifest/v1beta1"
-	otherPolicy := base.ExecutionPolicy
-	otherPolicy.Digest = SHA256([]byte("別 policy"))
-
-	variants := map[string]func(*WorkerOperation){
-		"kind":                 func(o *WorkerOperation) { o.Kind = OperationReviseTests },
-		"run":                  func(o *WorkerOperation) { o.RunID = "run-02" },
-		"issue":                func(o *WorkerOperation) { o.Issue.Number = 11 },
-		"context manifest":     func(o *WorkerOperation) { o.ContextManifest = &otherManifest },
-		"manifest ref schema":  func(o *WorkerOperation) { o.ContextManifest = &sameDigestOtherSchema },
-		"execution policy":     func(o *WorkerOperation) { o.ExecutionPolicy = otherPolicy },
-		"head sha":             func(o *WorkerOperation) { o.HeadSHA = sampleNextSHA },
-		"input artifacts":      func(o *WorkerOperation) { o.InputArtifacts = []Digest{SHA256([]byte("別 input"))} },
-		"input artifact count": func(o *WorkerOperation) { o.InputArtifacts = nil },
-		"policy refs":          func(o *WorkerOperation) { o.PolicyRefs = []string{"docs/workflow.md"} },
-		"causation":            func(o *WorkerOperation) { o.CausationID = "transition-02" },
-	}
-	for name, mutate := range variants {
-		t.Run(name, func(t *testing.T) {
-			got := sampleWorkerOperation(t)
-			mutate(&got)
-			if requireOperationDigest(t, got) == baseDigest {
-				t.Fatal("semantic identity の変更で Operation digest が変わらない")
-			}
-		})
 	}
 }
 
@@ -595,5 +544,67 @@ func TestCreatePullRequestBindsApprovedHeadAndReference(t *testing.T) {
 	authoring := sampleWorkerOperation(t)
 	if err := BindOperationResult(authoring, sampleOperationResult(t, authoring)); err != nil {
 		t.Fatalf("head を進める kind の Result を拒否した: %v", err)
+	}
+}
+
+// create_pull_request の外部 reference は「非空」では足りない。protocol は出力として
+// PR number と URL を要求しており、retry 時の既存 PR 照合もこの reference から行う。
+// 復元できない文字列で succeeded を bind できると、durable handoff が成立しない。
+func TestCreatePullRequestRequiresCanonicalPullRequestRef(t *testing.T) {
+	op := sampleWorkerOperation(t)
+	op.Kind = OperationCreatePullRequest
+	result := sampleOperationResult(t, op)
+	result.HeadSHA = op.HeadSHA
+	result.OutputArtifacts = nil
+
+	valid := PullRequestRef{Owner: op.Issue.Owner, Repository: op.Issue.Repository, Number: 42}
+	result.ExternalRefs = []string{valid.String()}
+	if err := BindOperationResult(op, result); err != nil {
+		t.Fatalf("canonical な PR reference を拒否した: %v", err)
+	}
+
+	rejected := map[string][]string{
+		"PR reference でない":   {"ok"},
+		"Issue reference":    {op.Issue.String()},
+		"別 repository":       {PullRequestRef{Owner: "other", Repository: "repo", Number: 42}.String()},
+		"番号が 0":              {"github://mrbaron3/kudo/pull/0"},
+		"canonical でない番号":    {"github://mrbaron3/kudo/pull/042"},
+		"PR reference を含まない": {"https://github.com/mrbaron3/kudo/pull/42"},
+	}
+	for name, refs := range rejected {
+		t.Run(name, func(t *testing.T) {
+			got := result
+			got.ExternalRefs = refs
+			if err := BindOperationResult(op, got); err == nil {
+				t.Fatal("PR identity を復元できない external reference を受理した")
+			}
+		})
+	}
+
+	// PR reference さえ含めば、追加の reference は妨げない
+	extra := result
+	extra.ExternalRefs = []string{valid.String(), "workflow-run-1"}
+	if err := BindOperationResult(op, extra); err != nil {
+		t.Fatalf("追加 reference を持つ Result を拒否した: %v", err)
+	}
+}
+
+func TestPullRequestRefParsing(t *testing.T) {
+	ref, ok := ParsePullRequestRef("github://MrBaron3/Kudo/pull/42")
+	if !ok {
+		t.Fatal("canonical 化できる PR reference を拒否した")
+	}
+	// Issue reference と同じく、owner/repository の case 差分は別 identity にしない
+	if ref.String() != "github://mrbaron3/kudo/pull/42" {
+		t.Fatalf("canonical 表記 = %q", ref.String())
+	}
+
+	for _, value := range []string{
+		"", "github://mrbaron3/kudo/pull", "github://mrbaron3/kudo/pull/", "github://mrbaron3/kudo/issues/42",
+		"github://mrbaron3/kudo/pull/+42", "github://mrbaron3/kudo/pull/42/files", "mrbaron3/kudo/pull/42",
+	} {
+		if _, ok := ParsePullRequestRef(value); ok {
+			t.Errorf("PR reference として %q を受理した", value)
+		}
 	}
 }

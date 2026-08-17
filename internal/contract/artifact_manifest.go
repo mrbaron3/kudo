@@ -2,7 +2,6 @@ package contract
 
 import (
 	"fmt"
-	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -118,15 +117,9 @@ func validArtifactName(name string) bool {
 			return false
 		}
 	}
-	if path.Clean(name) != name {
-		return false
-	}
-	for _, seg := range strings.Split(name, "/") {
-		if seg == "" || seg == "." || seg == ".." {
-			return false
-		}
-	}
-	return true
+	// path 形状の判定は authority path と同じ述語を使う。二重に実装すると、
+	// 片方だけを強化したときにもう片方が黙って古い規則のまま残る。
+	return validAuthorityPath(name)
 }
 
 // encodeArtifactManifest は entry を logical name 順に並べて encode する。
