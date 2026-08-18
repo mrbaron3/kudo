@@ -247,7 +247,7 @@ func validateReviewFinding(index int, finding ReviewFinding) error {
 			"severity が不正: %q", finding.Severity)
 	}
 	if !validCanonicalLine(finding.Summary, MaxCanonicalLineBytes) {
-		return protocolErr(canonicalTextCode(finding.Summary, MaxCanonicalLineBytes), findingField(index, "summary"),
+		return protocolErr(canonicalLineCode(finding.Summary, MaxCanonicalLineBytes), findingField(index, "summary"),
 			"空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
 	}
 	for _, body := range []struct{ name, value string }{

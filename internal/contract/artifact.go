@@ -92,7 +92,7 @@ func (p ArtifactPayload) Validate() error {
 		return protocolErr(ProtocolKindConstraint, "schema",
 			"kind %q は versioned schema を持たない: %q", p.Kind, p.Schema)
 	case rule.schemaPrefix != "" && !validSchemaIdentity(p.Schema, rule.schemaPrefix):
-		return protocolErr(ProtocolSchemaUnknown, "schema",
+		return protocolSchemaErr("schema", p.Schema,
 			"kind %q の artifact schema が不正: %q", p.Kind, p.Schema)
 	}
 	if p.MediaType != rule.mediaType {
@@ -115,6 +115,9 @@ func (p ArtifactPayload) Validate() error {
 func readVersionedArtifact(kind ArtifactKind, schema string, digest Digest, payload ArtifactPayload) ([]byte, error) {
 	if schema == "" {
 		return nil, protocolErr(ProtocolFieldMissing, "schema", "artifact ref schema が空")
+	}
+	if digest == "" {
+		return nil, protocolErr(ProtocolFieldMissing, "digest", "artifact ref digest が空")
 	}
 	if !digest.Valid() {
 		return nil, protocolErr(ProtocolFieldInvalid, "digest", "artifact ref digest が不正: %q", digest)

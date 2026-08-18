@@ -103,7 +103,7 @@ dependency completion identityには、少なくともIssue reference、complete
 
 ### Authority references
 
-v1alpha1の`authorityRefs`は、対象repository内のrelative pathと、同じrepositoryの`github://.../issues/<number>`だけを許可する。repository-relative referenceはclaim対象base commitで解決し、content digestを記録する。GitHub Issue referenceはIssue本文を直接取得してbody digestを記録する。cross-repository reference、mutableな一般URL、versionを固定できないreferenceは実装authorityとして扱わない。
+v1alpha1の`authorityRefs`は、対象repository内のrelative pathと、同じrepositoryの`github://.../issues/<number>`だけを許可する。repository-relative pathはcanonicalな単一行かつ1024 byte以内とし、上限超過はIssue本文の行を指すclaim rejectionとして扱う。この値は同じ上限を持つContext Manifestへ載るため、artifact生成まで拒否を遅らせない。repository-relative referenceはclaim対象base commitで解決し、content digestを記録する。GitHub Issue referenceはIssue本文を直接取得してbody digestを記録する。cross-repository reference、mutableな一般URL、versionを固定できないreferenceは実装authorityとして扱わない。
 
 実装authorityは`authorityRefs`だけを正とする。`parent`と`dependsOn`はrelationshipとreadiness gateであり、それ自体はauthorityではない。Contract blockにないreferenceをproseから推測して取得しない。referenceが解決できない場合はclaimを拒否する。
 

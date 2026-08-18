@@ -55,8 +55,8 @@ func TestProtocolErrorsAreClassifiableWithoutStringMatching(t *testing.T) {
 }
 
 // TestProtocolViolationRejectsTransportFailure は validation error と transport failure が
-// 同じ値空間へ入らないことを固定する。retry 判定できない error を retry 可能側へ倒すと、
-// contract 違反を無限に retry しうるため、既定は fail-closed である。
+// 同じ値空間へ入らないことを固定する。false は retry 可否の判定ではないため、呼び出し側は
+// transport failure を別経路で分類し、判定不能な error を fail-closed に扱う。
 func TestProtocolViolationRejectsTransportFailure(t *testing.T) {
 	transport := AttemptFailure{
 		Class:     FailureTimeout,
@@ -93,6 +93,79 @@ func TestCanonicalTextRejectsOversizedEvidence(t *testing.T) {
 	}
 }
 
+func TestMissingVersionedRefSchemaUsesFieldMissing(t *testing.T) {
+	op := sampleWorkerOperation(t)
+	op.ExecutionPolicy.Schema = ""
+
+	err := ValidateWorkerOperation(op)
+	if !errors.Is(err, ProtocolFieldMissing) {
+		t.Fatalf("空の ref schema が %q へ分類されない: %v", ProtocolFieldMissing, err)
+	}
+	if errors.Is(err, ProtocolSchemaUnknown) {
+		t.Fatalf("空の ref schema が unknown schema としても分類された: %v", err)
+	}
+
+	compiled := requireCompiled(t, readFixture(t, "valid/full.md"))
+	for _, tt := range []struct {
+		name   string
+		mutate func(*ContextManifest)
+	}{
+		{
+			name: "context manifest task context schema",
+			mutate: func(manifest *ContextManifest) {
+				manifest.TaskContext.Schema = ""
+			},
+		},
+		{
+			name: "context manifest task context digest",
+			mutate: func(manifest *ContextManifest) {
+				manifest.TaskContext.Digest = ""
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := sampleContextManifest(compiled)
+			tt.mutate(&manifest)
+			_, _, err := EncodeContextManifest(compiled.ClaimRequirements, manifest)
+			if !errors.Is(err, ProtocolFieldMissing) {
+				t.Fatalf("空の TaskContextRef field が %q へ分類されない: %v", ProtocolFieldMissing, err)
+			}
+		})
+	}
+}
+
+func TestEmptyCanonicalScalarUsesFieldInvalid(t *testing.T) {
+	failure := AttemptFailure{
+		Class:     FailureProviderCrash,
+		AttemptID: "attempt-01",
+		Evidence:  "",
+	}
+	err := failure.Validate()
+	if !errors.Is(err, ProtocolFieldInvalid) {
+		t.Fatalf("空の canonical text が %q へ分類されない: %v", ProtocolFieldInvalid, err)
+	}
+	if errors.Is(err, ProtocolFieldMissing) {
+		t.Fatalf("空の canonical text が required field の欠落としても分類された: %v", err)
+	}
+}
+
+func TestCanonicalTextCompoundViolationUsesFieldInvalid(t *testing.T) {
+	failure := AttemptFailure{
+		Class:     FailureProviderCrash,
+		AttemptID: "attempt-01",
+		Evidence:  strings.Repeat("e", MaxCanonicalTextBytes) + "\x00",
+	}
+	if err := failure.Validate(); !errors.Is(err, ProtocolFieldInvalid) {
+		t.Fatalf("上限超過と control character の複合違反が %q へ分類されない: %v", ProtocolFieldInvalid, err)
+	}
+
+	result := sampleReviewResult(t, sampleReviewRequest(t))
+	result.Findings[0].Summary = strings.Repeat("s", MaxCanonicalLineBytes) + "\n"
+	if err := ValidateReviewResult(result); !errors.Is(err, ProtocolFieldInvalid) {
+		t.Fatalf("上限超過と改行の複合違反が %q へ分類されない: %v", ProtocolFieldInvalid, err)
+	}
+}
+
 // TestEveryProtocolValidatorReturnsClassifiableError は、protocol validator が返す拒否を
 // 一つ残らず分類可能に保つ。
 //
@@ -104,6 +177,7 @@ func TestEveryProtocolValidatorReturnsClassifiableError(t *testing.T) {
 	op := sampleWorkerOperation(t)
 	claimOp := sampleClaimOperation(t)
 	req := sampleReviewRequest(t)
+	compiled := requireCompiled(t, readFixture(t, "valid/full.md"))
 
 	badDigest := Digest("sha256:not-a-digest")
 
@@ -200,6 +274,32 @@ func TestEveryProtocolValidatorReturnsClassifiableError(t *testing.T) {
 				Kind: ArtifactKindRawIssueBody, MediaType: MediaTypeMarkdown, Digest: badDigest,
 			}.Validate()
 		},
+		"read/issue-observation": func() error {
+			_, err := ReadIssueObservationArtifact(IssueObservationRef{Schema: "invalid"}, ArtifactPayload{})
+			return err
+		},
+		"read/task-context": func() error {
+			_, err := ReadTaskContextArtifact(TaskContextRef{Schema: "invalid"}, ArtifactPayload{})
+			return err
+		},
+		"read/context-manifest": func() error {
+			_, err := ReadContextManifestArtifact(ContextManifestRef{Schema: "invalid"}, ArtifactPayload{})
+			return err
+		},
+		"read/execution-policy": func() error {
+			_, err := ReadExecutionPolicyArtifact(ExecutionPolicyRef{Schema: "invalid"}, ArtifactPayload{})
+			return err
+		},
+		"read/artifact-manifest": func() error {
+			_, err := ReadArtifactManifestArtifact(ArtifactManifestRef{Schema: "invalid"}, ArtifactPayload{})
+			return err
+		},
+		"context-manifest/schema": func() error {
+			manifest := sampleContextManifest(compiled)
+			manifest.Schema = "invalid"
+			_, _, err := EncodeContextManifest(compiled.ClaimRequirements, manifest)
+			return err
+		},
 		"execution-policy/field": func() error {
 			bad := sampleExecutionPolicy()
 			bad.IssueWorker.Provider = ""
@@ -214,6 +314,14 @@ func TestEveryProtocolValidatorReturnsClassifiableError(t *testing.T) {
 		},
 		"comparison/claim-has-no-semantic-input": func() error {
 			_, err := CompareOperationInput(claimOp, LatestOperationInput{})
+			return err
+		},
+		"comparison/review-input": func() error {
+			_, err := CompareReviewInput(req, LatestReviewInput{})
+			return err
+		},
+		"lineage/initial": func() error {
+			_, err := NewObservationLineage(IssueObservationRef{})
 			return err
 		},
 		"lineage/empty": func() error {

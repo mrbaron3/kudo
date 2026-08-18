@@ -108,13 +108,16 @@ func sameRepository(r IssueRef, self repositoryRef) bool {
 	return strings.EqualFold(r.Owner, self.Owner) && strings.EqualFold(r.Repository, self.Name)
 }
 
-// validAuthorityPath は repository 内 relative path として許可される形かを検証する。
+// validAuthorityPath は Issue Contract が許可する repository 内 relative path かを検証する。
 //
-// path 形状に加えて canonical な単一行であることを要求する。この値は authority ref、
-// policy ref のいずれとしても canonical bytes と PostgreSQL text へ載るため、改行や
-// control character を含む値を通すと、拒否が保存段階まで遅れる。
+// authority ref は後続の Context Manifest へ同じ値を載せるため、そこで確実に拒否される
+// 上限超過も Issue body の行番号を保持できる parser 境界で拒否する。
 func validAuthorityPath(p string) bool {
-	if !validCanonicalLine(p, MaxCanonicalLineBytes) {
+	return len(p) <= MaxCanonicalLineBytes && validAuthorityPathFormat(p)
+}
+
+func validAuthorityPathFormat(p string) bool {
+	if !validCanonicalLineFormat(p) {
 		return false
 	}
 	if strings.HasPrefix(p, "/") || strings.Contains(p, "\\") {
@@ -129,6 +132,17 @@ func validAuthorityPath(p string) bool {
 		}
 	}
 	return true
+}
+
+func validProtocolAuthorityPath(p string) bool {
+	return len(p) <= MaxCanonicalLineBytes && validAuthorityPathFormat(p)
+}
+
+func protocolAuthorityPathCode(p string) ProtocolCode {
+	if validAuthorityPathFormat(p) && len(p) > MaxCanonicalLineBytes {
+		return ProtocolFieldTooLong
+	}
+	return ProtocolFieldInvalid
 }
 
 // buildContract は yamlEntry 列を typed parsedContract へ変換し、semantic rule を検証する。

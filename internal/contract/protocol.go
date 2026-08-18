@@ -71,10 +71,11 @@ const (
 // 両方から呼ばれ、妥当な上限が呼び出し側ごとに違うためである。既定値を持たせると、
 // 新しい呼び出し側が上限を意識しないまま無関係な水準を継承する。
 func validCanonicalText(value string, maxBytes int) bool {
+	return len(value) <= maxBytes && validCanonicalTextFormat(value)
+}
+
+func validCanonicalTextFormat(value string) bool {
 	if !utf8.ValidString(value) || strings.TrimSpace(value) == "" {
-		return false
-	}
-	if len(value) > maxBytes {
 		return false
 	}
 	for _, r := range value {
@@ -89,14 +90,25 @@ func validCanonicalText(value string, maxBytes int) bool {
 
 // validCanonicalLine は改行と TAB を含まない単一行の値を検証する。
 func validCanonicalLine(value string, maxBytes int) bool {
-	return validCanonicalText(value, maxBytes) && !strings.ContainsAny(value, "\n\t")
+	return len(value) <= maxBytes && validCanonicalLineFormat(value)
+}
+
+func validCanonicalLineFormat(value string) bool {
+	return validCanonicalTextFormat(value) && !strings.ContainsAny(value, "\n\t")
 }
 
 // canonicalTextCode は拒否理由を上限超過とその他の形式違反へ分ける。
 // 上限超過は producer 側が本文を切り詰めれば通る失敗であり、control character 混入や
 // 空文字とは対処が違う。同じ code へ潰すと、Controller は両者を区別できない。
 func canonicalTextCode(value string, maxBytes int) ProtocolCode {
-	if len(value) > maxBytes {
+	if validCanonicalTextFormat(value) && len(value) > maxBytes {
+		return ProtocolFieldTooLong
+	}
+	return ProtocolFieldInvalid
+}
+
+func canonicalLineCode(value string, maxBytes int) ProtocolCode {
+	if validCanonicalLineFormat(value) && len(value) > maxBytes {
 		return ProtocolFieldTooLong
 	}
 	return ProtocolFieldInvalid
@@ -104,7 +116,10 @@ func canonicalTextCode(value string, maxBytes int) ProtocolCode {
 
 func validateVersionedRef(name, schema string, digest Digest, prefix string) error {
 	if !validSchemaIdentity(schema, prefix) {
-		return protocolErr(ProtocolSchemaUnknown, name, "schema が不正: %q", schema)
+		return protocolSchemaErr(name, schema, "schema が不正: %q", schema)
+	}
+	if digest == "" {
+		return protocolErr(ProtocolFieldMissing, name, "digest が空")
 	}
 	if !digest.Valid() {
 		return protocolErr(ProtocolFieldInvalid, name, "digest が不正: %q", digest)
@@ -152,8 +167,8 @@ func validatePolicyRefs(refs []string) error {
 	seen := map[string]bool{}
 	for i, ref := range refs {
 		field := fmt.Sprintf("policyRefs[%d]", i)
-		if !validAuthorityPath(ref) {
-			return protocolErr(canonicalTextCode(ref, MaxCanonicalLineBytes), field,
+		if !validProtocolAuthorityPath(ref) {
+			return protocolErr(protocolAuthorityPathCode(ref), field,
 				"repository-relative path でない: %q", ref)
 		}
 		if seen[ref] {
@@ -169,7 +184,7 @@ func validateLineSet(name string, values []string) error {
 	for i, value := range values {
 		field := fmt.Sprintf("%s[%d]", name, i)
 		if !validCanonicalLine(value, MaxCanonicalLineBytes) {
-			return protocolErr(canonicalTextCode(value, MaxCanonicalLineBytes), field,
+			return protocolErr(canonicalLineCode(value, MaxCanonicalLineBytes), field,
 				"canonical な単一行でない")
 		}
 		if seen[value] {

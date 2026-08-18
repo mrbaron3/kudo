@@ -1,6 +1,10 @@
 package contract
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 // protocol identifier は canonical bytes と database key だけでなく、Run workspace の
 // path segment としても使われうる。`..` のような値を protocol 層が通すと、拒否が
@@ -77,5 +81,20 @@ func TestAuthorityPathRejectsNonCanonicalText(t *testing.T) {
 	req.PolicyRefs = []string{"docs/a\nb.md"}
 	if err := ValidateReviewRequest(req); err == nil {
 		t.Fatal("改行を含む policyRef を受理した")
+	}
+}
+
+func TestIssueContractAuthorityPathRejectsOversizeBeforeArtifactEncoding(t *testing.T) {
+	path := strings.Repeat("a", MaxCanonicalLineBytes+1)
+	body := strings.Replace(readFixture(t, "valid/full.md"), "  - AGENTS.md", "  - "+path, 1)
+	_, errs := Compile(body, compilerTestIssue)
+	if len(errs) != 1 || errs[0].Code != CodeRefInvalid || errs[0].Field != "authorityRefs" {
+		t.Fatalf("上限超過の authority path を Issue body の位置で拒否していない: %+v", errs)
+	}
+
+	op := sampleWorkerOperation(t)
+	op.PolicyRefs = []string{path}
+	if err := ValidateWorkerOperation(op); !errors.Is(err, ProtocolFieldTooLong) {
+		t.Fatalf("protocol の policyRef 上限超過が %q へ分類されない: %v", ProtocolFieldTooLong, err)
 	}
 }
