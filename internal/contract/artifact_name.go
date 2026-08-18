@@ -77,10 +77,10 @@ var requiredOperationOutputs = map[OperationKind][]ArtifactName{
 		ArtifactNameTaskContext,
 		ArtifactNameContextManifest,
 	},
-	OperationAuthorTests:          {ArtifactNameTestPlan, ArtifactNameRedEvidence},
-	OperationReviseTests:          {ArtifactNameTestPlan, ArtifactNameRedEvidence},
-	OperationImplement:            {ArtifactNameGreenEvidence, ArtifactNameCheckEvidence, ArtifactNamePullRequestDraft},
-	OperationRepairImplementation: {ArtifactNameGreenEvidence, ArtifactNameCheckEvidence, ArtifactNamePullRequestDraft},
+	OperationAuthorTests:          {ArtifactNameTestPlan, ArtifactNameRedEvidence, ArtifactNameSourceBundle},
+	OperationReviseTests:          {ArtifactNameTestPlan, ArtifactNameRedEvidence, ArtifactNameSourceBundle},
+	OperationImplement:            {ArtifactNameGreenEvidence, ArtifactNameCheckEvidence, ArtifactNamePullRequestDraft, ArtifactNameSourceBundle},
+	OperationRepairImplementation: {ArtifactNameGreenEvidence, ArtifactNameCheckEvidence, ArtifactNamePullRequestDraft, ArtifactNameSourceBundle},
 	OperationCreatePullRequest:    {},
 }
 
@@ -88,9 +88,9 @@ var requiredOperationOutputs = map[OperationKind][]ArtifactName{
 // logical name である。protocol 文書が「最低限参照できるようにする」と定める集合のうち、
 // 件数が入力ごとに変わる authority content を除いたものと一致させる。
 //
-// source-bundle はどの Operation の必須 output でもない。head SHA から機械的に作れる
-// snapshot であり model の成果ではないが、Review Worker が worktree を mount しない以上、
-// review 開始時点で manifest に無ければ reviewer は source を読めない。
+// source-bundle は head を生成する Operation の必須 output である。model の成果ではないが、
+// Issue Worker が checkpoint commit から固定しなければ、workspace を持たない Controller は
+// review 開始時にこの entry を用意できない。
 var requiredReviewEntries = map[ReviewKind][]ArtifactName{
 	ReviewTestValidity: {
 		ArtifactNameRawIssueBody,

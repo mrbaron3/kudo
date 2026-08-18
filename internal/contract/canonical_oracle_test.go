@@ -356,7 +356,7 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 		}
 		gotOutputs[i] = artifact.Name
 	}
-	if !reflect.DeepEqual(gotOutputs, []string{"red-evidence", "test-plan"}) {
+	if !reflect.DeepEqual(gotOutputs, []string{"red-evidence", "source-bundle", "test-plan"}) {
 		t.Fatalf("outputArtifacts が logical name 順の table として復元されない: %v", gotOutputs)
 	}
 

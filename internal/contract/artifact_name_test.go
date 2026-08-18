@@ -106,6 +106,33 @@ func TestSucceededResultRejectsPartiallyMissingOutputNames(t *testing.T) {
 	}
 }
 
+// source bundle は Issue Worker の workspace にしか存在しない head を Review Worker へ渡す
+// checkpoint である。head を生成した Operation の成功条件に含まれなければ、Controller は
+// workspace を読めないまま次の review request を組み立てることになる。
+func TestHeadProducingOperationRequiresSourceBundle(t *testing.T) {
+	for _, kind := range []OperationKind{
+		OperationAuthorTests,
+		OperationReviseTests,
+		OperationImplement,
+		OperationRepairImplementation,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			op := sampleWorkerOperation(t)
+			op.Kind = kind
+			result := sampleOperationResult(t, op)
+			result.OutputArtifacts = withoutNamedArtifact(result.OutputArtifacts, ArtifactNameSourceBundle)
+
+			err := BindOperationResult(op, result)
+			if !errors.Is(err, ProtocolKindConstraint) {
+				t.Fatalf("source bundle を欠く succeeded が %q へ分類されない: %v", ProtocolKindConstraint, err)
+			}
+			if !strings.Contains(err.Error(), string(ArtifactNameSourceBundle)) {
+				t.Fatalf("欠落した %q が error に現れない: %v", ArtifactNameSourceBundle, err)
+			}
+		})
+	}
+}
+
 // TestReviewRequestBindingRejectsMissingManifestEntries は AC-2 を固定する。
 func TestReviewRequestBindingRejectsMissingManifestEntries(t *testing.T) {
 	for _, missing := range []ArtifactName{ArtifactNameTestPlan, ArtifactNameSourceBundle} {
@@ -141,6 +168,49 @@ func TestReviewRequestBindingRejectsUnreferencedManifest(t *testing.T) {
 	err := BindReviewRequestManifest(req, other)
 	if !errors.Is(err, ProtocolIdentityMismatch) {
 		t.Fatalf("request が参照していない manifest が %q へ分類されない: %v", ProtocolIdentityMismatch, err)
+	}
+}
+
+// Versioned ref は schema と digest の組である。schema だけが違う場合に digest だけを
+// 表示すると、同じ値同士が不一致に見えて producer が version skew を特定できない。
+func TestReviewRequestBindingReportsManifestSchemaMismatch(t *testing.T) {
+	manifest := sampleArtifactManifest(t)
+	req := sampleReviewRequest(t)
+	req.ArtifactManifest.Schema = "kudo.artifact-manifest/v1alpha2"
+
+	err := BindReviewRequestManifest(req, manifest)
+	if !errors.Is(err, ProtocolIdentityMismatch) {
+		t.Fatalf("manifest schema の不一致が %q へ分類されない: %v", ProtocolIdentityMismatch, err)
+	}
+	for _, schema := range []string{req.ArtifactManifest.Schema, manifest.Schema} {
+		if !strings.Contains(err.Error(), schema) {
+			t.Fatalf("manifest schema %q が error に現れない: %v", schema, err)
+		}
+	}
+}
+
+// Context Manifest は Review Request の semantic input と manifest entry の両方に現れる。
+// 両者が違う request を通すと、reviewer がどちらを読むかで評価対象が分かれる。
+func TestReviewRequestBindingRejectsContextManifestEntryMismatch(t *testing.T) {
+	manifest := sampleArtifactManifest(t)
+	entryDigest := SHA256([]byte("別 context manifest"))
+	for i := range manifest.Entries {
+		if manifest.Entries[i].Name == string(ArtifactNameContextManifest) {
+			manifest.Entries[i].Digest = entryDigest
+			break
+		}
+	}
+	req := sampleReviewRequest(t)
+	req.ArtifactManifest = requireArtifactManifestRef(t, manifest)
+
+	err := BindReviewRequestManifest(req, manifest)
+	if !errors.Is(err, ProtocolIdentityMismatch) {
+		t.Fatalf("Context Manifest identity の不一致が %q へ分類されない: %v", ProtocolIdentityMismatch, err)
+	}
+	for _, digest := range []Digest{entryDigest, req.ContextManifest.Digest} {
+		if !strings.Contains(err.Error(), string(digest)) {
+			t.Fatalf("Context Manifest digest %q が error に現れない: %v", digest, err)
+		}
 	}
 }
 
@@ -260,4 +330,14 @@ func withoutEntry(manifest ArtifactManifest, name ArtifactName) ArtifactManifest
 	}
 	manifest.Entries = kept
 	return manifest
+}
+
+func withoutNamedArtifact(artifacts []NamedArtifact, name ArtifactName) []NamedArtifact {
+	kept := make([]NamedArtifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Name != string(name) {
+			kept = append(kept, artifact)
+		}
+	}
+	return kept
 }

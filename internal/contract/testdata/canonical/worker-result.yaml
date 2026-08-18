@@ -6,6 +6,8 @@ changedInputFields: []
 outputArtifacts:
   - name: "red-evidence"
     digest: "sha256:d53effa6478cae3a5486c76584fd4b911e846477d46596e9f43531afe8eaa721"
+  - name: "source-bundle"
+    digest: "sha256:239ea24db366af7a360aca64008a5a55b3bb443dfaeda64abcee97ddfbe58903"
   - name: "test-plan"
     digest: "sha256:e45b022999ae12524b2140146c9b2f9d6f4365f9057d810328aeb81815ec6f23"
 externalRefs: []

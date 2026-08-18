@@ -89,18 +89,20 @@ manifestはlogical nameで引くtableである。nameは`[a-z0-9]`で始まる�
 
 ### Required manifest entries
 
-上記のうち、件数が入力ごとに変わるauthority contentを除いた集合を、logical nameの必須entryとしてrequest bindingで検証する。語彙は`operation-protocol-v1alpha1.md`のArtifact logical names節に置き、両protocolで同じ名前を使う。
+上記の情報を、次の固定logical nameへ正規化してrequest bindingで検証する。件数が入力ごとに変わるauthority contentは固定集合から除く。implementation briefとAcceptance Criteria mappingは`task-context`と`test-plan`、test/implementation patchまたはsnapshotは`source-bundle`、approved test-only head identityは参照先Review Requestへbindされた`test-validity-result`が担う。語彙は`operation-protocol-v1alpha1.md`のArtifact logical names節に置き、両protocolで同じ名前を使う。
 
 | Review kind | 必須logical name |
 | --- | --- |
 | `test_validity` | `raw-issue-body`、`issue-observation`、`task-context`、`context-manifest`、`test-plan`、`red-evidence`、`source-bundle` |
 | `final_implementation` | 上記すべて、および`test-validity-result`、`green-evidence`、`check-evidence`、`pull-request-draft` |
 
-`source-bundle`はどのOperation kindの必須outputでもない。head SHAから機械的に作れるsnapshotでありmodelの成果ではないが、Review Workerがmutable worktreeをmountしない以上、review開始時点でmanifestに無ければreviewerはsourceを読めない。Controllerがrequestを組み立てる時点で用意する。
+`source-bundle`はmodelの成果ではないが、headを生成する`author_tests`、`revise_tests`、`implement`、`repair_implementation`の必須outputである。Issue Workerがcheckpoint commitから固定する。ControllerはIssue Worker workspaceもartifact bytesもmountしないため、requestを組み立てる時点で欠落したbundleを補完しない。
 
 必須集合は下限であって上限ではなく、語彙外のnameを追加してよい。欠落はrequestをrejectし、Review Workerへ渡さない。欠落したnameはすべてerrorへ載せ、`protocol_kind_constraint`として分類する。
 
 binding検証はmanifestを再encodeしてrequestの`artifactManifest` refと照合したうえで行う。nameの充足だけを見てrefを照合しないと、必須entryを揃えた別のmanifestでgateを通せてしまい、検証したmanifestとreviewerが実際に読むmanifestがずれる。
+
+`context-manifest` entryのdigestは、requestがsemantic inputとして明示する`contextManifest.digest`と一致しなければならない。同じrequest内に相反するContext Manifest identityを置き、Review Workerが選んだ取得経路によって評価対象が変わる状態を受理しない。`issue-observation` entryはaudit lineageであり、requestの`issueObservation`更新だけではidentityを変えないため、この一致条件の対象外とする。live freshnessはFailure and staleness節の規則で別途検証する。
 
 artifactのbytesが変われば新しいdigest、Artifact Manifest、Review Requestを作る。test patchをimplementation phaseで変更した場合、以前のtest validity approvalを再利用せず、test review gateへ戻る。
 

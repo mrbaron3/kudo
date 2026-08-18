@@ -47,14 +47,16 @@ Issue Observation、Task Context、Context Manifest、Execution Policyのschema�
 
 | Kind | Model session | Required input | Output |
 | --- | --- | --- | --- |
-| `claim` | no | repository、IssueRef、candidate policy | Issue Observation、Task Context、ClaimRequirements、base SHAをpinしたContext Manifestまたはstructured rejection |
-| `author_tests` | fresh | claimed context（baseはContext Manifestがpin）、head | test plan、test-only head、RED evidence |
-| `revise_tests` | fresh | current test head、blocking Review Result、prior artifacts | revised test head、new RED evidence |
-| `implement` | fresh | approved test validity Result、test head、Issue context | implementation head、GREEN/refactor/check evidence |
-| `repair_implementation` | fresh | current implementation head、blocking final Review Result | repaired head、new evidence |
+| `claim` | no | repository、IssueRef、candidate policy | raw Issue body、Issue Observation、Task Context、base SHAをpinしたContext Manifestまたはstructured rejection |
+| `author_tests` | fresh | claimed context（baseはContext Manifestがpin）、head | test plan、test-only head、RED evidence、source bundle |
+| `revise_tests` | fresh | current test head、blocking Review Result、prior artifacts | revised test plan、revised test head、new RED evidence、source bundle |
+| `implement` | fresh | approved test validity Result、test head、Issue context | implementation head、GREEN/refactor/check evidence、Pull Request draft、source bundle |
+| `repair_implementation` | fresh | current implementation head、blocking final Review Result | repaired head、new GREEN/refactor/check evidence、revised Pull Request draft、source bundle |
 | `create_pull_request` | no | final approved head、PR body artifact、idempotency identity | GitHub PR number、URL、observed head |
 
 `claim`ではControllerがRun IDを予約するが、claim成功まではactive Runとして公開しない。また、Issue Observation、Context Manifest、headはまだ存在しないため、envelope上の該当fieldを省略する。Execution Policyはclaim成功時にRunへ固定する。それ以外のOperationではkindに必要なfieldを省略しない。空文字や直前Runの値から推測しない。Task ContextはContext Manifest内の`TaskContextRef`から取得し、digestだけでschemaを推測しない。
+
+`ClaimRequirements`はIssue Compilerが返し、Issue Workerがclaimの中でreadiness、dependency、authorityを解決してContext Manifestを構築するために使う中間projectionである。Worker Resultのfieldまたはoutput artifactとしてprocess間へ渡さず、claim成功後のdurable handoffはTask Context、Context Manifestとそのrefが担う。Controllerはraw Issue bodyから`ClaimRequirements`を再構築せず、Issue Workerが返したversioned refとstructuredなclaim結果だけを使う。
 
 kindごとのfield要件は次のとおりとする。validatorは省略だけでなく、kindが持てないfieldの混入もrejectする。
 
@@ -130,7 +132,7 @@ artifactはcontent addressで一意になるが、digestだけでは「そのbyt
 | `green-evidence` | 実装後にtestが通ったことの実行証跡 | `implement`、`repair_implementation` |
 | `check-evidence` | refactor後のrequired checksとIssue Verificationの証跡 | `implement`、`repair_implementation` |
 | `pull-request-draft` | PRへ載せるsummary、risk、manual verificationの草稿 | `implement`、`repair_implementation` |
-| `source-bundle` | head SHAを再構築・検証できるimmutable snapshot | Controller |
+| `source-bundle` | head SHAを再構築・検証できるimmutable snapshot | headを生成するIssue Worker Operation |
 | `test-validity-result` | final reviewが前提とする承認済みtest validity verdict | Controller |
 
 nameの形式規則はArtifact Manifestのentry nameと同一とする（`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`、relative pathとして正規形、128 byte以内）。
@@ -146,11 +148,11 @@ kindごとの`succeeded` Resultは、次のlogical nameをすべて`outputArtifa
 | Kind | 必須logical name |
 | --- | --- |
 | `claim` | `raw-issue-body`、`issue-observation`、`task-context`、`context-manifest` |
-| `author_tests`、`revise_tests` | `test-plan`、`red-evidence` |
-| `implement`、`repair_implementation` | `green-evidence`、`check-evidence`、`pull-request-draft` |
+| `author_tests`、`revise_tests` | `test-plan`、`red-evidence`、`source-bundle` |
+| `implement`、`repair_implementation` | `green-evidence`、`check-evidence`、`pull-request-draft`、`source-bundle` |
 | `create_pull_request` | なし |
 
-集合はkind表のOutput列から、head SHAと外部referenceのように別fieldが担うものを除いて決める。`create_pull_request`が空なのは、このkindの成果がPR referenceと観測したheadであり新しいartifactを作らないためで、「検証しない」ではなく「要求が無い」を意味する。`pull-request-draft`を実装側kindの必須outputに含めるのは、`create_pull_request`のRequired inputがPR body artifactを名指ししており、それを作るOperationが他に無いためである。
+集合はkind表のOutput列にあるartifactから、head SHA、external reference、structured rejectionのように別fieldまたは別outcomeが担うものを除いて決める。`create_pull_request`が空なのは、このkindの成果がPR referenceと観測したheadであり新しいartifactを作らないためで、「検証しない」ではなく「要求が無い」を意味する。`pull-request-draft`を実装側kindの必須outputに含めるのは、`create_pull_request`のRequired inputがPR body artifactを名指ししており、それを作るOperationが他に無いためである。`source-bundle`はmodelの成果ではないが、headを生成したIssue Workerだけがreview前のlocal checkpointを読めるため、そのOperationの成功に含める。ControllerはIssue Worker workspaceもartifact bytesもmountせず、欠落したbundleを後から生成しない。
 
 非空判定では足りない。protocolはkindごとに「何を」残すかまで定めており、test planの代わりに任意の1件を置いたResultも非空判定なら通る。binding境界は欠落したlogical nameをすべてerrorへ載せ、`protocol_kind_constraint`として分類する。
 
