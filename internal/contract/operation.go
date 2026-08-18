@@ -35,11 +35,6 @@ type operationKindRule struct {
 	resolvedContext bool
 	// priorArtifacts は Required input が先行 artifact を名指しする kind で true。
 	priorArtifacts bool
-	// outputArtifacts は succeeded が新しい artifact（Context Manifest、test plan、
-	// evidence 等）を固定しなければならない kind で true。空の成功を通すと、後続 gate は
-	// 存在しない artifact を前提に進む。どの logical name を必須にするかは protocol 文書側の
-	// 規定であり、binding 境界では「output を残したか」だけを検証する。
-	outputArtifacts bool
 	// preservesHead は承認済み head を進めず観測するだけの kind で true。
 	preservesHead bool
 	// pullRequestRef は成功が作成した Pull Request の canonical reference を
@@ -48,12 +43,15 @@ type operationKindRule struct {
 	pullRequestRef bool
 }
 
+// operationKindRules は kind ごとの field 要件を固定する。succeeded が残さなければ
+// ならない output は logical name の集合として requiredOperationOutputs が持つため、
+// ここには「output を残すか」という真偽値を重複させない。
 var operationKindRules = map[OperationKind]operationKindRule{
-	OperationClaim:                {outputArtifacts: true},
-	OperationAuthorTests:          {resolvedContext: true, outputArtifacts: true},
-	OperationReviseTests:          {resolvedContext: true, priorArtifacts: true, outputArtifacts: true},
-	OperationImplement:            {resolvedContext: true, priorArtifacts: true, outputArtifacts: true},
-	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true, outputArtifacts: true},
+	OperationClaim:                {},
+	OperationAuthorTests:          {resolvedContext: true},
+	OperationReviseTests:          {resolvedContext: true, priorArtifacts: true},
+	OperationImplement:            {resolvedContext: true, priorArtifacts: true},
+	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true},
 	OperationCreatePullRequest:    {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
 }
 
@@ -237,7 +235,7 @@ type OperationResult struct {
 	Outcome            OperationOutcome
 	HeadSHA            string
 	ChangedInputFields []string
-	OutputArtifacts    []Digest
+	OutputArtifacts    []NamedArtifact
 	ExternalRefs       []string
 	CompletedAt        time.Time
 }
@@ -266,7 +264,7 @@ func ValidateOperationResult(result OperationResult) error {
 	if err := validateChangedInputFields(result.Outcome, result.ChangedInputFields); err != nil {
 		return err
 	}
-	if err := validateDigestSet("outputArtifacts", result.OutputArtifacts); err != nil {
+	if err := validateNamedArtifacts("outputArtifacts", result.OutputArtifacts); err != nil {
 		return err
 	}
 	return validateLineSet("externalRefs", result.ExternalRefs)
@@ -318,7 +316,7 @@ func encodeOperationResultIdentity(result OperationResult) []byte {
 	writeYAMLString(&b, 0, "outcome", string(result.Outcome))
 	writeYAMLOptionalString(&b, 0, "headSha", result.HeadSHA)
 	writeYAMLStringList(&b, 0, "changedInputFields", canonicalStringSet(result.ChangedInputFields))
-	writeYAMLStringList(&b, 0, "outputArtifacts", canonicalDigestStrings(result.OutputArtifacts))
+	writeYAMLNamedArtifacts(&b, 0, "outputArtifacts", result.OutputArtifacts)
 	writeYAMLStringList(&b, 0, "externalRefs", canonicalStringSet(result.ExternalRefs))
 	return []byte(b.String())
 }
@@ -359,12 +357,14 @@ func BindOperationResult(op WorkerOperation, result OperationResult) error {
 
 // bindSucceededOutput は kind ごとの成功条件を binding 境界で検証する。
 //
-// terminal success はそのまま次 gate の前提になるため、成功したと主張するだけで output を
-// 残さない Result を通すと、後続 Operation と review は存在しない artifact を入力に選ぶ。
+// terminal success はそのまま次 gate の前提になるため、kind が要求する logical name を
+// 欠いた Result を通すと、後続 Operation と review は存在しない artifact を入力に選ぶ。
+// 非空判定では足りない。protocol 文書は kind ごとに「何を」残すかまで定めており、
+// test plan の代わりに任意の 1 件を置いた Result も非空判定なら通ってしまう。
 func bindSucceededOutput(op WorkerOperation, result OperationResult, rule operationKindRule) error {
-	if rule.outputArtifacts && len(result.OutputArtifacts) == 0 {
-		return protocolErr(ProtocolKindConstraint, "outputArtifacts",
-			"kind %q の succeeded Result は output artifact を固定しなければならない", op.Kind)
+	if err := requireArtifactNames("outputArtifacts", fmt.Sprintf("operation kind %q", op.Kind),
+		requiredOperationOutputs[op.Kind], namedArtifactSet(result.OutputArtifacts)); err != nil {
+		return err
 	}
 	if rule.pullRequestRef && !containsPullRequestRef(result.ExternalRefs, op.Issue) {
 		return protocolErr(ProtocolKindConstraint, "externalRefs",

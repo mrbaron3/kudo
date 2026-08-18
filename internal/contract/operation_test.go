@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func sampleOperationResult(t *testing.T, op WorkerOperation) OperationResult {
 		AttemptID:       "attempt-01",
 		Outcome:         OutcomeSucceeded,
 		HeadSHA:         sampleNextSHA,
-		OutputArtifacts: []Digest{SHA256([]byte("test-plan")), SHA256([]byte("red-evidence"))},
+		OutputArtifacts: sampleKindOutputs(op.Kind),
 		CompletedAt:     sampleCreatedAt.Add(time.Minute),
 	}
 }
@@ -362,9 +363,17 @@ func TestOperationResultValidation(t *testing.T) {
 		"empty outcome":    func(r *OperationResult) { r.Outcome = "" },
 		"head sha":         func(r *OperationResult) { r.HeadSHA = "not-a-sha" },
 		"completed at":     func(r *OperationResult) { r.CompletedAt = time.Time{} },
-		"artifact digest":  func(r *OperationResult) { r.OutputArtifacts = []Digest{"sha256:nope"} },
+		"artifact digest": func(r *OperationResult) {
+			r.OutputArtifacts = []NamedArtifact{{Name: "test-plan", Digest: "sha256:nope"}}
+		},
+		"artifact name": func(r *OperationResult) {
+			r.OutputArtifacts = []NamedArtifact{{Name: "Test Plan", Digest: SHA256([]byte("a"))}}
+		},
 		"duplicate artifact": func(r *OperationResult) {
-			r.OutputArtifacts = []Digest{SHA256([]byte("a")), SHA256([]byte("a"))}
+			r.OutputArtifacts = []NamedArtifact{
+				{Name: "test-plan", Digest: SHA256([]byte("a"))},
+				{Name: "test-plan", Digest: SHA256([]byte("b"))},
+			}
 		},
 		"external ref": func(r *OperationResult) { r.ExternalRefs = []string{"github://owner/repo/pull/1\n"} },
 		"duplicate external ref": func(r *OperationResult) {
@@ -474,34 +483,31 @@ func TestOperationAttemptOutcomeSeparatesResultAndFailure(t *testing.T) {
 }
 
 // succeeded は「Operation contract を満たす output が immutable に固定された」ことを意味する。
-// output を何も残さない succeeded を通すと、後続 gate は存在しない artifact を前提に進む。
+// kind ごとの必須 logical name を欠いた succeeded を通すと、後続 gate は存在しない
+// artifact を前提に進む。
+//
+// 対象 kind は operationKindRules から取る。kind 表を列挙し直すと、新しい kind を
+// 追加したときに実装と test が同じ漏れを起こし、gate が無いまま green になる。
 func TestSucceededResultRequiresKindOutput(t *testing.T) {
-	producing := []OperationKind{
-		OperationClaim,
-		OperationAuthorTests,
-		OperationReviseTests,
-		OperationImplement,
-		OperationRepairImplementation,
-	}
-	for _, kind := range producing {
+	for kind := range operationKindRules {
 		t.Run(string(kind), func(t *testing.T) {
 			op := sampleWorkerOperation(t)
-			op.Kind = kind
 			if kind == OperationClaim {
 				op = sampleClaimOperation(t)
 			}
+			op.Kind = kind
+
 			result := sampleOperationResult(t, op)
-			if kind == OperationClaim {
+			result.OutputArtifacts = sampleKindOutputs(kind)
+			switch kind {
+			case OperationClaim:
 				result.HeadSHA = ""
+			case OperationCreatePullRequest:
+				result.HeadSHA = op.HeadSHA
+				result.ExternalRefs = []string{"github://mrbaron3/kudo/pull/42"}
 			}
 			if err := BindOperationResult(op, result); err != nil {
-				t.Fatalf("output artifact を持つ succeeded を拒否した: %v", err)
-			}
-
-			empty := result
-			empty.OutputArtifacts = nil
-			if err := BindOperationResult(op, empty); err == nil {
-				t.Fatal("output artifact を持たない succeeded を受理した")
+				t.Fatalf("必須 output を備えた succeeded を拒否した: %v", err)
 			}
 
 			// terminal な非 succeeded は output を持たなくてよい
@@ -509,8 +515,37 @@ func TestSucceededResultRequiresKindOutput(t *testing.T) {
 			if err := BindOperationResult(op, staleResult); err != nil {
 				t.Fatalf("stale_input Result を拒否した: %v", err)
 			}
+
+			required := requiredOperationOutputs[kind]
+			if len(required) == 0 {
+				return
+			}
+			empty := result
+			empty.OutputArtifacts = nil
+			if err := BindOperationResult(op, empty); err == nil {
+				t.Fatal("output artifact を持たない succeeded を受理した")
+			}
+			// 1 件ずつ落として、必須集合の全要素が実際に gate として働くことを確かめる。
+			// 非空判定や代表 1 件の検査は、残りが飾りでも通ってしまう。
+			for i, name := range required {
+				missing := result
+				missing.OutputArtifacts = slices.Delete(slices.Clone(result.OutputArtifacts), i, i+1)
+				if err := BindOperationResult(op, missing); err == nil {
+					t.Fatalf("必須 output %q を欠く succeeded を受理した", name)
+				}
+			}
 		})
 	}
+}
+
+// sampleKindOutputs は kind の必須 logical name をすべて備えた output table を返す。
+func sampleKindOutputs(kind OperationKind) []NamedArtifact {
+	required := requiredOperationOutputs[kind]
+	outputs := make([]NamedArtifact, 0, len(required))
+	for _, name := range required {
+		outputs = append(outputs, NamedArtifact{Name: string(name), Digest: SHA256([]byte(name))})
+	}
+	return outputs
 }
 
 // create_pull_request は source head を進めない Operation であり、承認済み head をそのまま

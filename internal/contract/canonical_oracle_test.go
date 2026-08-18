@@ -341,6 +341,25 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 		t.Fatalf("changedInputFields = %v", stale.ChangedInputFields)
 	}
 
+	// succeeded Result の output は logical name で引く table として復元できなければならない。
+	// scalar list のままなら Controller は「何を残したか」を digest からしか判断できない。
+	succeeded := decodeOracle[struct {
+		OutputArtifacts []struct {
+			Name   string `json:"name"`
+			Digest string `json:"digest"`
+		} `json:"outputArtifacts"`
+	}](t, yamlOracle(t, encodeOperationResultIdentity(sampleOperationResult(t, op))))
+	gotOutputs := make([]string, len(succeeded.OutputArtifacts))
+	for i, artifact := range succeeded.OutputArtifacts {
+		if artifact.Digest == "" {
+			t.Fatalf("outputArtifacts[%d] の digest が復元されない: %+v", i, artifact)
+		}
+		gotOutputs[i] = artifact.Name
+	}
+	if !reflect.DeepEqual(gotOutputs, []string{"red-evidence", "source-bundle", "test-plan"}) {
+		t.Fatalf("outputArtifacts が logical name 順の table として復元されない: %v", gotOutputs)
+	}
+
 	req := sampleReviewRequest(t)
 	request := decodeOracle[struct {
 		Schema           string    `json:"schema"`
@@ -372,7 +391,8 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 		t.Fatalf("finding が escape 前の値へ戻らない: %+v", result.Findings[0])
 	}
 
-	_, manifestPayload, err := EncodeArtifactManifest(sampleArtifactManifest(t))
+	manifest := sampleArtifactManifest(t)
+	_, manifestPayload, err := EncodeArtifactManifest(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +405,7 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 			Digest    string `json:"digest"`
 		} `json:"entries"`
 	}](t, yamlOracle(t, manifestPayload.Data))
-	if artifacts.Schema != ArtifactManifestSchemaV1Alpha1 || len(artifacts.Entries) != 5 {
+	if artifacts.Schema != ArtifactManifestSchemaV1Alpha1 || len(artifacts.Entries) != len(manifest.Entries) {
 		t.Fatalf("Artifact Manifest が復元されない: %+v", artifacts)
 	}
 	// length は implicit int にせず decimal string として復元される

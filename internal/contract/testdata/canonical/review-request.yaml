@@ -11,6 +11,6 @@ executionPolicy:
   digest: "sha256:3b9f2163726f0420bc286602bea5ad9acb7085aba4a6bdc935138cd0d488feec"
 artifactManifest:
   schema: "kudo.artifact-manifest/v1alpha1"
-  digest: "sha256:70c968aff9f1111a1ad59636e611f4187337715e192e56e39d2354b270a2bfca"
+  digest: "sha256:6abd1e7cf49fb0ab42f2f71abc63c6568b5e6bf2c5714ab920b9e3397f7df1ca"
 policyRefs:
   - "docs/contracts/issue-contract-v1alpha1.md"

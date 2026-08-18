@@ -8,6 +8,19 @@ import (
 
 var sampleREDEvidence = []byte("$ go test ./...\nFAIL\texit status 1\n")
 
+// sampleOpaqueArtifact は Artifact Store の payload 型を持たない artifact の entry を返す。
+// evidence、source bundle、draft は canonical schema を持たない不透明 bytes であり、
+// producer が media type と length を宣言する。
+func sampleOpaqueArtifact(name ArtifactName, mediaType string, data []byte) ArtifactEntry {
+	return ArtifactEntry{
+		Name:      string(name),
+		MediaType: mediaType,
+		Length:    int64(len(data)),
+		Digest:    SHA256(data),
+	}
+}
+
+// sampleArtifactManifest は test_validity の必須 entry を満たす manifest を返す。
 func sampleArtifactManifest(t *testing.T) ArtifactManifest {
 	t.Helper()
 	compiled, _, _ := sampleResolvedInput(t)
@@ -17,30 +30,42 @@ func sampleArtifactManifest(t *testing.T) ArtifactManifest {
 	}
 
 	named := []struct {
-		name    string
+		name    ArtifactName
 		payload ArtifactPayload
 	}{
-		{"task-context", compiled.TaskContextPayload},
-		{"issue-observation", compiled.ObservationPayload},
-		{"raw-issue-body", compiled.RawBodyPayload},
-		{"context-manifest", manifestPayload},
+		{ArtifactNameTaskContext, compiled.TaskContextPayload},
+		{ArtifactNameIssueObservation, compiled.ObservationPayload},
+		{ArtifactNameRawIssueBody, compiled.RawBodyPayload},
+		{ArtifactNameContextManifest, manifestPayload},
 	}
-	entries := make([]ArtifactEntry, 0, len(named)+1)
+	entries := make([]ArtifactEntry, 0, len(named)+3)
 	for _, item := range named {
-		entry, err := NewArtifactEntry(item.name, item.payload)
+		entry, err := NewArtifactEntry(string(item.name), item.payload)
 		if err != nil {
 			t.Fatalf("artifact entry %q: %v", item.name, err)
 		}
 		entries = append(entries, entry)
 	}
-	// Artifact Store の payload 型を持たない evidence も logical name で列挙できる
-	entries = append(entries, ArtifactEntry{
-		Name:      "red-evidence",
-		MediaType: "text/plain; charset=utf-8",
-		Length:    int64(len(sampleREDEvidence)),
-		Digest:    SHA256(sampleREDEvidence),
-	})
+	entries = append(entries,
+		sampleOpaqueArtifact(ArtifactNameTestPlan, MediaTypeMarkdown, []byte("- AC-1 を検証する test を追加する\n")),
+		sampleOpaqueArtifact(ArtifactNameRedEvidence, "text/plain; charset=utf-8", sampleREDEvidence),
+		sampleOpaqueArtifact(ArtifactNameSourceBundle, "application/octet-stream", []byte("source-bundle-bytes")),
+	)
 	return ArtifactManifest{Schema: ArtifactManifestSchemaV1Alpha1, Entries: entries}
+}
+
+// sampleFinalImplementationManifest は final_implementation の必須 entry を満たす
+// manifest を返す。test_validity の集合を含み、実装 gate 固有の証跡を追加する。
+func sampleFinalImplementationManifest(t *testing.T) ArtifactManifest {
+	t.Helper()
+	manifest := sampleArtifactManifest(t)
+	manifest.Entries = append(manifest.Entries,
+		sampleOpaqueArtifact(ArtifactNameTestValidityResult, MediaTypeYAML, []byte("verdict: approve\n")),
+		sampleOpaqueArtifact(ArtifactNameGreenEvidence, "text/plain; charset=utf-8", []byte("$ go test ./...\nok\n")),
+		sampleOpaqueArtifact(ArtifactNameCheckEvidence, "text/plain; charset=utf-8", []byte("$ mise run check\nok\n")),
+		sampleOpaqueArtifact(ArtifactNamePullRequestDraft, MediaTypeMarkdown, []byte("## 概要\n\n実装した\n")),
+	)
+	return manifest
 }
 
 func requireArtifactManifestRef(t *testing.T, manifest ArtifactManifest) ArtifactManifestRef {
@@ -452,7 +477,7 @@ func TestArtifactManifestIdentity(t *testing.T) {
 		"digest":     func(m *ArtifactManifest) { m.Entries[0].Digest = SHA256([]byte("別 bytes")) },
 		"length":     func(m *ArtifactManifest) { m.Entries[0].Length++ },
 		"media type": func(m *ArtifactManifest) { m.Entries[0].MediaType = "text/plain; charset=utf-8" },
-		"name":       func(m *ArtifactManifest) { m.Entries[0].Name = "test-plan" },
+		"name":       func(m *ArtifactManifest) { m.Entries[0].Name = "renamed-artifact" },
 		"entry 追加": func(m *ArtifactManifest) {
 			m.Entries = append(m.Entries, ArtifactEntry{
 				Name:      "green-evidence",

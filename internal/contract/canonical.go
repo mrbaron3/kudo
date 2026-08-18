@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -59,6 +60,30 @@ func writeYAMLStringList(b *strings.Builder, indent int, key string, values []st
 		b.WriteString("  - ")
 		b.WriteString(yamlString(value))
 		b.WriteByte('\n')
+	}
+}
+
+// writeYAMLNamedArtifacts は logical name で引く table を name 順の mapping list として書く。
+// producer が列挙した順序は table の identity ではないため、ここで正規化する。
+// name は validateNamedArtifacts が一意性を保証しているので並びは決定論的である。
+func writeYAMLNamedArtifacts(b *strings.Builder, indent int, key string, artifacts []NamedArtifact) {
+	prefix := strings.Repeat(" ", indent)
+	b.WriteString(prefix)
+	b.WriteString(key)
+	if len(artifacts) == 0 {
+		b.WriteString(": []\n")
+		return
+	}
+	sorted := append([]NamedArtifact(nil), artifacts...)
+	slices.SortFunc(sorted, func(a, b NamedArtifact) int { return strings.Compare(a.Name, b.Name) })
+
+	b.WriteString(":\n")
+	for _, artifact := range sorted {
+		b.WriteString(prefix)
+		b.WriteString("  - name: ")
+		b.WriteString(yamlString(artifact.Name))
+		b.WriteByte('\n')
+		writeYAMLString(b, indent+4, "digest", string(artifact.Digest))
 	}
 }
 
