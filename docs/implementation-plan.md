@@ -154,14 +154,15 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 - Acceptance Criteria と test plan/test case の traceability
 - test-only checkpoint と RED command evidence
 - infrastructure failure と expected RED の classifier
+- `publish_head`による draft PR publish と pull request observation
 - `test_validity` Review Request/Result handler
 - `request_changes` finding の fresh revision session handoff
 - `needs_human` comment と escalation/resumption
 
 ### Milestone 5 exit criteria
 
-- expected failure の RED が固定されるまで review request を作らない。
-- reviewer はIssue Observationでlive freshnessを検証し、canonical Task Context、artifact、read-only checkoutだけでverdictを返す。
+- expected failure の RED が固定され、head が draft PR へ publish されるまで review request を作らない。
+- reviewer はIssue ObservationとPR observationでlive freshness（Issue body digest、PR の open/draft・head・base）を検証し、canonical Task Context、artifact、read-only checkoutだけでverdictを返す。
 - `request_changes`後は同じ worktree の新しい provider session が修正し、新しい request digest で再 review する。
 - test approval なしに implementation Operation を enqueue できない。
 - Issue edit、test head change、artifact change が approval を stale にする。
@@ -177,7 +178,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 - test mutation detection と test review gate への rollback
 - `final_implementation` Review Request/Result handler
 - approved head binding と stale review prevention
-- idempotent branch push、PR create/update
+- `finalize_pull_request`による required PR body 確定と draft 解除
 - required PR body validator と `.github/pull_request_template.md` integration
 - `ai-review-waiting` projection
 
@@ -186,8 +187,8 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 - implementation は approved test validity digest を入力に持つ。
 - refactor 後に同じ test/check を再実行し、evidence を最終 head に bind する。
 - final`request_changes`は fresh repair session に渡り、head change 後に必ず再 review する。
-- final approval と required checks がない head では PR を作れない。
-- crash が PR create response の前後どちらで起きても PR は一つだけになり、Run は`awaiting_human_review`へ収束する。
+- final approval と required checks がない head では PR を ready 化できない。draft の publish は approve を gate にしない。
+- crash が publish/finalize response の前後どちらで起きても PR は一つだけになり、Run は`awaiting_human_review`へ収束する。
 - PR body が Issue、AC、RED/GREEN、二つの review、checks、risk、Run/base/head を参照する。
 
 ## Milestone 7 — Production Compose deployment and operations
@@ -223,7 +224,7 @@ Milestone 0のCompose基盤を、完成したController/Worker use caseを実行
 
 ### Automated acceptance matrix
 
-- happy path: Issue -> RED -> test approve -> GREEN/refactor -> final approve -> PR ->`ai-review-waiting`
+- happy path: Issue -> RED -> draft PR publish -> test approve -> GREEN/refactor -> final approve -> PR ready化 ->`ai-review-waiting`
 - test and final`request_changes`の複数 loop
 - `needs_human`、人間修正、`ai-ready`再付与、safe resume/supersede
 - webhook loss、duplicate、reorder、invalid signature、poll overlap

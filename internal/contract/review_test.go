@@ -1,6 +1,8 @@
 package contract
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,12 +48,43 @@ func sampleArtifactManifest(t *testing.T) ArtifactManifest {
 		}
 		entries = append(entries, entry)
 	}
+	_, observationPayload, err := EncodePullRequestObservation(samplePullRequestObservation())
+	if err != nil {
+		t.Fatalf("pull request observation encode error: %v", err)
+	}
+	observationEntry, err := NewArtifactEntry(string(ArtifactNamePullRequestObservation), observationPayload)
+	if err != nil {
+		t.Fatalf("pull request observation entry: %v", err)
+	}
 	entries = append(entries,
 		sampleOpaqueArtifact(ArtifactNameTestPlan, MediaTypeMarkdown, []byte("- AC-1 を検証する test を追加する\n")),
 		sampleOpaqueArtifact(ArtifactNameRedEvidence, "text/plain; charset=utf-8", sampleREDEvidence),
 		sampleOpaqueArtifact(ArtifactNameSourceBundle, "application/octet-stream", []byte("source-bundle-bytes")),
+		observationEntry,
 	)
 	return ArtifactManifest{Schema: ArtifactManifestSchemaV1Alpha1, Entries: entries}
+}
+
+// samplePullRequestObservation は publish 直後の draft PR の観測を返す。
+func samplePullRequestObservation() PullRequestObservation {
+	return PullRequestObservation{
+		Schema:      PullRequestObservationSchemaV1Alpha1,
+		PullRequest: PullRequestRef{Owner: "mrbaron3", Repository: "kudo", Number: 57},
+		State:       PullRequestOpen,
+		Draft:       true,
+		HeadSHA:     sampleHeadSHA,
+		BaseRef:     "main",
+		BodyDigest:  SHA256([]byte("## 概要\n\nKudo が管理する draft PR body\n")),
+	}
+}
+
+func requirePullRequestObservationRef(t *testing.T, obs PullRequestObservation) PullRequestObservationRef {
+	t.Helper()
+	ref, _, err := EncodePullRequestObservation(obs)
+	if err != nil {
+		t.Fatalf("pull request observation encode error: %v", err)
+	}
+	return ref
 }
 
 // sampleFinalImplementationManifest は final_implementation の必須 entry を満たす
@@ -80,19 +113,64 @@ func requireArtifactManifestRef(t *testing.T, manifest ArtifactManifest) Artifac
 func sampleReviewRequest(t *testing.T) ReviewRequest {
 	t.Helper()
 	compiled, manifestRef, policyRef := sampleResolvedInput(t)
+	observation := samplePullRequestObservation()
 	return ReviewRequest{
-		Schema:           ReviewRequestSchemaV1Alpha1,
-		RequestID:        "01KUDOEXAMPLE",
-		Kind:             ReviewTestValidity,
-		ProducerRunID:    "run-01",
-		Issue:            compiled.TaskContext.Issue,
-		Observation:      compiled.ObservationRef,
-		HeadSHA:          sampleHeadSHA,
-		ContextManifest:  manifestRef,
-		ExecutionPolicy:  policyRef,
-		ArtifactManifest: requireArtifactManifestRef(t, sampleArtifactManifest(t)),
-		PolicyRefs:       []string{"docs/contracts/issue-contract-v1alpha1.md"},
-		CreatedAt:        sampleCreatedAt,
+		Schema:                 ReviewRequestSchemaV1Alpha1,
+		RequestID:              "01KUDOEXAMPLE",
+		Kind:                   ReviewTestValidity,
+		ProducerRunID:          "run-01",
+		Issue:                  compiled.TaskContext.Issue,
+		PullRequest:            observation.PullRequest,
+		Observation:            compiled.ObservationRef,
+		PullRequestObservation: requirePullRequestObservationRef(t, observation),
+		HeadSHA:                sampleHeadSHA,
+		ContextManifest:        manifestRef,
+		ExecutionPolicy:        policyRef,
+		ArtifactManifest:       requireArtifactManifestRef(t, sampleArtifactManifest(t)),
+		PolicyRefs: []string{
+			"docs/contracts/issue-contract-v1alpha1.md",
+			"docs/review-policies/test-validity-v1alpha1.md",
+		},
+		CreatedAt: sampleCreatedAt,
+	}
+}
+
+// sampleFinalReviewRequest は final_implementation の標準 policy と必須 entry を備えた
+// request を返す。
+func sampleFinalReviewRequest(t *testing.T) ReviewRequest {
+	t.Helper()
+	req := sampleReviewRequest(t)
+	req.Kind = ReviewFinalImplementation
+	req.PolicyRefs = []string{"docs/review-policies/final-implementation-v1alpha1.md"}
+	req.ArtifactManifest = requireArtifactManifestRef(t, sampleFinalImplementationManifest(t))
+	return req
+}
+
+// sampleFinalPerspectives は全条件付き観点への applicability 宣言を返す。
+func sampleFinalPerspectives() []PerspectiveDecision {
+	evidence := []Digest{SHA256([]byte("task-context"))}
+	return []PerspectiveDecision{
+		{Perspective: PerspectiveUX, Applicable: false, Reason: "no-user-facing-surface-change", EvidenceRefs: evidence},
+		{Perspective: PerspectiveAccessibility, Applicable: false, Reason: "no-ui-surface-change", EvidenceRefs: evidence},
+		{Perspective: PerspectiveTypeDesign, Applicable: true, Reason: "exported-signature-changed", EvidenceRefs: []Digest{SHA256([]byte("diff"))}},
+		{Perspective: PerspectivePerformance, Applicable: false, Reason: "no-bound-and-no-perf-surface", EvidenceRefs: evidence},
+	}
+}
+
+// sampleFinalReviewResult は applicability 宣言を備えた final review の approve を返す。
+func sampleFinalReviewResult(t *testing.T, req ReviewRequest) ReviewResult {
+	t.Helper()
+	digest, err := ReviewRequestDigest(req)
+	if err != nil {
+		t.Fatalf("review request digest error: %v", err)
+	}
+	return ReviewResult{
+		Schema:        ReviewResultSchemaV1Alpha1,
+		RequestDigest: digest,
+		ReviewRunID:   "review-02",
+		Verdict:       VerdictApprove,
+		Perspectives:  sampleFinalPerspectives(),
+		CreatedAt:     sampleCreatedAt.Add(time.Minute),
 	}
 }
 
@@ -139,8 +217,11 @@ func TestReviewCanonicalGolden(t *testing.T) {
 	}
 	requireGolden(t, payload.Data, "artifact-manifest.yaml")
 
+	finalReq := sampleFinalReviewRequest(t)
+	requireGolden(t, encodeReviewResultIdentity(sampleFinalReviewResult(t, finalReq)), "review-result-final.yaml")
+
 	identity := string(encodeReviewRequestIdentity(req))
-	for _, excluded := range []string{"issueObservation", "bodyDigest", "observedAt", "requestId", "createdAt"} {
+	for _, excluded := range []string{"issueObservation", "pullRequestObservation", "bodyDigest", "observedAt", "requestId", "createdAt"} {
 		if strings.Contains(identity, excluded) {
 			t.Fatalf("Review Request identity に %q が含まれる", excluded)
 		}
@@ -165,20 +246,34 @@ func TestReviewRequestValidation(t *testing.T) {
 		"request id":   func(r *ReviewRequest) { r.RequestID = "" },
 		"producer run": func(r *ReviewRequest) { r.ProducerRunID = "run 01" },
 		"issue":        func(r *ReviewRequest) { r.Issue = IssueRef{} },
-		"head":         func(r *ReviewRequest) { r.HeadSHA = "" },
+		"pull request": func(r *ReviewRequest) { r.PullRequest = PullRequestRef{} },
+		"pull request number": func(r *ReviewRequest) {
+			r.PullRequest.Number = 0
+		},
+		"pull request repository": func(r *ReviewRequest) {
+			r.PullRequest = PullRequestRef{Owner: "other", Repository: "repo", Number: 57}
+		},
+		"head": func(r *ReviewRequest) { r.HeadSHA = "" },
 		"observation schema": func(r *ReviewRequest) {
 			r.Observation.Schema = "kudo.task-context/v1alpha1"
 		},
 		"observation digest": func(r *ReviewRequest) { r.Observation.Digest = "sha256:nope" },
-		"manifest schema":    func(r *ReviewRequest) { r.ContextManifest.Schema = "kudo.artifact-manifest/v1alpha1" },
-		"policy schema":      func(r *ReviewRequest) { r.ExecutionPolicy.Schema = "" },
+		"pr observation schema": func(r *ReviewRequest) {
+			r.PullRequestObservation.Schema = "kudo.issue-observation/v1alpha1"
+		},
+		"pr observation digest": func(r *ReviewRequest) { r.PullRequestObservation.Digest = "sha256:nope" },
+		"manifest schema":       func(r *ReviewRequest) { r.ContextManifest.Schema = "kudo.artifact-manifest/v1alpha1" },
+		"policy schema":         func(r *ReviewRequest) { r.ExecutionPolicy.Schema = "" },
 		"artifact manifest schema": func(r *ReviewRequest) {
 			r.ArtifactManifest.Schema = "kudo.context-manifest/v1alpha1"
 		},
 		"artifact manifest digest": func(r *ReviewRequest) { r.ArtifactManifest.Digest = "" },
 		"empty policy refs":        func(r *ReviewRequest) { r.PolicyRefs = nil },
 		"policy ref path":          func(r *ReviewRequest) { r.PolicyRefs = []string{"../secret.md"} },
-		"created at":               func(r *ReviewRequest) { r.CreatedAt = time.Time{} },
+		"missing required policy": func(r *ReviewRequest) {
+			r.PolicyRefs = []string{"docs/contracts/issue-contract-v1alpha1.md"}
+		},
+		"created at": func(r *ReviewRequest) { r.CreatedAt = time.Time{} },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -195,6 +290,45 @@ func TestReviewRequestValidation(t *testing.T) {
 
 	if err := ValidateReviewRequest(sampleReviewRequest(t)); err != nil {
 		t.Fatalf("valid Review Request を拒否した: %v", err)
+	}
+}
+
+// kind の標準 policy を欠く request は、reviewer に評価基準を推測させないため
+// provider へ渡す前に拒否する。path の形式検証だけでは、別の任意 policy だけを
+// 積んだ request が通ってしまう（PR #51 review 指摘）。
+func TestReviewRequestRequiresKindPolicyRef(t *testing.T) {
+	for kind, build := range map[ReviewKind]func(*testing.T) ReviewRequest{
+		ReviewTestValidity:        sampleReviewRequest,
+		ReviewFinalImplementation: sampleFinalReviewRequest,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			req := build(t)
+			if err := ValidateReviewRequest(req); err != nil {
+				t.Fatalf("標準 policy を備えた request を拒否した: %v", err)
+			}
+
+			required := RequiredReviewPolicyRefs(kind)
+			if len(required) == 0 {
+				t.Fatalf("kind %q の標準 policy が宣言されていない", kind)
+			}
+			req.PolicyRefs = []string{"docs/contracts/issue-contract-v1alpha1.md"}
+			err := ValidateReviewRequest(req)
+			if !errors.Is(err, ProtocolKindConstraint) {
+				t.Fatalf("標準 policy の欠落が %q へ分類されない: %v", ProtocolKindConstraint, err)
+			}
+			// 何を足せば通るかが error から読めなければ、producer は総当たりで再試行する。
+			for _, ref := range required {
+				if !strings.Contains(err.Error(), ref) {
+					t.Fatalf("欠落した policy ref %q が error に現れない: %v", ref, err)
+				}
+			}
+
+			// 標準 policy さえ含めば repository 固有 policy の追加は妨げない。
+			req.PolicyRefs = append([]string{"docs/github-routing.md"}, required...)
+			if err := ValidateReviewRequest(req); err != nil {
+				t.Fatalf("標準 policy + 追加 policy の request を拒否した: %v", err)
+			}
+		})
 	}
 }
 
@@ -277,6 +411,106 @@ func TestReviewVerdictMatchesFindings(t *testing.T) {
 				t.Fatal("verdict と finding が矛盾する Result を受理した")
 			}
 		})
+	}
+}
+
+// applicability 宣言は単体でも語彙・一意性・理由 code・根拠を検証する。
+// 自由記述の理由を許すと Controller と audit は宣言を分類できない。
+func TestReviewResultPerspectiveValidation(t *testing.T) {
+	req := sampleFinalReviewRequest(t)
+	valid := sampleFinalReviewResult(t, req)
+	if err := ValidateReviewResult(valid); err != nil {
+		t.Fatalf("valid な applicability 宣言を拒否した: %v", err)
+	}
+
+	tests := map[string]func(*ReviewResult){
+		"unknown perspective": func(r *ReviewResult) { r.Perspectives[0].Perspective = "security" },
+		"duplicate":           func(r *ReviewResult) { r.Perspectives[1].Perspective = r.Perspectives[0].Perspective },
+		"empty reason":        func(r *ReviewResult) { r.Perspectives[0].Reason = "" },
+		"free-form reason":    func(r *ReviewResult) { r.Perspectives[0].Reason = "UI を変えていないため" },
+		"reason with spaces":  func(r *ReviewResult) { r.Perspectives[0].Reason = "no surface" },
+		"reason with case":    func(r *ReviewResult) { r.Perspectives[0].Reason = "No-Surface" },
+		"no evidence":         func(r *ReviewResult) { r.Perspectives[0].EvidenceRefs = nil },
+		"invalid evidence":    func(r *ReviewResult) { r.Perspectives[0].EvidenceRefs = []Digest{"sha256:nope"} },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := valid
+			got.Perspectives = slices.Clone(valid.Perspectives)
+			mutate(&got)
+			if err := ValidateReviewResult(got); err == nil {
+				t.Fatal("invalid な applicability 宣言を受理した")
+			}
+		})
+	}
+}
+
+// 宣言の完全性は kind に依存するため binding 境界で検証する。final_implementation は
+// 全条件付き観点への態度表明を欠く Result を受理せず、test_validity は宣言を持てない。
+// 宣言の欠落は品質 verdict ではなく protocol violation である。
+func TestBindReviewResultRequiresPerspectiveCompleteness(t *testing.T) {
+	req := sampleFinalReviewRequest(t)
+	result := sampleFinalReviewResult(t, req)
+	if err := BindReviewResult(req, result); err != nil {
+		t.Fatalf("全観点を宣言した final Result を拒否した: %v", err)
+	}
+
+	// 1 件ずつ落として、必須集合の全要素が実際に gate として働くことを確かめる。
+	for i, decision := range result.Perspectives {
+		missing := result
+		missing.Perspectives = slices.Delete(slices.Clone(result.Perspectives), i, i+1)
+		err := BindReviewResult(req, missing)
+		if !errors.Is(err, ProtocolKindConstraint) {
+			t.Fatalf("宣言 %q の欠落が %q へ分類されない: %v", decision.Perspective, ProtocolKindConstraint, err)
+		}
+		if !strings.Contains(err.Error(), string(decision.Perspective)) {
+			t.Fatalf("欠落した観点 %q が error に現れない: %v", decision.Perspective, err)
+		}
+	}
+
+	empty := result
+	empty.Perspectives = nil
+	if err := BindReviewResult(req, empty); err == nil {
+		t.Fatal("applicability 宣言を持たない final Result を受理した")
+	}
+
+	testReq := sampleReviewRequest(t)
+	testResult := sampleReviewResult(t, testReq)
+	testResult.Perspectives = sampleFinalPerspectives()
+	if err := BindReviewResult(testReq, testResult); err == nil {
+		t.Fatal("条件付き観点を持たない kind の Result が宣言を持ったまま受理された")
+	}
+}
+
+// 宣言は判断の一部として Result identity へ寄与し、並びは寄与しない。
+func TestReviewResultDigestCoversPerspectives(t *testing.T) {
+	req := sampleFinalReviewRequest(t)
+	base := sampleFinalReviewResult(t, req)
+	want, err := ReviewResultDigest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	flipped := base
+	flipped.Perspectives = slices.Clone(base.Perspectives)
+	flipped.Perspectives[0].Applicable = !flipped.Perspectives[0].Applicable
+	digest, err := ReviewResultDigest(flipped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest == want {
+		t.Fatal("applicable の変更で Result digest が変わらない")
+	}
+
+	reordered := base
+	reordered.Perspectives = slices.Clone(base.Perspectives)
+	slices.Reverse(reordered.Perspectives)
+	digest, err = ReviewResultDigest(reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != want {
+		t.Fatal("宣言の並び替えで Result digest が変化")
 	}
 }
 

@@ -25,7 +25,7 @@ flowchart LR
     RW[Review Worker] <--> DB
     C -->|label/comment projection| GH
     IW -->|Issue read, branch/PR write| GH
-    RW -->|Issue/source read| GH
+    RW -->|Issue/PR/source read| GH
     IW -->|fresh child process| P1[Codex or Claude]
     RW -->|fresh child process| P2[Codex or Claude]
     IW <--> AS[(Content-addressed artifacts)]
@@ -63,7 +63,8 @@ Issue Worker は implementation data plane であり、実装側の唯一の wri
 - test authoring/revision、RED command、implementation/repair、GREEN/refactor checks を実行する
 - model-bearing Operation ごとに fresh Codex/Claude process を supervision する
 - artifact manifest と command evidence を content-addressed store へ追加する
-- approved head の branch push と Pull Request create/update を冪等に行う
+- 固定済み head の compare-and-push と draft Pull Request の ensure/update（`publish_head`）を冪等に行う
+- final approve 後に required PR body を確定し draft を解除する（`finalize_pull_request`）
 
 同じ Run の新しい Operation は同じ専用 worktree を引き継げる。ただし継続に必要な状態は commit と artifact へ固定し、前 provider session の transcript、session ID、private memory に依存しない。
 
@@ -73,9 +74,10 @@ Review Worker は read-only evaluator である。
 
 - `test_validity`と`final_implementation`の Review Request を処理する
 - request が指す Issue Observation と live Issue のexact body digestを照合する
+- request が指す live PR の open/draft 状態・head・base を照合し、観測を lineage へ追記する
 - head SHAとimmutable source bundle/snapshot artifactからdisposable checkoutを構築する。既にread-only remoteで取得可能な同一commitは再利用してよい
 - immutable artifact と明示された policy だけを fresh provider session へ渡す
-- versioned`approve`、`request_changes`、`needs_human` Result を返す
+- 条件付き観点の applicability 宣言を含む versioned`approve`、`request_changes`、`needs_human` Result を返し、宣言の完全性を binding 境界で検証する
 
 Review Worker は implementation workspace volume を mount せず、GitHub write credential を持たない。Review Result artifact の新規追加と Operation Result の記録はできるが、受け取った artifact、source、branch、PR は変更できない。
 
@@ -197,8 +199,9 @@ retry policy は error class ごとに決める。
 - invalid provider output: bounded retry 後に execution failure として記録し、品質 verdict には変換しない
 - contract/authority conflict、安全判断: `needs_human`
 - review の blocking finding: `request_changes`として修正 Operation へ routing
-- changed Context Manifest/Execution Policy/head/artifact/policy: stale。新しい identity で再評価し、古い approval は破棄
-- changed Issue Observation のみ（Task Context と Context Manifest が同じ）: audit lineage へ追記し、identity と approval は維持
+- changed Context Manifest/Execution Policy/head/artifact/policy/PR ref: stale。新しい identity で再評価し、古い approval は破棄
+- changed Issue Observation / PR observation のみ（Task Context と Context Manifest が同じ）: audit lineage へ追記し、identity と approval は維持
+- PR の外部 close/merge、base 不一致、branch への外部 push: blind mutation せず stale または`needs_human`
 
 ## Scheduling and concurrency
 
@@ -233,6 +236,7 @@ Implementation と Review が共有できるのは次だけである。
 - versioned Operation / Review protocol
 - IssueRef、期待Issue Observation、canonical Task Context
 - base/head commit SHA
+- 対象 Pull Request reference と exact PR observation
 - Context Manifest と immutable artifact reference
 - versioned Review Result と明示された policy
 

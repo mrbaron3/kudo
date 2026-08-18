@@ -2,6 +2,7 @@ schema: "kudo.review-request/v1alpha1"
 kind: "test_validity"
 repository: "github://mrbaron3/kudo"
 issue: "github://mrbaron3/kudo/issues/10"
+pullRequest: "github://mrbaron3/kudo/pull/57"
 headSha: "89abcdef0123456789abcdef0123456789abcdef"
 contextManifest:
   schema: "kudo.context-manifest/v1alpha1"
@@ -11,6 +12,7 @@ executionPolicy:
   digest: "sha256:3b9f2163726f0420bc286602bea5ad9acb7085aba4a6bdc935138cd0d488feec"
 artifactManifest:
   schema: "kudo.artifact-manifest/v1alpha1"
-  digest: "sha256:6abd1e7cf49fb0ab42f2f71abc63c6568b5e6bf2c5714ab920b9e3397f7df1ca"
+  digest: "sha256:3aac97422b7345789feb2f47475c5fcb4b628f2c7aea853b5798649be2b6c3bf"
 policyRefs:
   - "docs/contracts/issue-contract-v1alpha1.md"
+  - "docs/review-policies/test-validity-v1alpha1.md"

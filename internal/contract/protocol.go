@@ -14,11 +14,12 @@ import (
 // versioned ref の schema namespace。ref は schema と digest の組で比較し、
 // digest だけから schema を推測しない。
 const (
-	issueObservationSchemaPrefix = "kudo.issue-observation/"
-	taskContextSchemaPrefix      = "kudo.task-context/"
-	contextManifestSchemaPrefix  = "kudo.context-manifest/"
-	executionPolicySchemaPrefix  = "kudo.execution-policy/"
-	artifactManifestSchemaPrefix = "kudo.artifact-manifest/"
+	issueObservationSchemaPrefix       = "kudo.issue-observation/"
+	taskContextSchemaPrefix            = "kudo.task-context/"
+	contextManifestSchemaPrefix        = "kudo.context-manifest/"
+	executionPolicySchemaPrefix        = "kudo.execution-policy/"
+	artifactManifestSchemaPrefix       = "kudo.artifact-manifest/"
+	pullRequestObservationSchemaPrefix = "kudo.pull-request-observation/"
 )
 
 // validProtocolID は Operation、Run、attempt、finding 等の identifier を検証する。

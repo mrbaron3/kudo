@@ -34,12 +34,14 @@ func latestFromOperation(op WorkerOperation) LatestOperationInput {
 
 func latestFromRequest(req ReviewRequest) LatestReviewInput {
 	return LatestReviewInput{
-		Observation:      req.Observation,
-		ContextManifest:  req.ContextManifest,
-		ExecutionPolicy:  req.ExecutionPolicy,
-		HeadSHA:          req.HeadSHA,
-		ArtifactManifest: req.ArtifactManifest,
-		PolicyRefs:       append([]string(nil), req.PolicyRefs...),
+		Observation:            req.Observation,
+		PullRequestObservation: req.PullRequestObservation,
+		ContextManifest:        req.ContextManifest,
+		ExecutionPolicy:        req.ExecutionPolicy,
+		HeadSHA:                req.HeadSHA,
+		PullRequest:            req.PullRequest,
+		ArtifactManifest:       req.ArtifactManifest,
+		PolicyRefs:             append([]string(nil), req.PolicyRefs...),
 	}
 }
 
@@ -344,19 +346,39 @@ func reviewIdentityCases(t *testing.T) []identityCase[ReviewRequest, LatestRevie
 		{field: "HeadSHA", role: roleSemanticInput, compared: fieldHeadSHA,
 			mutate: func(r *ReviewRequest) { r.HeadSHA = sampleNextSHA },
 			latest: func(l *LatestReviewInput) { l.HeadSHA = sampleNextSHA }},
+		// PR が外部で close され別 PR として作り直された場合、古い approve を新しい PR の
+		// approval として再利用してはならない。
+		{field: "PullRequest", role: roleSemanticInput, compared: fieldPullRequest,
+			mutate: func(r *ReviewRequest) { r.PullRequest.Number = 58 },
+			latest: func(l *LatestReviewInput) { l.PullRequest.Number = 58 }},
 		{field: "ArtifactManifest", role: roleSemanticInput, compared: fieldArtifactManifest,
 			mutate: func(r *ReviewRequest) { r.ArtifactManifest = changedRef },
 			latest: func(l *LatestReviewInput) { l.ArtifactManifest = changedRef }},
 		{field: "ArtifactManifest", role: roleSemanticInput, compared: fieldArtifactManifest,
 			mutate: func(r *ReviewRequest) { r.ArtifactManifest.Schema = "kudo.artifact-manifest/v1beta1" },
 			latest: func(l *LatestReviewInput) { l.ArtifactManifest.Schema = "kudo.artifact-manifest/v1beta1" }},
+		// 標準 policy は kind の必須 ref なので、追加 policy の差分で比較する。
 		{field: "PolicyRefs", role: roleSemanticInput, compared: fieldPolicyRefs,
-			mutate: func(r *ReviewRequest) { r.PolicyRefs = []string{"docs/workflow.md"} },
-			latest: func(l *LatestReviewInput) { l.PolicyRefs = []string{"docs/workflow.md"} }},
+			mutate: func(r *ReviewRequest) {
+				r.PolicyRefs = []string{"docs/review-policies/test-validity-v1alpha1.md", "docs/workflow.md"}
+			},
+			latest: func(l *LatestReviewInput) {
+				l.PolicyRefs = []string{"docs/review-policies/test-validity-v1alpha1.md", "docs/workflow.md"}
+			}},
 		{field: "Observation", role: roleAuditLineage,
 			mutate: func(r *ReviewRequest) { r.Observation.Digest = SHA256([]byte("別 raw body")) },
 			latest: func(l *LatestReviewInput) { l.Observation.Digest = SHA256([]byte("別 raw body")) }},
-		{field: "Kind", role: roleIdentityOnly, mutate: func(r *ReviewRequest) { r.Kind = ReviewFinalImplementation }},
+		// PR body の編集や draft/ready の状態遷移だけでは identity と approval を stale に
+		// しない。観測の変化は lineage へ追記される。
+		{field: "PullRequestObservation", role: roleAuditLineage,
+			mutate: func(r *ReviewRequest) { r.PullRequestObservation.Digest = SHA256([]byte("別 PR 観測")) },
+			latest: func(l *LatestReviewInput) { l.PullRequestObservation.Digest = SHA256([]byte("別 PR 観測")) }},
+		// kind の変更は標準 policy ref も変える。policy ref を揃えないと validation が先に
+		// 落ち、identity の検証にならない。
+		{field: "Kind", role: roleIdentityOnly, mutate: func(r *ReviewRequest) {
+			r.Kind = ReviewFinalImplementation
+			r.PolicyRefs = append(r.PolicyRefs, "docs/review-policies/final-implementation-v1alpha1.md")
+		}},
 		{field: "Issue", role: roleIdentityOnly, mutate: func(r *ReviewRequest) { r.Issue.Number = 11 }},
 		{field: "RequestID", role: roleNonIdentity, mutate: func(r *ReviewRequest) { r.RequestID = "01KUDOOTHER" }},
 		{field: "ProducerRunID", role: roleNonIdentity, mutate: func(r *ReviewRequest) { r.ProducerRunID = "run-02" }},

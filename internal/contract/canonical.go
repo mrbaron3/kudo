@@ -20,6 +20,16 @@ func writeYAMLString(b *strings.Builder, indent int, key, value string) {
 	b.WriteByte('\n')
 }
 
+// writeYAMLBool は bool を implicit scalar として書く。YAML 1.2 の true / false だけを
+// 使い、quote した string と区別する。
+func writeYAMLBool(b *strings.Builder, indent int, key string, value bool) {
+	b.WriteString(strings.Repeat(" ", indent))
+	b.WriteString(key)
+	b.WriteString(": ")
+	b.WriteString(strconv.FormatBool(value))
+	b.WriteByte('\n')
+}
+
 func writeYAMLNull(b *strings.Builder, indent int, key string) {
 	b.WriteString(strings.Repeat(" ", indent))
 	b.WriteString(key)
@@ -88,6 +98,10 @@ func writeYAMLNamedArtifacts(b *strings.Builder, indent int, key string, artifac
 }
 
 func validIssueRef(ref IssueRef) bool {
+	return validOwner(ref.Owner) && validRepoName(ref.Repository) && ref.Number > 0
+}
+
+func validPullRequestRef(ref PullRequestRef) bool {
 	return validOwner(ref.Owner) && validRepoName(ref.Repository) && ref.Number > 0
 }
 

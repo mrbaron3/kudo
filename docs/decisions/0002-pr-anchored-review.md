@@ -1,6 +1,6 @@
 # ADR-0002: PR-anchored review と Review Worker 設計
 
-- Status: draft（提案。acceptまでは正本ではない）
+- Status: accepted（2026-08-18）
 - 関連Issue: [#25](https://github.com/mrbaron3/kudo/issues/25)、[#28](https://github.com/mrbaron3/kudo/issues/28)、[#29](https://github.com/mrbaron3/kudo/issues/29)、[#43](https://github.com/mrbaron3/kudo/issues/43)、[#44](https://github.com/mrbaron3/kudo/issues/44)、[#47](https://github.com/mrbaron3/kudo/issues/47)
 - 実装Task: [#49](https://github.com/mrbaron3/kudo/issues/49)（本ADRの確定とprotocol/workflow改訂）
 - Supersede対象: [migration-from-servo.md](../migration-from-servo.md)「New Kudo decisions」の「PR作成前のfinal implementation review gate」、および[workflow.md](../workflow.md) §6–7のPR作成順序
@@ -33,7 +33,7 @@
 
 ### D3. 再reviewラウンドで観点を縮小しない
 
-- 各roundは、そのroundのscope判定で適用となった観点をすべて再評価する。前roundの観点別結果を持ち越さない。
+- 各roundは、そのroundの適用判断で適用となった観点をすべて再評価する。前roundの観点別結果を持ち越さない。
 - コスト削減はD2の適用判定と、修正roundのdiffが自然に小さいことで得る。delta-scoped再reviewと観点別verdict cacheは採用しない（「未決事項」参照）。
 
 ## 設計詳細
@@ -127,7 +127,7 @@ pullRequestObservation:
 ```
 
 - `pullRequest`はrequest identityに含める。同じheadでも別PRへのrequestは別identityである。
-- `pullRequestObservation`は`issueObservation`と対称のaudit lineageであり、identityに含めない。live PRの観測結果（head SHA、base、open/draft状態、body digest、観測時刻）を`kudo.pull-request-observation/v1alpha1` artifactとして固定する。
+- `pullRequestObservation`は`issueObservation`と対称のaudit lineageであり、identityに含めない。live PRの観測結果（PR ref、open/closed/merged、draft、head SHA、base ref、body digest）を`kudo.pull-request-observation/v1alpha1` artifactとして固定する。観測時刻はcanonical contentに含めず、Artifact Storeのmetadataが持つ。同じ状態の再観測が別identityになると、意味のない差分でlineageが伸びるためである。
 
 #### Review Resultのapplicability宣言
 
@@ -156,7 +156,8 @@ perspectives:
   - perspective: performance
     applicable: false
     reason: no-bound-and-no-perf-surface
-    evidenceRefs: []
+    evidenceRefs:
+      - sha256:<digest>
 findings: []
 ```
 

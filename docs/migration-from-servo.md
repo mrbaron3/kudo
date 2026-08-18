@@ -33,7 +33,7 @@ Servo の`docs/requirements/lightweight-tdd-issue-to-pr-run/`にあった draft 
 - Webhookをprimary通知、60秒pollingを必須fallbackとするunified reconciliation
 - `ai-ready`、`ai-in-progress`、`ai-review-waiting`、`ai-needs-human`のstatus projection
 - model-bearing Operation ごとのfresh Codex/Claude sessionと、Orca handoffに似た明示artifact handoff
-- test reviewに加え、PR作成前のfinal implementation review gate
+- test reviewに加えたfinal implementation review gate。当初はPR作成をfinal approve後に置いたが、[ADR-0002](decisions/0002-pr-anchored-review.md)でsupersedeし、RED固定後にdraft PRをpublishして全review roundをPRへ繋留し、ready化だけをfinal approveのgateにした
 - PostgreSQLをRun state、Operation queue、lease、inbox/outboxの正本にする構成
 - 一つのGo binaryをrole別containerとして起動するDocker Compose deployment
 - content-addressed artifact volumeとIssue Worker専用workspace volume

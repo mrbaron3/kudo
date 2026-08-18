@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`final_implementation` reviewで、承認済みテストとIssue Contractに対してfinal headが正しく、回帰、scope逸脱、重大なriskを残していないかを判定する標準観点を定義する。本policyはPR作成前の独立quality gateであり、人間によるPR review、merge、releaseを代替しない。
+`final_implementation` reviewで、承認済みテストとIssue Contractに対してfinal headが正しく、回帰、scope逸脱、重大なriskを残していないかを判定する標準観点を定義する。本policyはPRのready化（draft解除）前の独立quality gateであり、人間によるPR review、merge、releaseを代替しない。
 
 ## Applicability and binding
 
