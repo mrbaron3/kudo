@@ -40,6 +40,17 @@ Servo の`docs/requirements/lightweight-tdd-issue-to-pr-run/`にあった draft 
 
 Compose と PostgreSQL を採用していても、Servo の process topology、table、queue、artifact naming を流用したことを意味しない。Kudo の boundary から独立に設計・testする。
 
+## Review perspective adaptation
+
+Servoで使われていたfunctionality、code quality、test quality、UX、accessibility、security、type designという分類は、reviewerが見るべき対象を漏らさないための参考語彙として利用する。分類そのものをruntime topologyとして移植せず、Kudoの二つのreview kindへ次のように再編した。
+
+- `test_validity`はAC traceability、behavioral test validity、test isolation、discovery、RED causalityを全Taskで評価する。
+- `final_implementation`はfunctionality/correctness、regression/scope、test integrity、code quality、security、evidenceを全Taskで評価する。
+- UX、accessibility、type designはTaskと変更面が該当する場合だけfinal reviewへ追加する。
+- performanceはServoの固定perspectiveを流用せず、要件が明示された場合と、frontendやbatch/jobのような性能が問題になりやすい実行surfaceを変更する場合に評価する。
+
+Kudoの正本は[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)と[Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md)である。一つのfresh sessionが複数観点を評価でき、全観点一律panel、観点ごとのsession、score、重み、provider/effort routing、合議を要求しない。
+
 ## Deliberately not migrated
 
 - Servo の Go/TypeScript source code、database schema、migration、API

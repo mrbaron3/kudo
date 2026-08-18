@@ -99,7 +99,7 @@ Issue Worker は test-only checkpoint commit、patch、command、exit status、s
 
 ### 4. Test validity review
 
-Controller は immutable input から`test_validity` Review Request を作る。Review Worker は fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence を評価する。
+Controller は immutable input から`test_validity` Review Request を作り、[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)を`policyRefs`へ含める。required policy refが欠落または未対応のRequestをreviewerの推測で補わず、policy取得のtransport failureもquality verdictへ変換しない。Review Worker は fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence をpolicyの標準観点で評価する。
 
 - `approve`: 承認対象 digest を固定し、implementation へ進む。
 - `request_changes`: blocking finding を versioned Result として返す。Controller は同じ Run/worktree を所有する Issue Worker の新しい`revise_tests` session へ finding と artifact を渡す。
@@ -121,7 +121,7 @@ implementation は次を順に満たす。
 
 ### 6. Final implementation review
 
-PR 作成前に、Controller は final head、approved test review、implementation patch、GREEN/refactor/check evidence を固定し、`final_implementation` Review Request を発行する。Review Worker は fresh read-only session で correctness、regression、scope、risk、evidence を評価する。
+PR 作成前に、Controller は final head、approved test review、implementation patch、GREEN/refactor/check evidence を固定し、[Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md)を`policyRefs`へ含む`final_implementation` Review Request を発行する。required policy refが欠落または未対応のRequestをreviewerの推測で補わず、policy取得のtransport failureもquality verdictへ変換しない。Review Worker は fresh read-only session で常時必須のcorrectness、regression、scope、test quality、code quality、security、evidenceと、Taskの変更面に該当するUX、accessibility、type design、performanceを評価する。
 
 `request_changes`は fresh`repair_implementation` session へ handoff し、修正後の head に新しい review を要求する。head または artifact が変われば以前の approve は stale である。`needs_human`は自動 loop を停止する。
 
