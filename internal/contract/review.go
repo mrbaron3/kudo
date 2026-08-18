@@ -196,55 +196,73 @@ func ValidateReviewResult(result ReviewResult) error {
 		return protocolErr(ProtocolFieldMissing, "createdAt", "作成時刻が空")
 	}
 
+	// finding の identity（妥当性と一意性）はここで判定する。一意性は finding 間の関係で
+	// あり単体では決まらないため、content の検証だけを validateReviewFinding へ分ける。
 	seen := map[string]bool{}
 	blocking := 0
 	for i, finding := range result.Findings {
-		field := func(name string) string { return fmt.Sprintf("findings[%d].%s", i, name) }
 		if !validProtocolID(finding.ID) {
-			return protocolErr(ProtocolFieldInvalid, field("id"), "identifier が不正: %q", finding.ID)
+			return protocolErr(ProtocolFieldInvalid, findingField(i, "id"), "identifier が不正: %q", finding.ID)
 		}
 		if seen[finding.ID] {
-			return protocolErr(ProtocolFieldDuplicate, field("id"), "finding id が重複: %s", finding.ID)
+			return protocolErr(ProtocolFieldDuplicate, findingField(i, "id"), "finding id が重複: %s", finding.ID)
 		}
 		seen[finding.ID] = true
-		if !findingSeverities[finding.Severity] {
-			return protocolErr(ProtocolFieldInvalid, field("severity"), "severity が不正: %q", finding.Severity)
+		if err := validateReviewFinding(i, finding); err != nil {
+			return err
 		}
 		if finding.Severity == SeverityBlocking {
 			blocking++
 		}
-		if !validCanonicalLine(finding.Summary, MaxCanonicalLineBytes) {
-			return protocolErr(canonicalTextCode(finding.Summary, MaxCanonicalLineBytes), field("summary"),
-				"空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
-		}
-		for _, body := range []struct{ name, value string }{
-			{"expected", finding.Expected},
-			{"observed", finding.Observed},
-		} {
-			if !validCanonicalText(body.value, MaxCanonicalTextBytes) {
-				return protocolErr(canonicalTextCode(body.value, MaxCanonicalTextBytes), field(body.name),
-					"空、canonical text でない、または上限 %d byte を超えている", MaxCanonicalTextBytes)
-			}
-		}
-		if len(finding.EvidenceRefs) == 0 {
-			return protocolErr(ProtocolFieldMissing, field("evidenceRefs"), "finding が根拠を持たない")
-		}
-		if err := validateDigestSet(field("evidenceRefs"), finding.EvidenceRefs); err != nil {
-			return err
-		}
 	}
 
-	switch result.Verdict {
+	return validateVerdictMatchesFindings(result.Verdict, blocking)
+}
+
+// validateVerdictMatchesFindings は verdict と blocking finding の対応を検証する。
+// 矛盾した Result を通すと、Controller は finding を読まずに gate を判断してしまう。
+func validateVerdictMatchesFindings(verdict ReviewVerdict, blocking int) error {
+	switch verdict {
 	case VerdictApprove:
 		if blocking > 0 {
 			return protocolErr(ProtocolOutcomeConflict, "verdict", "approve は blocking finding を持てない")
 		}
 	case VerdictRequestChanges, VerdictNeedsHuman:
 		if blocking == 0 {
-			return protocolErr(ProtocolOutcomeConflict, "verdict", "%q は blocking finding を必要とする", result.Verdict)
+			return protocolErr(ProtocolOutcomeConflict, "verdict", "%q は blocking finding を必要とする", verdict)
 		}
 	}
 	return nil
+}
+
+func findingField(index int, name string) string {
+	return fmt.Sprintf("findings[%d].%s", index, name)
+}
+
+// validateReviewFinding は finding 単体の content を検証する。
+// ID の妥当性と一意性は呼び出し側が判定済みであることを前提とする。
+func validateReviewFinding(index int, finding ReviewFinding) error {
+	if !findingSeverities[finding.Severity] {
+		return protocolErr(ProtocolFieldInvalid, findingField(index, "severity"),
+			"severity が不正: %q", finding.Severity)
+	}
+	if !validCanonicalLine(finding.Summary, MaxCanonicalLineBytes) {
+		return protocolErr(canonicalTextCode(finding.Summary, MaxCanonicalLineBytes), findingField(index, "summary"),
+			"空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
+	}
+	for _, body := range []struct{ name, value string }{
+		{"expected", finding.Expected},
+		{"observed", finding.Observed},
+	} {
+		if !validCanonicalText(body.value, MaxCanonicalTextBytes) {
+			return protocolErr(canonicalTextCode(body.value, MaxCanonicalTextBytes), findingField(index, body.name),
+				"空、canonical text でない、または上限 %d byte を超えている", MaxCanonicalTextBytes)
+		}
+	}
+	if len(finding.EvidenceRefs) == 0 {
+		return protocolErr(ProtocolFieldMissing, findingField(index, "evidenceRefs"), "finding が根拠を持たない")
+	}
+	return validateDigestSet(findingField(index, "evidenceRefs"), finding.EvidenceRefs)
 }
 
 // ReviewResultDigest は Result の content identity を返す。
