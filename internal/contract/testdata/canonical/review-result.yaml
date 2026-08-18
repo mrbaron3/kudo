@@ -1,5 +1,5 @@
 schema: "kudo.review-result/v1alpha1"
-requestDigest: "sha256:78a505e9a26019d8d048793cae9286c2487e435e30e99ce84415f615847db7d9"
+requestDigest: "sha256:3697e776bd43122001c5932681528d07564cf11b5dce6cad74252eb7e324d40b"
 verdict: "request_changes"
 findings:
   - id: "F-1"

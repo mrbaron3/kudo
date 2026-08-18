@@ -87,7 +87,20 @@ manifestはlogical nameで引くtableである。nameは`[a-z0-9]`で始まる�
 - refactor後のrequired checksとIssue Verification evidence
 - Pull Requestに記載するsummary、risk、manual verificationのdraft artifact
 
-上記のartifactに対応するlogical nameの必須集合をrequest bindingで検証するかは、命名規約を確定させる別change（[#43](https://github.com/mrbaron3/kudo/issues/43)）で決める。現時点のvalidatorはmanifestが非空であることと、各entryのname・media type・length・digestの形だけを検証する。
+### Required manifest entries
+
+上記のうち、件数が入力ごとに変わるauthority contentを除いた集合を、logical nameの必須entryとしてrequest bindingで検証する。語彙は`operation-protocol-v1alpha1.md`のArtifact logical names節に置き、両protocolで同じ名前を使う。
+
+| Review kind | 必須logical name |
+| --- | --- |
+| `test_validity` | `raw-issue-body`、`issue-observation`、`task-context`、`context-manifest`、`test-plan`、`red-evidence`、`source-bundle` |
+| `final_implementation` | 上記すべて、および`test-validity-result`、`green-evidence`、`check-evidence`、`pull-request-draft` |
+
+`source-bundle`はどのOperation kindの必須outputでもない。head SHAから機械的に作れるsnapshotでありmodelの成果ではないが、Review Workerがmutable worktreeをmountしない以上、review開始時点でmanifestに無ければreviewerはsourceを読めない。Controllerがrequestを組み立てる時点で用意する。
+
+必須集合は下限であって上限ではなく、語彙外のnameを追加してよい。欠落はrequestをrejectし、Review Workerへ渡さない。欠落したnameはすべてerrorへ載せ、`protocol_kind_constraint`として分類する。
+
+binding検証はmanifestを再encodeしてrequestの`artifactManifest` refと照合したうえで行う。nameの充足だけを見てrefを照合しないと、必須entryを揃えた別のmanifestでgateを通せてしまい、検証したmanifestとreviewerが実際に読むmanifestがずれる。
 
 artifactのbytesが変われば新しいdigest、Artifact Manifest、Review Requestを作る。test patchをimplementation phaseで変更した場合、以前のtest validity approvalを再利用せず、test review gateへ戻る。
 

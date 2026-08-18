@@ -101,6 +101,30 @@ func ValidateReviewRequest(req ReviewRequest) error {
 	return nil
 }
 
+// BindReviewRequestManifest は request が指す Artifact Manifest の中身を binding 境界で
+// 検証する。ValidateReviewRequest は manifest を schema と digest の組としてしか見ないため、
+// 「reviewer が読めない manifest を参照した request」はそこでは止まらない。
+//
+// manifest を再 encode して request の ref と照合したうえで必須 entry を検証する。name の
+// 充足だけを見て ref を照合しないと、必須 entry を揃えた別の manifest を渡して gate を
+// 通せてしまい、検証した manifest と reviewer が実際に読む manifest がずれる。
+func BindReviewRequestManifest(req ReviewRequest, manifest ArtifactManifest) error {
+	if err := ValidateReviewRequest(req); err != nil {
+		return err
+	}
+	ref, _, err := EncodeArtifactManifest(manifest)
+	if err != nil {
+		return err
+	}
+	if ref != req.ArtifactManifest {
+		return protocolErr(ProtocolIdentityMismatch, "artifactManifest",
+			"request が参照していない manifest を検証しようとしている: got %s, want %s",
+			ref.Digest, req.ArtifactManifest.Digest)
+	}
+	return requireArtifactNames("entries", fmt.Sprintf("review kind %q", req.Kind),
+		requiredReviewEntries[req.Kind], artifactEntrySet(manifest.Entries))
+}
+
 // ReviewRequestDigest は Review Request の content identity を返す。
 // request ID、producer Run、作成時刻、Issue Observation は含まない。
 func ReviewRequestDigest(req ReviewRequest) (Digest, error) {

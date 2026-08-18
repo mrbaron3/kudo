@@ -76,10 +76,15 @@ outcome: succeeded
 headSha: <git-commit-sha>
 changedInputFields: []
 outputArtifacts:
-  - sha256:<digest>
+  - name: test-plan
+    digest: sha256:<digest>
+  - name: red-evidence
+    digest: sha256:<digest>
 externalRefs: []
 completedAt: 2026-08-11T00:01:00Z
 ```
+
+`outputArtifacts`はdigestの列ではなくlogical nameで引くtableである。nameが無いと、Controllerは「このOperationが何を残したか」をdigestからしか判断できず、kindが要求する成果物を残したかを検証できない。nameは`artifact-manifest`のentry nameと同じ語彙・同じ形式規則を使い、重複を拒否する。canonical encodeではnameのlexicographic順へ並べ替えるため、producerの列挙順はResult identityを変えない。
 
 terminalな`outcome`は次のいずれかとする。
 
@@ -102,15 +107,52 @@ Result digestは、schema、参照するOperation digest、outcome、head SHA、
 
 | Kind | `headSha` | `outputArtifacts` | `externalRefs` |
 | --- | --- | --- | --- |
-| `claim` | 返さない | 1件以上必須 | 任意 |
-| `author_tests`、`revise_tests`、`implement`、`repair_implementation` | 必須 | 1件以上必須 | 任意 |
-| `create_pull_request` | 入力`headSha`と一致 | 任意 | 同じrepositoryのPR referenceを1件以上必須 |
+| `claim` | 返さない | 必須logical nameを満たす | 任意 |
+| `author_tests`、`revise_tests`、`implement`、`repair_implementation` | 必須 | 必須logical nameを満たす | 任意 |
+| `create_pull_request` | 入力`headSha`と一致 | 必須logical nameを持たない | 同じrepositoryのPR referenceを1件以上必須 |
 
 外部referenceは`github://owner/repository/pull/<number>`形式のcanonicalなPull Request referenceとする。非空判定だけでは、成功と主張するResultからPR numberとURLを復元できず、retry時の既存PR照合とdurable handoffが成立しない。Issue referenceと同じく、numberは先頭0や符号を含まない十進表記だけを許可し、owner/repositoryはcase-insensitiveに正規化する。Operationが対象とするrepository以外のPR referenceは成功の根拠にしない。
 
-`succeeded`は「Operation contractを満たすoutputがimmutableに固定された」ことを意味する。outputを残さない成功を受理すると、後続Operationとreviewが存在しないartifactを前提に進む。`create_pull_request`はsource headを進めずapproved headを観測してPRを作るOperationなので、Result headが入力headと一致しないことは、reviewしていないheadへ外部mutationを行ったことを意味する。binding境界で拒否する。
+`succeeded`は「Operation contractを満たすoutputがimmutableに固定された」ことを意味する。kindが要求するlogical nameを欠いた成功を受理すると、後続Operationとreviewが存在しないartifactを前提に進む。必須集合は後述のArtifact logical names節が定める。`create_pull_request`はsource headを進めずapproved headを観測してPRを作るOperationなので、Result headが入力headと一致しないことは、reviewしていないheadへ外部mutationを行ったことを意味する。binding境界で拒否する。
 
-kindごとに必要なartifactの中身（test plan、RED evidence等）は本書のkind表が定めるが、binding境界が検証するのは「kindが要求するoutputを残したか」までである。logical nameの必須集合をvalidatorへ固定するかは、artifact命名規約を確定させる別change（[#43](https://github.com/mrbaron3/kudo/issues/43)）で決める。
+## Artifact logical names
+
+artifactはcontent addressで一意になるが、digestだけでは「そのbytesが何であるか」を表せない。Operation Resultの`outputArtifacts`とArtifact Manifestの`entries`は、どちらもlogical nameで引くtableであり、次の語彙を共有する。
+
+| logical name | 内容 | 主なproducer |
+| --- | --- | --- |
+| `raw-issue-body` | 観測時点のIssue body bytes | `claim` |
+| `issue-observation` | 取得identityとexact body digestの記録 | `claim` |
+| `task-context` | model sessionへ渡すcanonical Task Context | `claim` |
+| `context-manifest` | 解決済み実装入力のclosure | `claim` |
+| `test-plan` | Acceptance Criteriaとtestの対応 | `author_tests`、`revise_tests` |
+| `red-evidence` | 実装前にtestが失敗したことの実行証跡 | `author_tests`、`revise_tests` |
+| `green-evidence` | 実装後にtestが通ったことの実行証跡 | `implement`、`repair_implementation` |
+| `check-evidence` | refactor後のrequired checksとIssue Verificationの証跡 | `implement`、`repair_implementation` |
+| `pull-request-draft` | PRへ載せるsummary、risk、manual verificationの草稿 | `implement`、`repair_implementation` |
+| `source-bundle` | head SHAを再構築・検証できるimmutable snapshot | Controller |
+| `test-validity-result` | final reviewが前提とする承認済みtest validity verdict | Controller |
+
+nameの形式規則はArtifact Manifestのentry nameと同一とする（`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`、relative pathとして正規形、128 byte以内）。
+
+この語彙はartifactの`kind`とは別の値空間である。`kind`はbytes自体の規則（versioned schemaとmedia type）を決めるが、logical nameはtableの中での役割を決める。`source-bundle`のようにkindを持たない不透明bytesがあり、逆にauthorityがIssue referenceのときは同じkindのraw bodyが別々のnameで複数入るため、両者は1対1に対応しない。綴りが一致する4件は既定のnameをkindから取っただけであり、一方の都合でもう一方を変えてよい関係ではない。
+
+必須集合はprotocolの一部としてcore実装へ固定し、Execution Policyのような配備側artifactへ持たせない。Execution Policyはproducerが作ってOperationへ添えるartifactであり、そこへ必須集合を置くと、producerが自分に課されるgate条件を自分で緩められる。
+
+### Required output artifacts
+
+kindごとの`succeeded` Resultは、次のlogical nameをすべて`outputArtifacts`に持たなければならない。必須集合は下限であって上限ではなく、語彙外のnameを追加してよい。
+
+| Kind | 必須logical name |
+| --- | --- |
+| `claim` | `raw-issue-body`、`issue-observation`、`task-context`、`context-manifest` |
+| `author_tests`、`revise_tests` | `test-plan`、`red-evidence` |
+| `implement`、`repair_implementation` | `green-evidence`、`check-evidence`、`pull-request-draft` |
+| `create_pull_request` | なし |
+
+集合はkind表のOutput列から、head SHAと外部referenceのように別fieldが担うものを除いて決める。`create_pull_request`が空なのは、このkindの成果がPR referenceと観測したheadであり新しいartifactを作らないためで、「検証しない」ではなく「要求が無い」を意味する。`pull-request-draft`を実装側kindの必須outputに含めるのは、`create_pull_request`のRequired inputがPR body artifactを名指ししており、それを作るOperationが他に無いためである。
+
+非空判定では足りない。protocolはkindごとに「何を」残すかまで定めており、test planの代わりに任意の1件を置いたResultも非空判定なら通る。binding境界は欠落したlogical nameをすべてerrorへ載せ、`protocol_kind_constraint`として分類する。
 
 ## Attempt and lease
 
