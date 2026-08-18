@@ -147,10 +147,10 @@ unknown schema/version、unknown kind、欠落required field、kindに許され�
 
 | code | 意味 |
 | --- | --- |
-| `protocol_schema_unknown` | envelope自身またはversioned refのschemaが既知versionでない |
+| `protocol_schema_unknown` | envelope自身のschemaが既知versionでない、またはversioned refのschema namespace／形式が不正（refのversion部分はopaqueとして保持する） |
 | `protocol_kind_unknown` | Operation kindまたはReview kindが語彙に無い |
-| `protocol_field_missing` | required fieldが空 |
-| `protocol_field_invalid` | fieldの値が形式規則を満たさない |
+| `protocol_field_missing` | required fieldまたはrefが欠落している |
+| `protocol_field_invalid` | fieldの値が形式規則を満たさない（空のcanonical textを含む） |
 | `protocol_field_duplicate` | 集合として扱うfieldに重複がある |
 | `protocol_field_too_long` | canonical textの上限を超えている |
 | `protocol_kind_constraint` | 個々のfieldは妥当だが、そのkindでは持てないか省略できない |

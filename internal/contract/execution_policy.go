@@ -76,7 +76,7 @@ func validateWorkerExecutionPolicy(name string, policy WorkerExecutionPolicy) er
 	// 古い規則のまま通る状態を作らないため、述語を重複させない。
 	for _, field := range fields {
 		if !validCanonicalLine(field.value, MaxCanonicalLineBytes) {
-			return protocolErr(canonicalTextCode(field.value, MaxCanonicalLineBytes),
+			return protocolErr(canonicalLineCode(field.value, MaxCanonicalLineBytes),
 				name+"."+field.name, "空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
 		}
 	}
@@ -87,7 +87,7 @@ func validateWorkerExecutionPolicy(name string, policy WorkerExecutionPolicy) er
 	for i, permission := range policy.ToolPermissions {
 		field := fmt.Sprintf("%s.toolPermissions[%d]", name, i)
 		if !validCanonicalLine(permission, MaxCanonicalLineBytes) {
-			return protocolErr(canonicalTextCode(permission, MaxCanonicalLineBytes), field,
+			return protocolErr(canonicalLineCode(permission, MaxCanonicalLineBytes), field,
 				"空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
 		}
 		if seen[permission] {
@@ -122,7 +122,7 @@ func encodeWorkerExecutionPolicy(b *strings.Builder, policy WorkerExecutionPolic
 // ReadExecutionPolicyArtifact は ref/payload を照合して保存 bytes を返す。
 func ReadExecutionPolicyArtifact(ref ExecutionPolicyRef, payload ArtifactPayload) ([]byte, error) {
 	if !validSchemaIdentity(ref.Schema, executionPolicySchemaPrefix) {
-		return nil, protocolErr(ProtocolSchemaUnknown, "schema", "ExecutionPolicyRef schema が不正: %q", ref.Schema)
+		return nil, protocolSchemaErr("schema", ref.Schema, "ExecutionPolicyRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindExecutionPolicy, ref.Schema, ref.Digest, payload)
 }

@@ -18,11 +18,13 @@ import (
 type ProtocolCode string
 
 const (
-	// ProtocolSchemaUnknown は envelope 自身の schema が既知 version でないことを表す。
+	// ProtocolSchemaUnknown は envelope の version、または versioned ref の schema
+	// namespace / 形式が既知の規則に合わないことを表す。
 	ProtocolSchemaUnknown ProtocolCode = "protocol_schema_unknown"
 	// ProtocolKindUnknown は Operation kind または Review kind が語彙に無いことを表す。
 	ProtocolKindUnknown ProtocolCode = "protocol_kind_unknown"
-	// ProtocolFieldMissing は required field が空であることを表す。
+	// ProtocolFieldMissing は required field または ref が欠落していることを表す。
+	// canonical text の空文字は値の形式違反として ProtocolFieldInvalid に分類する。
 	ProtocolFieldMissing ProtocolCode = "protocol_field_missing"
 	// ProtocolFieldInvalid は field の値が形式規則を満たさないことを表す。
 	ProtocolFieldInvalid ProtocolCode = "protocol_field_invalid"
@@ -69,8 +71,8 @@ func (e *ProtocolError) Unwrap() error { return e.Code }
 // ProtocolViolation は err が protocol validation の失敗かを判定して内容を返す。
 //
 // true を返す err は immutable な入力に対する permanent な契約違反であり、同じ入力で
-// retry してはならない。判定できない error を retry 可能側の既定へ倒すと、契約違反を
-// 無限に retry しうるため、本 package が返す error 以外は false になる。
+// retry してはならない。false は「retry 可能」を意味せず、ProtocolError ではないことだけを
+// 表す。呼び出し側は transport failure を別経路で分類し、判定不能な error を fail-closed に扱う。
 func ProtocolViolation(err error) (*ProtocolError, bool) {
 	var target *ProtocolError
 	if errors.As(err, &target) {
@@ -81,4 +83,12 @@ func ProtocolViolation(err error) (*ProtocolError, bool) {
 
 func protocolErr(code ProtocolCode, field, format string, args ...any) error {
 	return &ProtocolError{Code: code, Field: field, Message: fmt.Sprintf(format, args...)}
+}
+
+func protocolSchemaErr(field, schema, format string, args ...any) error {
+	code := ProtocolSchemaUnknown
+	if schema == "" {
+		code = ProtocolFieldMissing
+	}
+	return protocolErr(code, field, format, args...)
 }

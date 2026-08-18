@@ -65,11 +65,8 @@ func validateContextManifest(manifest ContextManifest) error {
 		return protocolErr(ProtocolSchemaUnknown, "schema",
 			"context manifest schema は %q でなければならない: %q", ContextManifestSchemaV1Alpha1, manifest.Schema)
 	}
-	if !validSchemaIdentity(manifest.TaskContext.Schema, taskContextSchemaPrefix) {
-		return protocolErr(ProtocolSchemaUnknown, "taskContext", "TaskContextRef schema が不正: %q", manifest.TaskContext.Schema)
-	}
-	if !manifest.TaskContext.Digest.Valid() {
-		return protocolErr(ProtocolFieldInvalid, "taskContext", "TaskContextRef digest が不正: %q", manifest.TaskContext.Digest)
+	if err := validateVersionedRef("taskContext", manifest.TaskContext.Schema, manifest.TaskContext.Digest, taskContextSchemaPrefix); err != nil {
+		return err
 	}
 	if !validGitSHA(manifest.BaseSHA) {
 		return protocolErr(ProtocolFieldInvalid, "baseSha",
@@ -181,8 +178,8 @@ func validGitSHA(value string) bool {
 func validateAuthorityIdentity(field string, ref AuthorityRef) (string, error) {
 	switch {
 	case ref.Path != "" && ref.Issue == nil:
-		if !validAuthorityPath(ref.Path) {
-			return "", protocolErr(canonicalTextCode(ref.Path, MaxCanonicalLineBytes), field,
+		if !validProtocolAuthorityPath(ref.Path) {
+			return "", protocolErr(protocolAuthorityPathCode(ref.Path), field,
 				"repository-relative path が不正: %q", ref.Path)
 		}
 		return "path:" + ref.Path, nil
@@ -234,7 +231,7 @@ func encodeContextManifest(manifest ContextManifest) []byte {
 // ReadContextManifestArtifact は ref/payload を照合して保存 bytes を返す。
 func ReadContextManifestArtifact(ref ContextManifestRef, payload ArtifactPayload) ([]byte, error) {
 	if !validSchemaIdentity(ref.Schema, contextManifestSchemaPrefix) {
-		return nil, protocolErr(ProtocolSchemaUnknown, "schema", "ContextManifestRef schema が不正: %q", ref.Schema)
+		return nil, protocolSchemaErr("schema", ref.Schema, "ContextManifestRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindContextManifest, ref.Schema, ref.Digest, payload)
 }

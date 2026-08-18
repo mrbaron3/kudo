@@ -84,7 +84,7 @@ func validateArtifactManifest(manifest ArtifactManifest) error {
 		}
 		seen[entry.Name] = true
 		if !validCanonicalLine(entry.MediaType, MaxCanonicalLineBytes) {
-			return protocolErr(canonicalTextCode(entry.MediaType, MaxCanonicalLineBytes), field("mediaType"),
+			return protocolErr(canonicalLineCode(entry.MediaType, MaxCanonicalLineBytes), field("mediaType"),
 				"空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
 		}
 		if entry.Length < 0 {
@@ -149,7 +149,7 @@ func encodeArtifactManifest(manifest ArtifactManifest) []byte {
 // ReadArtifactManifestArtifact は ref/payload を照合して保存 bytes を返す。
 func ReadArtifactManifestArtifact(ref ArtifactManifestRef, payload ArtifactPayload) ([]byte, error) {
 	if !validSchemaIdentity(ref.Schema, artifactManifestSchemaPrefix) {
-		return nil, protocolErr(ProtocolSchemaUnknown, "schema", "ArtifactManifestRef schema が不正: %q", ref.Schema)
+		return nil, protocolSchemaErr("schema", ref.Schema, "ArtifactManifestRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindArtifactManifest, ref.Schema, ref.Digest, payload)
 }
