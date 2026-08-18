@@ -1,0 +1,7 @@
+schema: "kudo.pull-request-observation/v1alpha1"
+pullRequest: "github://mrbaron3/kudo/pull/57"
+state: "open"
+draft: true
+headSha: "89abcdef0123456789abcdef0123456789abcdef"
+baseRef: "main"
+bodyDigest: "sha256:c0e9fb611a7a22a4f77c18a556a0f4c41f4493349627131cf92015e4d651c918"

@@ -70,5 +70,6 @@ go run ./cmd/kudo help
 - [Test Validity Review Policy](docs/review-policies/test-validity-v1alpha1.md)
 - [Final Implementation Review Policy](docs/review-policies/final-implementation-v1alpha1.md)
 - [Compose 採用 ADR](docs/decisions/0001-compose-runtime.md)
+- [PR-anchored review ADR](docs/decisions/0002-pr-anchored-review.md)
 - [Servo からの移行判断](docs/migration-from-servo.md)
 - [保留中の評価ハーネス](docs/deferred/evaluation-harness.md)

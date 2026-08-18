@@ -47,6 +47,14 @@ const (
 	ArtifactNameTestValidityResult ArtifactName = "test-validity-result"
 	// ArtifactNamePullRequestDraft は PR へ載せる summary、risk、manual verification の草稿である。
 	ArtifactNamePullRequestDraft ArtifactName = "pull-request-draft"
+	// ArtifactNamePullRequestObservation は publish 済み PR の exact observation record である。
+	// Review Request はこれを audit lineage として参照し、live PR との照合の基準点にする。
+	ArtifactNamePullRequestObservation ArtifactName = "pull-request-observation"
+	// ArtifactNamePerformanceEvidence は bound 宣言がある Task の測定証跡である。
+	// bound 宣言の有無は Task Context の内容に依存し、この pure validator は Task Context を
+	// parse しないため、必須化は静的な kind 別集合ではなく review の deterministic
+	// prerequisite（#28）が行う。語彙だけをここで固定する。
+	ArtifactNamePerformanceEvidence ArtifactName = "performance-evidence"
 )
 
 // artifactNames は語彙の宣言順である。producer が名前を綴り直さずに参照できるよう公開する。
@@ -62,14 +70,18 @@ var artifactNames = []ArtifactName{
 	ArtifactNameSourceBundle,
 	ArtifactNameTestValidityResult,
 	ArtifactNamePullRequestDraft,
+	ArtifactNamePullRequestObservation,
+	ArtifactNamePerformanceEvidence,
 }
 
 // requiredOperationOutputs は kind の succeeded Result が固定していなければならない
 // logical name である。protocol 文書の kind 表が Output として挙げる artifact のうち、
 // head と external reference のように別 field が担うものを除いた集合と一致させる。
 //
-// create_pull_request が空なのは、この kind の成果が PR reference と観測した head であり、
-// 新しい artifact を作らないためである。空は「検証しない」ではなく「要求が無い」を意味する。
+// publish_head と finalize_pull_request が PR observation を必須にするのは、publish の
+// 成否と PR の状態遷移（draft の ensure、ready 化）を Controller が観測 record から
+// 検証できなければ、Review Request の lineage と handoff terminal の根拠を用意できない
+// ためである。
 var requiredOperationOutputs = map[OperationKind][]ArtifactName{
 	OperationClaim: {
 		ArtifactNameRawIssueBody,
@@ -81,7 +93,8 @@ var requiredOperationOutputs = map[OperationKind][]ArtifactName{
 	OperationReviseTests:          {ArtifactNameTestPlan, ArtifactNameRedEvidence, ArtifactNameSourceBundle},
 	OperationImplement:            {ArtifactNameGreenEvidence, ArtifactNameCheckEvidence, ArtifactNamePullRequestDraft, ArtifactNameSourceBundle},
 	OperationRepairImplementation: {ArtifactNameGreenEvidence, ArtifactNameCheckEvidence, ArtifactNamePullRequestDraft, ArtifactNameSourceBundle},
-	OperationCreatePullRequest:    {},
+	OperationPublishHead:          {ArtifactNamePullRequestObservation},
+	OperationFinalizePullRequest:  {ArtifactNamePullRequestObservation},
 }
 
 // requiredReviewEntries は review kind の Artifact Manifest が備えていなければならない
@@ -91,6 +104,10 @@ var requiredOperationOutputs = map[OperationKind][]ArtifactName{
 // source-bundle は head を生成する Operation の必須 output である。model の成果ではないが、
 // Issue Worker が checkpoint commit から固定しなければ、workspace を持たない Controller は
 // review 開始時にこの entry を用意できない。
+// pull-request-observation を両 kind の必須にするのは、review が PR へ繋留されるためで
+// ある。publish 時点の観測が manifest に無いと、reviewer は live PR との照合の基準点を
+// 持てない。performance-evidence は bound 宣言時だけの条件付き entry であり、静的な
+// 必須集合には含めない。
 var requiredReviewEntries = map[ReviewKind][]ArtifactName{
 	ReviewTestValidity: {
 		ArtifactNameRawIssueBody,
@@ -100,6 +117,7 @@ var requiredReviewEntries = map[ReviewKind][]ArtifactName{
 		ArtifactNameTestPlan,
 		ArtifactNameRedEvidence,
 		ArtifactNameSourceBundle,
+		ArtifactNamePullRequestObservation,
 	},
 	ReviewFinalImplementation: {
 		ArtifactNameRawIssueBody,
@@ -113,12 +131,28 @@ var requiredReviewEntries = map[ReviewKind][]ArtifactName{
 		ArtifactNameGreenEvidence,
 		ArtifactNameCheckEvidence,
 		ArtifactNamePullRequestDraft,
+		ArtifactNamePullRequestObservation,
 	},
 }
 
+// conditionalReviewEntries は kind の Artifact Manifest が条件付きで備える logical name
+// である。必須になる条件は Task Context の内容（例: performance bound の宣言）に依存し、
+// Task Context を parse しない本 validator では静的に強制できない。条件の判定と欠落の
+// 拒否は Review Worker の deterministic prerequisite が行い、ここは語彙と帰属だけを固定する。
+var conditionalReviewEntries = map[ReviewKind][]ArtifactName{
+	ReviewTestValidity:        {},
+	ReviewFinalImplementation: {ArtifactNamePerformanceEvidence},
+}
+
+// ConditionalReviewEntries は review kind の条件付き manifest entry を返す。
+// 未知の kind では nil を返す。
+func ConditionalReviewEntries(kind ReviewKind) []ArtifactName {
+	return slices.Clone(conditionalReviewEntries[kind])
+}
+
 // 宣言漏れの kind は必須集合が nil になり、「要求が無い」と区別できないまま gate が
-// 無効になる。create_pull_request のように空が正当な kind があるため、空を異常として
-// 機械的に扱うこともできない。fail-open を検出可能に留めず、宣言矛盾を持つ binary が
+// 無効になる。要求が空になる kind が将来ありうる以上、空を異常として機械的に扱う
+// こともできない。fail-open を検出可能に留めず、宣言矛盾を持つ binary が
 // 起動しないようにする。producer の契約違反ではないので ProtocolError にはしない。
 func init() {
 	for kind := range operationKindRules {
@@ -129,6 +163,9 @@ func init() {
 	for kind := range reviewKinds {
 		if _, ok := requiredReviewEntries[kind]; !ok {
 			panic("review kind " + string(kind) + " の必須 manifest entry が宣言されていない")
+		}
+		if _, ok := conditionalReviewEntries[kind]; !ok {
+			panic("review kind " + string(kind) + " の条件付き manifest entry が宣言されていない")
 		}
 	}
 }

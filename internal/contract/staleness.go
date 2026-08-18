@@ -26,6 +26,7 @@ const (
 	fieldInputArtifacts   = "inputArtifacts"
 	fieldPolicyRefs       = "policyRefs"
 	fieldArtifactManifest = "artifactManifest"
+	fieldPullRequest      = "pullRequest"
 )
 
 // operationInputFields は Operation の semantic input field 名である。
@@ -40,9 +41,9 @@ var operationInputFields = map[string]bool{
 
 // SemanticDifference は再利用判定と、その根拠を決定論的に返す。
 //
-// ObservationChanged は identity の判定には影響しない。exact body が変わったことを
-// audit lineage へ追記するための signal であり、Comparison が SameSemanticInput でも
-// true になりうる。
+// ObservationChanged は identity の判定には影響しない。exact な観測（Issue body、
+// review では live PR の観測を含む）が変わったことを audit lineage へ追記するための
+// signal であり、Comparison が SameSemanticInput でも true になりうる。
 type SemanticDifference struct {
 	Comparison         SemanticComparison
 	ChangedFields      []string
@@ -62,13 +63,16 @@ type LatestOperationInput struct {
 }
 
 // LatestReviewInput は review 開始直前に取り直した入力である。
+// PullRequest は live PR の再取得結果、PullRequestObservation はその観測 record である。
 type LatestReviewInput struct {
-	Observation      IssueObservationRef
-	ContextManifest  ContextManifestRef
-	ExecutionPolicy  ExecutionPolicyRef
-	HeadSHA          string
-	ArtifactManifest ArtifactManifestRef
-	PolicyRefs       []string
+	Observation            IssueObservationRef
+	PullRequestObservation PullRequestObservationRef
+	ContextManifest        ContextManifestRef
+	ExecutionPolicy        ExecutionPolicyRef
+	HeadSHA                string
+	PullRequest            PullRequestRef
+	ArtifactManifest       ArtifactManifestRef
+	PolicyRefs             []string
 }
 
 // CompareOperationInput は既存 Operation と最新入力の semantic identity を比較する。
@@ -126,6 +130,12 @@ func CompareReviewInput(req ReviewRequest, latest LatestReviewInput) (SemanticDi
 	if err := validateVersionedRef("artifactManifest", latest.ArtifactManifest.Schema, latest.ArtifactManifest.Digest, artifactManifestSchemaPrefix); err != nil {
 		return SemanticDifference{}, err
 	}
+	if !validPullRequestRef(latest.PullRequest) {
+		return SemanticDifference{}, protocolErr(ProtocolFieldInvalid, "pullRequest", "Pull Request reference が不正")
+	}
+	if err := validateVersionedRef("pullRequestObservation", latest.PullRequestObservation.Schema, latest.PullRequestObservation.Digest, pullRequestObservationSchemaPrefix); err != nil {
+		return SemanticDifference{}, err
+	}
 
 	var changed []string
 	if req.ContextManifest != latest.ContextManifest {
@@ -137,13 +147,20 @@ func CompareReviewInput(req ReviewRequest, latest LatestReviewInput) (SemanticDi
 	if req.HeadSHA != latest.HeadSHA {
 		changed = append(changed, fieldHeadSHA)
 	}
+	// PR ref は request identity の anchor である。PR が外部で close され別 PR として
+	// 作り直された場合、古い approve を新しい PR の approval として再利用できない。
+	if req.PullRequest.canonical() != latest.PullRequest.canonical() {
+		changed = append(changed, fieldPullRequest)
+	}
 	if req.ArtifactManifest != latest.ArtifactManifest {
 		changed = append(changed, fieldArtifactManifest)
 	}
 	if !slices.Equal(canonicalStringSet(req.PolicyRefs), canonicalStringSet(latest.PolicyRefs)) {
 		changed = append(changed, fieldPolicyRefs)
 	}
-	return newSemanticDifference(changed, req.Observation != latest.Observation), nil
+	observationChanged := req.Observation != latest.Observation ||
+		req.PullRequestObservation != latest.PullRequestObservation
+	return newSemanticDifference(changed, observationChanged), nil
 }
 
 // validateLatestInput は最新入力自体の妥当性を検証する。判定できない入力を

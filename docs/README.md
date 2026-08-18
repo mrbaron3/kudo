@@ -18,6 +18,7 @@ Kudo の文書は、目標、振る舞い、技術構造、外部 protocol、実
 | Policy | [Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md) | final headの常時必須観点と条件付き観点 |
 | Delivery | [Implementation plan](implementation-plan.md) | 現在地、実装順序、各 milestone と全体の exit criteria |
 | Decision | [ADR-0001](decisions/0001-compose-runtime.md) | Docker Compose を正式基盤とする判断 |
+| Decision | [ADR-0002](decisions/0002-pr-anchored-review.md) | レビューの起点を Pull Request へ移し、観点適用を session の宣言で残す判断 |
 | History | [Servo からの移行判断](migration-from-servo.md) | 参照元から採用・非採用にした概念 |
 | Deferred | [Evaluation harness](deferred/evaluation-harness.md) | runtime から意図的に分離した評価機能 |
 

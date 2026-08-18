@@ -48,7 +48,9 @@ func TestRequiredArtifactNamesAreClosedAndReachable(t *testing.T) {
 		if len(required) == 0 {
 			t.Fatalf("review kind %q が manifest entry を一つも要求していない", kind)
 		}
-		for _, name := range required {
+		// 条件付き entry も語彙の到達点である。条件の強制は review prerequisite 側だが、
+		// どの kind にも帰属しない name は dead vocabulary として検出したい。
+		for _, name := range append(append([]ArtifactName(nil), required...), conditionalReviewEntries[kind]...) {
 			if !vocabulary[name] {
 				t.Fatalf("review kind %q が語彙外の name を要求している: %s", kind, name)
 			}
@@ -219,8 +221,7 @@ func TestReviewRequestBindingRejectsContextManifestEntryMismatch(t *testing.T) {
 // GREEN 証跡も check 証跡も無いまま PR 作成 gate へ進む。
 func TestFinalImplementationRequiresMoreThanTestValidity(t *testing.T) {
 	manifest := sampleArtifactManifest(t)
-	req := sampleReviewRequest(t)
-	req.Kind = ReviewFinalImplementation
+	req := sampleFinalReviewRequest(t)
 	req.ArtifactManifest = requireArtifactManifestRef(t, manifest)
 
 	err := BindReviewRequestManifest(req, manifest)
@@ -247,8 +248,7 @@ func TestCompleteArtifactSetsAreAccepted(t *testing.T) {
 	}
 
 	final := sampleFinalImplementationManifest(t)
-	finalReq := sampleReviewRequest(t)
-	finalReq.Kind = ReviewFinalImplementation
+	finalReq := sampleFinalReviewRequest(t)
 	finalReq.ArtifactManifest = requireArtifactManifestRef(t, final)
 	if err := BindReviewRequestManifest(finalReq, final); err != nil {
 		t.Fatalf("必須 entry を備えた final_implementation manifest が拒否された: %v", err)

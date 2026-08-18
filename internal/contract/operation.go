@@ -25,7 +25,13 @@ const (
 	OperationReviseTests          OperationKind = "revise_tests"
 	OperationImplement            OperationKind = "implement"
 	OperationRepairImplementation OperationKind = "repair_implementation"
-	OperationCreatePullRequest    OperationKind = "create_pull_request"
+	// OperationPublishHead は固定済み head を branch へ compare-and-push し、draft PR を
+	// 冪等に ensure/update する。RED 固定後と GREEN/refactor 後の両方で使い、全 review
+	// round を PR head へ繋留する。draft の publish は review approve を gate にしない。
+	OperationPublishHead OperationKind = "publish_head"
+	// OperationFinalizePullRequest は final approve に bind された head に対して required
+	// PR body を確定し、draft を解除する。ready 化だけが final approve を gate とする。
+	OperationFinalizePullRequest OperationKind = "finalize_pull_request"
 )
 
 // operationKindRule は kind ごとの field 要件を固定する。
@@ -52,7 +58,8 @@ var operationKindRules = map[OperationKind]operationKindRule{
 	OperationReviseTests:          {resolvedContext: true, priorArtifacts: true},
 	OperationImplement:            {resolvedContext: true, priorArtifacts: true},
 	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true},
-	OperationCreatePullRequest:    {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
+	OperationPublishHead:          {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
+	OperationFinalizePullRequest:  {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
 }
 
 // WorkerOperation は Controller が queue へ記録する run-once Operation である。

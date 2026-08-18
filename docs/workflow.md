@@ -9,7 +9,7 @@
 - Human Author: Issue Contract を完成させ、`mrbaron3`を assign し、`ai-ready`で実行を依頼する。
 - Controller: 候補を reconcile し、状態遷移を検証し、Operation を dispatch し、GitHub status を投影する。model session は持たない。
 - Issue Worker: implementation 側の唯一の writer。専用 worktree、branch、test、source、commit、Pull Request を変更できる。
-- Review Worker: read-only checkout と immutable artifact から test validity と最終実装を判定する。implementation の source、branch、PR を変更できない。
+- Review Worker: read-only checkout と immutable artifact から test validity と最終実装を判定する。live Issue と live PR は読み取りだけを行い、implementation の source、branch、PR を変更できない。
 - GitHub: live Issue、repository、Pull Request の source of truth。
 - PostgreSQL: Run、Operation、lease、inbox/outbox、projection intent の authoritative workflow store。
 
@@ -48,24 +48,31 @@ sequenceDiagram
     C->>GH: ai-in-progressを冪等に投影
     C->>IW: author_tests(immutable context)
     IW-->>C: test plan/patch + RED evidence
-    C->>RW: review(test_validity)
+    C->>IW: publish_head(test-only head)
+    IW->>GH: branch push + draft PR ensure
+    IW-->>C: PR ref + PR observation
+    C->>RW: review(test_validity, PR anchored)
+    RW->>GH: live Issue/PR照合
     RW-->>C: approve / request_changes / needs_human
     alt test request_changes
         C->>IW: revise_tests(findings, artifacts)
         IW-->>C: new test artifacts + RED evidence
+        C->>IW: publish_head(revised head / 同一PR)
         C->>RW: new test_validity request
     else test approve
         C->>IW: implement(approved tests, Issue context)
         IW-->>C: GREEN + refactor/check evidence
-        C->>RW: review(final_implementation)
+        C->>IW: publish_head(final head / 同一PR)
+        C->>RW: review(final_implementation, PR anchored)
         RW-->>C: approve / request_changes / needs_human
         alt final request_changes
             C->>IW: repair_implementation(findings, artifacts)
             IW-->>C: new head + evidence
+            C->>IW: publish_head(repaired head / 同一PR)
             C->>RW: new final_implementation request
         else final approve
-            C->>IW: create_pull_request(approved head)
-            IW->>GH: branch/PR mutation
+            C->>IW: finalize_pull_request(approved head)
+            IW->>GH: PR body確定 + draft解除
             C->>GH: ai-review-waitingを冪等に投影
         else final needs_human
             C->>DB: needs_humanをcommit
@@ -97,15 +104,17 @@ test plan は各 Acceptance Criteria と test case の対応を示す。テス�
 
 Issue Worker は test-only checkpoint commit、patch、command、exit status、stdout/stderr、environment identity を artifact manifest に記録する。RED が成立しなければ review へ進めない。
 
+RED 固定後、Controller は`publish_head`を発行する。Issue Worker は期待 head と live branch head を照合してから push し（compare-and-push）、draft Pull Request を冪等に ensure する。PR body は artifact から決定論的に生成し、Task Issue link、Run ID、phase、test plan 要約を含む。published head、PR reference、pull request observation が durable に記録された後にだけ review round を開始する。draft PR 上の CI が RED になるのは TDD の位相の正直な表示であり、隠すために publish を遅らせない。全 review round は以後この同一 draft PR へ繋留される（[ADR-0002](decisions/0002-pr-anchored-review.md)）。
+
 ### 4. Test validity review
 
-Controller は immutable input から`test_validity` Review Request を作り、[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)を`policyRefs`へ含める。required policy refが欠落または未対応のRequestをreviewerの推測で補わず、policy取得のtransport failureもquality verdictへ変換しない。Review Worker は fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence をpolicyの標準観点で評価する。
+Controller は immutable input から、publish 済み draft PR の head へ繋留された`test_validity` Review Request を作り、[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)を`policyRefs`へ含める。required policy refが欠落または未対応のRequestはbinding境界でrejectされ、reviewerの推測で補わない。policy取得のtransport failureもquality verdictへ変換しない。Review Worker は live Issue に加えて live PR（open/draft 状態、head/base の一致）を照合し、不一致は品質 verdict ではなく stale として返す。そのうえで fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence をpolicyの標準観点で評価する。
 
 - `approve`: 承認対象 digest を固定し、implementation へ進む。
 - `request_changes`: blocking finding を versioned Result として返す。Controller は同じ Run/worktree を所有する Issue Worker の新しい`revise_tests` session へ finding と artifact を渡す。
 - `needs_human`: 自動修正できない authority または安全判断として workflow を停止する。
 
-「元の作業へ差し戻す」とは同じ論理 lane と worktree を使うことであり、以前の provider conversation を resume することではない。修正後は新しい head、artifact manifest、Review Request を作り、再 review する。
+「元の作業へ差し戻す」とは同じ論理 lane と worktree を使うことであり、以前の provider conversation を resume することではない。修正後は新しい head を同一 draft PR へ再 publish し、新しい artifact manifest、Review Request を作り、再 review する。
 
 ### 5. GREEN and refactor
 
@@ -119,15 +128,17 @@ implementation は次を順に満たす。
 4. Issue の Verification と repository の required checks を再実行する。
 5. test 変更が必要になった場合は implementation 中に書き換えず、test authoring/review gate へ戻す。
 
+GREEN と refactor の evidence が固定された後、Controller は`publish_head`で final head を同一 draft PR へ publish し、その後にだけ final review を開始する。
+
 ### 6. Final implementation review
 
-PR 作成前に、Controller は final head、approved test review、implementation patch、GREEN/refactor/check evidence を固定し、[Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md)を`policyRefs`へ含む`final_implementation` Review Request を発行する。required policy refが欠落または未対応のRequestをreviewerの推測で補わず、policy取得のtransport failureもquality verdictへ変換しない。Review Worker は fresh read-only session で常時必須のcorrectness、regression、scope、test quality、code quality、security、evidenceと、Taskの変更面に該当するUX、accessibility、type design、performanceを評価する。
+final head の publish 後に、Controller は final head、approved test review、implementation patch、GREEN/refactor/check evidence を固定し、publish 済み PR へ繋留され[Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md)を`policyRefs`へ含む`final_implementation` Review Request を発行する。required policy refが欠落または未対応のRequestはbinding境界でrejectされ、reviewerの推測で補わない。policy取得のtransport failureもquality verdictへ変換しない。Review Worker は fresh read-only session で常時必須のcorrectness、regression、scope、test quality、code quality、security、evidenceを評価する。条件付き観点（UX、accessibility、type design、performance）の適用可否は同じ session がpolicyの適用条件から判断し、観点別の applicability 宣言（理由 code と evidence 付き）として Result へ残す。宣言を欠く Result は binding 境界で受理されない。
 
 `request_changes`は fresh`repair_implementation` session へ handoff し、修正後の head に新しい review を要求する。head または artifact が変われば以前の approve は stale である。`needs_human`は自動 loop を停止する。
 
-### 7. Pull Request handoff
+### 7. Pull Request finalize と handoff
 
-final approve と required checks が同じ head に bind されている場合だけ、Issue Worker が branch を push し、Pull Request を冪等に作成または更新する。PR body は `.github/pull_request_template.md` の必須項目を満たし、少なくとも次を含む。
+Pull Request 自体は RED 固定後から draft として存在する。final approve と required checks が同じ head に bind され、live PR head とも一致する場合だけ、Issue Worker は`finalize_pull_request`で required PR body を確定し draft を解除する。ready 化だけが final approve を gate とする。確定後の PR body は `.github/pull_request_template.md` の必須項目を満たし、少なくとも次を含む。
 
 - Task Issue link と closing keyword
 - outcome と変更範囲
@@ -137,7 +148,9 @@ final approve と required checks が同じ head に bind されている場合�
 - 残存 risk と人間が確認すべき事項
 - Run ID、base SHA、head SHA
 
-PR の作成が durable に記録された後、Controller は`ai-in-progress`を外し、`ai-review-waiting`を付ける。これが Kudo の正常 handoff terminal である。merge、Issue close、PR review comment への対応はこの workflow の外に置く。
+PR の ready 化が durable に記録された後、Controller は`ai-in-progress`を外し、`ai-review-waiting`を付ける。これが Kudo の正常 handoff terminal である。merge、Issue close、PR review comment への対応はこの workflow の外に置く。
+
+Run 中に人間が同 branch へ push した場合、PR を close/merge した場合、base を変更した場合は外部干渉であり、compare-and-push と review の live 照合で検出して stale または`needs_human`として扱う。blind に上書きしない。
 
 ## Durable states
 
@@ -145,20 +158,24 @@ PR の作成が durable に記録された後、Controller は`ai-in-progress`�
 stateDiagram-v2
     [*] --> claimed
     claimed --> authoring_tests
-    authoring_tests --> awaiting_test_review: RED evidence fixed
+    authoring_tests --> publishing_test_head: RED evidence fixed
+    publishing_test_head --> awaiting_test_review: PR head published
     awaiting_test_review --> authoring_tests: request_changes / fresh revise session
     awaiting_test_review --> implementing: approve
-    implementing --> awaiting_final_review: GREEN + refactor checks fixed
+    implementing --> publishing_final_head: GREEN + refactor checks fixed
+    publishing_final_head --> awaiting_final_review: PR head published
     awaiting_final_review --> implementing: request_changes / fresh repair session
-    awaiting_final_review --> preparing_pull_request: approve
-    preparing_pull_request --> awaiting_human_review: PR recorded
+    awaiting_final_review --> finalizing_pull_request: approve
+    finalizing_pull_request --> awaiting_human_review: PR ready + body finalized
     awaiting_human_review --> [*]
     claimed --> needs_human
     authoring_tests --> needs_human
+    publishing_test_head --> needs_human
     awaiting_test_review --> needs_human
     implementing --> needs_human
+    publishing_final_head --> needs_human
     awaiting_final_review --> needs_human
-    preparing_pull_request --> needs_human
+    finalizing_pull_request --> needs_human
 ```
 
 上図は Run phase を表す。retry 可能な transport/execution failure は quality state ではなく Operation の`retry_wait`として記録し、backoff 後に同じ logical Operation を新しい execution attempt で実行する。provider session は retry ごとに新規作成する。
@@ -178,6 +195,7 @@ stateDiagram-v2
 - 1 IssueRef に active Run は最大一つとする。
 - Operation identity と execution attempt を分け、timeout 後の retry を追跡する。
 - worktree/branch/PR mutation は Issue Worker の idempotency key で重複を防ぐ。
+- publish/finalize は期待 head と live branch/PR を照合し、外部干渉を blind mutation せず stale / needs_human へ分類する。
 - state transition と external projection intent は同じ database transaction に記録し、outbox が GitHub へ再送する。
 - process 停止で lease が失効した場合、別 worker が immutable checkpoint から Operation を再取得する。
-- Run 中に Context Manifest ref（base を含む）、Execution Policy ref、head、artifact manifest、policy ref が変われば進行を止め、以前の review を stale にする。Issue Observation だけの差分は audit lineage へ追記し、Operation identity と approval を維持する。
+- Run 中に Context Manifest ref（base を含む）、Execution Policy ref、head、artifact manifest、policy ref、PR ref が変われば進行を止め、以前の review を stale にする。Issue Observation / PR observation だけの差分（PR body 編集、draft/ready 遷移を含む）は audit lineage へ追記し、Operation identity と approval を維持する。

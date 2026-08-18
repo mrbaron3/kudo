@@ -231,7 +231,8 @@ func TestOperationKindRequiresDeclaredInputArtifacts(t *testing.T) {
 		OperationReviseTests,
 		OperationImplement,
 		OperationRepairImplementation,
-		OperationCreatePullRequest,
+		OperationPublishHead,
+		OperationFinalizePullRequest,
 	}
 	for _, kind := range requiring {
 		t.Run(string(kind), func(t *testing.T) {
@@ -502,7 +503,7 @@ func TestSucceededResultRequiresKindOutput(t *testing.T) {
 			switch kind {
 			case OperationClaim:
 				result.HeadSHA = ""
-			case OperationCreatePullRequest:
+			case OperationPublishHead, OperationFinalizePullRequest:
 				result.HeadSHA = op.HeadSHA
 				result.ExternalRefs = []string{"github://mrbaron3/kudo/pull/42"}
 			}
@@ -548,31 +549,41 @@ func sampleKindOutputs(kind OperationKind) []NamedArtifact {
 	return outputs
 }
 
-// create_pull_request は source head を進めない Operation であり、承認済み head をそのまま
-// 観測して PR を作る。Result が別の head を報告できると、review 済みでない head に対する
-// PR が gate を通ってしまう。作成した PR の reference も succeeded の必須出力である。
-func TestCreatePullRequestBindsApprovedHeadAndReference(t *testing.T) {
-	op := sampleWorkerOperation(t)
-	op.Kind = OperationCreatePullRequest
+// publish_head と finalize_pull_request は source head を進めない Operation であり、
+// 固定済み head をそのまま branch と PR へ反映する。Result が別の head を報告できると、
+// review していない head に対する外部 mutation が gate を通ってしまう。対象 PR の
+// reference と観測 record も succeeded の必須出力である。
+func TestPublishOperationsBindHeadAndReference(t *testing.T) {
+	for _, kind := range []OperationKind{OperationPublishHead, OperationFinalizePullRequest} {
+		t.Run(string(kind), func(t *testing.T) {
+			op := sampleWorkerOperation(t)
+			op.Kind = kind
 
-	result := sampleOperationResult(t, op)
-	result.HeadSHA = op.HeadSHA
-	result.OutputArtifacts = nil
-	result.ExternalRefs = []string{"github://mrbaron3/kudo/pull/42"}
-	if err := BindOperationResult(op, result); err != nil {
-		t.Fatalf("承認済み head と PR reference を持つ Result を拒否した: %v", err)
-	}
+			result := sampleOperationResult(t, op)
+			result.HeadSHA = op.HeadSHA
+			result.ExternalRefs = []string{"github://mrbaron3/kudo/pull/42"}
+			if err := BindOperationResult(op, result); err != nil {
+				t.Fatalf("publish 済み head と PR reference を持つ Result を拒否した: %v", err)
+			}
 
-	movedHead := result
-	movedHead.HeadSHA = sampleNextSHA
-	if err := BindOperationResult(op, movedHead); err == nil {
-		t.Fatal("承認済み head と異なる head を報告した Result を受理した")
-	}
+			movedHead := result
+			movedHead.HeadSHA = sampleNextSHA
+			if err := BindOperationResult(op, movedHead); err == nil {
+				t.Fatal("固定済み head と異なる head を報告した Result を受理した")
+			}
 
-	noReference := result
-	noReference.ExternalRefs = nil
-	if err := BindOperationResult(op, noReference); err == nil {
-		t.Fatal("PR reference を持たない succeeded を受理した")
+			noReference := result
+			noReference.ExternalRefs = nil
+			if err := BindOperationResult(op, noReference); err == nil {
+				t.Fatal("PR reference を持たない succeeded を受理した")
+			}
+
+			noObservation := result
+			noObservation.OutputArtifacts = withoutNamedArtifact(result.OutputArtifacts, ArtifactNamePullRequestObservation)
+			if err := BindOperationResult(op, noObservation); err == nil {
+				t.Fatal("PR observation を持たない succeeded を受理した")
+			}
+		})
 	}
 
 	// 他の kind は新しい head を固定してよい
@@ -582,15 +593,14 @@ func TestCreatePullRequestBindsApprovedHeadAndReference(t *testing.T) {
 	}
 }
 
-// create_pull_request の外部 reference は「非空」では足りない。protocol は出力として
+// publish 系の外部 reference は「非空」では足りない。protocol は出力として
 // PR number と URL を要求しており、retry 時の既存 PR 照合もこの reference から行う。
 // 復元できない文字列で succeeded を bind できると、durable handoff が成立しない。
-func TestCreatePullRequestRequiresCanonicalPullRequestRef(t *testing.T) {
+func TestPublishHeadRequiresCanonicalPullRequestRef(t *testing.T) {
 	op := sampleWorkerOperation(t)
-	op.Kind = OperationCreatePullRequest
+	op.Kind = OperationPublishHead
 	result := sampleOperationResult(t, op)
 	result.HeadSHA = op.HeadSHA
-	result.OutputArtifacts = nil
 
 	valid := PullRequestRef{Owner: op.Issue.Owner, Repository: op.Issue.Repository, Number: 42}
 	result.ExternalRefs = []string{valid.String()}

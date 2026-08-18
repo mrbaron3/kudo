@@ -30,12 +30,13 @@ func (d Digest) Valid() bool {
 type ArtifactKind string
 
 const (
-	ArtifactKindRawIssueBody     ArtifactKind = "raw-issue-body"
-	ArtifactKindIssueObservation ArtifactKind = "issue-observation"
-	ArtifactKindTaskContext      ArtifactKind = "task-context"
-	ArtifactKindContextManifest  ArtifactKind = "context-manifest"
-	ArtifactKindExecutionPolicy  ArtifactKind = "execution-policy"
-	ArtifactKindArtifactManifest ArtifactKind = "artifact-manifest"
+	ArtifactKindRawIssueBody           ArtifactKind = "raw-issue-body"
+	ArtifactKindIssueObservation       ArtifactKind = "issue-observation"
+	ArtifactKindTaskContext            ArtifactKind = "task-context"
+	ArtifactKindContextManifest        ArtifactKind = "context-manifest"
+	ArtifactKindExecutionPolicy        ArtifactKind = "execution-policy"
+	ArtifactKindArtifactManifest       ArtifactKind = "artifact-manifest"
+	ArtifactKindPullRequestObservation ArtifactKind = "pull-request-observation"
 )
 
 const (
@@ -73,12 +74,13 @@ type artifactKindRule struct {
 }
 
 var artifactKindRules = map[ArtifactKind]artifactKindRule{
-	ArtifactKindRawIssueBody:     {mediaType: MediaTypeMarkdown},
-	ArtifactKindIssueObservation: {schemaPrefix: issueObservationSchemaPrefix, mediaType: MediaTypeYAML},
-	ArtifactKindTaskContext:      {schemaPrefix: taskContextSchemaPrefix, mediaType: MediaTypeYAML},
-	ArtifactKindContextManifest:  {schemaPrefix: contextManifestSchemaPrefix, mediaType: MediaTypeYAML},
-	ArtifactKindExecutionPolicy:  {schemaPrefix: executionPolicySchemaPrefix, mediaType: MediaTypeYAML},
-	ArtifactKindArtifactManifest: {schemaPrefix: artifactManifestSchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindRawIssueBody:           {mediaType: MediaTypeMarkdown},
+	ArtifactKindIssueObservation:       {schemaPrefix: issueObservationSchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindTaskContext:            {schemaPrefix: taskContextSchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindContextManifest:        {schemaPrefix: contextManifestSchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindExecutionPolicy:        {schemaPrefix: executionPolicySchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindArtifactManifest:       {schemaPrefix: artifactManifestSchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindPullRequestObservation: {schemaPrefix: pullRequestObservationSchemaPrefix, mediaType: MediaTypeYAML},
 }
 
 // Validate は metadata と content bytes の binding を検証する。
