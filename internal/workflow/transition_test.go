@@ -1,0 +1,462 @@
+package workflow
+
+import (
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/mrbaron3/kudo/internal/contract"
+)
+
+const (
+	testHead  = "89abcdef0123456789abcdef0123456789abcdef"
+	finalHead = "fedcba9876543210fedcba9876543210fedcba98"
+)
+
+func sampleInput() InputIdentity {
+	return InputIdentity{
+		ContextManifest: contract.ContextManifestRef{
+			Schema: contract.ContextManifestSchemaV1Alpha1,
+			Digest: contract.SHA256([]byte("context-manifest")),
+		},
+		ExecutionPolicy: contract.ExecutionPolicyRef{
+			Schema: contract.ExecutionPolicySchemaV1Alpha1,
+			Digest: contract.SHA256([]byte("execution-policy")),
+		},
+	}
+}
+
+func samplePullRequest() contract.PullRequestRef {
+	return contract.PullRequestRef{Owner: "mrbaron3", Repository: "kudo", Number: 42}
+}
+
+// advance は event 列を順に適用し、途中で拒否されたら test を失敗させる。
+func advance(t *testing.T, run Run, events ...Event) Run {
+	t.Helper()
+	for i, event := range events {
+		decision, err := Decide(run, event)
+		if err != nil {
+			t.Fatalf("events[%d] (%s) が phase %q で拒否された: %v", i, event.EventKind(), run.Phase, err)
+		}
+		run = decision.Run
+	}
+	return run
+}
+
+func claimedRun(t *testing.T) Run {
+	t.Helper()
+	return advance(t, Run{ID: "run-01"}, ClaimSucceeded{
+		Input:       sampleInput(),
+		Observation: contract.SHA256([]byte("observation-1")),
+	})
+}
+
+// awaitingTestReview は RED 固定と head publish まで進んだ Run を返す。
+func awaitingTestReview(t *testing.T) Run {
+	t.Helper()
+	return advance(t, claimedRun(t),
+		OperationStarted{Kind: contract.OperationAuthorTests},
+		TestsAuthored{Head: testHead},
+		HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
+	)
+}
+
+// awaitingFinalReview は test approve から final head publish まで進んだ Run を返す。
+func awaitingFinalReview(t *testing.T) Run {
+	t.Helper()
+	return advance(t, awaitingTestReview(t),
+		ReviewCompleted{
+			Kind:          contract.ReviewTestValidity,
+			Verdict:       contract.VerdictApprove,
+			Head:          testHead,
+			RequestDigest: contract.SHA256([]byte("test-request")),
+		},
+		ImplementationFixed{Head: finalHead, ChecksPassed: true},
+		HeadPublished{Head: finalHead, PullRequest: samplePullRequest()},
+	)
+}
+
+func actionKinds(actions []Action) []string {
+	kinds := make([]string, len(actions))
+	for i, action := range actions {
+		kinds[i] = string(action.ActionKind())
+	}
+	return kinds
+}
+
+func requireDecision(t *testing.T, run Run, event Event) Decision {
+	t.Helper()
+	decision, err := Decide(run, event)
+	if err != nil {
+		t.Fatalf("phase %q の %s が拒否された: %v", run.Phase, event.EventKind(), err)
+	}
+	return decision
+}
+
+func requireRejected(t *testing.T, run Run, event Event, code TransitionCode) error {
+	t.Helper()
+	_, err := Decide(run, event)
+	if err == nil {
+		t.Fatalf("phase %q で %s が受理された", run.Phase, event.EventKind())
+	}
+	if !errors.Is(err, code) {
+		t.Fatalf("phase %q の %s が %q へ分類されない: %v", run.Phase, event.EventKind(), code, err)
+	}
+	return err
+}
+
+// AC-1: transition は Issue Contract や artifact bytes を parse せず、決定論的に
+// 次 state と action を返す。
+func TestNormalFlowReachesHumanHandoff(t *testing.T) {
+	run := Run{ID: "run-01"}
+	steps := []struct {
+		event   Event
+		phase   Phase
+		actions []string
+	}{
+		{ClaimSucceeded{Input: sampleInput(), Observation: contract.SHA256([]byte("o1"))},
+			PhaseClaimed, []string{"project_status", "dispatch_operation"}},
+		{OperationStarted{Kind: contract.OperationAuthorTests}, PhaseAuthoringTests, nil},
+		{TestsAuthored{Head: testHead}, PhasePublishingTestHead, []string{"dispatch_operation"}},
+		{HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
+			PhaseAwaitingTestReview, []string{"request_review"}},
+		{ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
+			Head: testHead, RequestDigest: contract.SHA256([]byte("r1"))},
+			PhaseImplementing, []string{"dispatch_operation"}},
+		{ImplementationFixed{Head: finalHead, ChecksPassed: true},
+			PhasePublishingFinalHead, []string{"dispatch_operation"}},
+		{HeadPublished{Head: finalHead, PullRequest: samplePullRequest()},
+			PhaseAwaitingFinalReview, []string{"request_review"}},
+		{ReviewCompleted{Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictApprove,
+			Head: finalHead, RequestDigest: contract.SHA256([]byte("r2"))},
+			PhaseFinalizingPullRequest, []string{"dispatch_operation"}},
+		{PullRequestFinalized{Head: finalHead}, PhaseAwaitingHumanReview, []string{"project_status"}},
+	}
+	for i, step := range steps {
+		decision := requireDecision(t, run, step.event)
+		if decision.Run.Phase != step.phase {
+			t.Fatalf("steps[%d] (%s): phase = %q, want %q", i, step.event.EventKind(), decision.Run.Phase, step.phase)
+		}
+		if got := actionKinds(decision.Actions); !reflect.DeepEqual(got, step.actions) &&
+			!(len(got) == 0 && len(step.actions) == 0) {
+			t.Fatalf("steps[%d] (%s): actions = %v, want %v", i, step.event.EventKind(), got, step.actions)
+		}
+		run = decision.Run
+	}
+	if !run.Phase.Terminal() {
+		t.Fatalf("正常 handoff の終端 %q が terminal でない", run.Phase)
+	}
+}
+
+// AC-1: Decide は pure である。同じ入力から同じ結果を返し、引数を書き換えない。
+func TestDecideIsPureAndDoesNotMutateArguments(t *testing.T) {
+	run := awaitingTestReview(t)
+	before := run
+	event := ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
+		Head: testHead, RequestDigest: contract.SHA256([]byte("r1"))}
+
+	first := requireDecision(t, run, event)
+	second := requireDecision(t, run, event)
+
+	if !reflect.DeepEqual(first.Run, second.Run) {
+		t.Fatal("同じ入力から異なる次 state が返った")
+	}
+	if !reflect.DeepEqual(run, before) {
+		t.Fatal("Decide が引数の Run を書き換えた")
+	}
+}
+
+// 宣言されていない (phase, event) の組は一つ残らず拒否されなければならない。
+// 母集団を表と phase/event の語彙から取ることで、phase や event を追加したときに
+// 実装と test が同じ組を見落として通り抜けることを防ぐ。
+func TestUndeclaredTransitionsAreRejected(t *testing.T) {
+	events := map[EventKind]Event{
+		KindClaimSucceeded:       ClaimSucceeded{Input: sampleInput(), Observation: contract.SHA256([]byte("o"))},
+		KindOperationStarted:     OperationStarted{Kind: contract.OperationAuthorTests},
+		KindTestsAuthored:        TestsAuthored{Head: testHead},
+		KindHeadPublished:        HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
+		KindReviewCompleted:      ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead, RequestDigest: contract.SHA256([]byte("r"))},
+		KindImplementationFixed:  ImplementationFixed{Head: finalHead, ChecksPassed: true},
+		KindPullRequestFinalized: PullRequestFinalized{Head: finalHead},
+		KindObservationRecorded:  ObservationRecorded{Observation: contract.SHA256([]byte("o2"))},
+		KindSemanticInputChanged: SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: sampleInput()},
+		KindAttemptFailed:        AttemptFailed{Class: contract.FailureTimeout},
+		KindHumanEscalated:       HumanEscalated{Reason: "authority conflict"},
+	}
+	for _, kind := range EventKinds() {
+		if _, ok := events[kind]; !ok {
+			t.Fatalf("event kind %q の代表値が test に無い", kind)
+		}
+	}
+
+	declared := 0
+	for _, phase := range Phases() {
+		for _, kind := range EventKinds() {
+			run := Run{ID: "run-01", Phase: phase, Input: sampleInput()}
+			_, err := Decide(run, events[kind])
+			if allowed(phase, kind) {
+				declared++
+				continue
+			}
+			if err == nil {
+				t.Fatalf("phase %q で未宣言の %q が受理された", phase, kind)
+			}
+			if !errors.Is(err, TransitionNotAllowed) && !errors.Is(err, TransitionTerminal) &&
+				!errors.Is(err, TransitionGateUnsatisfied) {
+				t.Fatalf("phase %q の未宣言 %q が分類可能な error にならない: %v", phase, kind, err)
+			}
+		}
+	}
+	if declared == 0 {
+		t.Fatal("宣言済み transition が一つも無い")
+	}
+}
+
+// AC-2: test validity approve が無いまま implementation を開始できない。
+func TestImplementationRequiresTestValidityApproval(t *testing.T) {
+	// approve 前の phase から implement 開始相当の event を送っても進めない
+	for _, phase := range []Phase{PhaseClaimed, PhaseAuthoringTests, PhasePublishingTestHead} {
+		run := Run{ID: "run-01", Phase: phase, Input: sampleInput(), PublishedHead: testHead}
+		requireRejected(t, run, ImplementationFixed{Head: finalHead, ChecksPassed: true}, TransitionNotAllowed)
+	}
+
+	// review 待ちでも、承認が現在の published head へ bind されていなければ進めない
+	run := awaitingTestReview(t)
+	err := requireRejected(t, run, ReviewCompleted{
+		Kind:          contract.ReviewTestValidity,
+		Verdict:       contract.VerdictApprove,
+		Head:          finalHead,
+		RequestDigest: contract.SHA256([]byte("r1")),
+	}, TransitionGateUnsatisfied)
+	if !strings.Contains(err.Error(), testHead) {
+		t.Fatalf("bind されるべき head が error に現れない: %v", err)
+	}
+
+	// final review の verdict を test gate として流用できない
+	requireRejected(t, run, ReviewCompleted{
+		Kind:          contract.ReviewFinalImplementation,
+		Verdict:       contract.VerdictApprove,
+		Head:          testHead,
+		RequestDigest: contract.SHA256([]byte("r1")),
+	}, TransitionGateUnsatisfied)
+}
+
+// AC-3: final approve と required checks の binding が無ければ PR 準備へ進めない。
+func TestFinalizeRequiresApprovalAndChecksOnPublishedHead(t *testing.T) {
+	approve := func(head string) ReviewCompleted {
+		return ReviewCompleted{
+			Kind:          contract.ReviewFinalImplementation,
+			Verdict:       contract.VerdictApprove,
+			Head:          head,
+			RequestDigest: contract.SHA256([]byte("r2")),
+		}
+	}
+
+	// 別 head への approve は現在の published head を承認しない
+	requireRejected(t, awaitingFinalReview(t), approve(testHead), TransitionGateUnsatisfied)
+
+	// required checks が通っていない実装は final review 自体へ進めない
+	noChecks := advance(t, awaitingTestReview(t), ReviewCompleted{
+		Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
+		Head: testHead, RequestDigest: contract.SHA256([]byte("r1")),
+	})
+	requireRejected(t, noChecks, ImplementationFixed{Head: finalHead, ChecksPassed: false}, TransitionGateUnsatisfied)
+
+	// PR finalize は final approve に bind された head だけを確定できる
+	finalizing := advance(t, awaitingFinalReview(t), approve(finalHead))
+	requireRejected(t, finalizing, PullRequestFinalized{Head: testHead}, TransitionGateUnsatisfied)
+}
+
+// AC-4: transport failure と request_changes を needs_human と混同しない。
+func TestTransportFailureAndRequestChangesAreNotNeedsHuman(t *testing.T) {
+	for _, class := range []contract.FailureClass{
+		contract.FailureTimeout, contract.FailureRateLimit, contract.FailureNetwork,
+		contract.FailureProviderCrash, contract.FailureGitHubTransport,
+	} {
+		run := awaitingTestReview(t)
+		decision := requireDecision(t, run, AttemptFailed{Class: class})
+		if decision.Run.Phase != run.Phase {
+			t.Fatalf("%s で phase が %q へ動いた", class, decision.Run.Phase)
+		}
+		if got := actionKinds(decision.Actions); !reflect.DeepEqual(got, []string{"schedule_retry"}) {
+			t.Fatalf("%s の action = %v, want [schedule_retry]", class, got)
+		}
+	}
+
+	// retry budget を使い切った失敗だけが人へ上がる
+	exhausted := requireDecision(t, awaitingTestReview(t),
+		AttemptFailed{Class: contract.FailureTimeout, RetryBudgetExhausted: true})
+	if exhausted.Run.Phase != PhaseNeedsHuman {
+		t.Fatalf("retry budget 枯渇後の phase = %q, want %q", exhausted.Run.Phase, PhaseNeedsHuman)
+	}
+
+	// request_changes は修正 Operation へ routing し、needs_human にしない
+	for _, tc := range []struct {
+		name string
+		run  Run
+		kind contract.ReviewKind
+		head string
+		want Phase
+		op   contract.OperationKind
+	}{
+		{"test", awaitingTestReview(t), contract.ReviewTestValidity, testHead,
+			PhaseAuthoringTests, contract.OperationReviseTests},
+		{"final", awaitingFinalReview(t), contract.ReviewFinalImplementation, finalHead,
+			PhaseImplementing, contract.OperationRepairImplementation},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decision := requireDecision(t, tc.run, ReviewCompleted{
+				Kind: tc.kind, Verdict: contract.VerdictRequestChanges,
+				Head: tc.head, RequestDigest: contract.SHA256([]byte("rc")),
+			})
+			if decision.Run.Phase != tc.want {
+				t.Fatalf("phase = %q, want %q", decision.Run.Phase, tc.want)
+			}
+			if decision.Run.Phase == PhaseNeedsHuman {
+				t.Fatal("request_changes が needs_human になった")
+			}
+			dispatch, ok := decision.Actions[0].(DispatchOperation)
+			if !ok || dispatch.Kind != tc.op {
+				t.Fatalf("action = %+v, want dispatch %q", decision.Actions[0], tc.op)
+			}
+		})
+	}
+
+	// needs_human verdict だけが停止する
+	needsHuman := requireDecision(t, awaitingTestReview(t), ReviewCompleted{
+		Kind: contract.ReviewTestValidity, Verdict: contract.VerdictNeedsHuman,
+		Head: testHead, RequestDigest: contract.SHA256([]byte("nh")),
+	})
+	if needsHuman.Run.Phase != PhaseNeedsHuman {
+		t.Fatalf("needs_human verdict の phase = %q", needsHuman.Run.Phase)
+	}
+}
+
+// AC-5: Observation だけの変化は audit 更新に留め、semantic input の変化だけを
+// 停止・再 claim へ route する。
+func TestObservationOnlyChangeDoesNotSupersedeRun(t *testing.T) {
+	// approval を保持済みの Run で確認する。approval を持たない phase で試すと
+	// 「approval が破棄されていない」という主張が空振りする。
+	run := awaitingFinalReview(t)
+	if run.TestApproval == nil {
+		t.Fatal("前提の Run が test approval を持っていない")
+	}
+	before := run.Input
+
+	decision := requireDecision(t, run, ObservationRecorded{Observation: contract.SHA256([]byte("observation-2"))})
+	if decision.Run.Phase != run.Phase {
+		t.Fatalf("observation 更新で phase が %q へ動いた", decision.Run.Phase)
+	}
+	if decision.Run.Input != before {
+		t.Fatal("observation 更新で semantic input が変わった")
+	}
+	if len(decision.Actions) != 0 {
+		t.Fatalf("observation 更新で action が発生した: %v", actionKinds(decision.Actions))
+	}
+	if decision.Run.Observation == run.Observation {
+		t.Fatal("observation lineage が更新されていない")
+	}
+	if decision.Run.TestApproval != run.TestApproval {
+		t.Fatal("observation 更新で approval が破棄された")
+	}
+}
+
+func TestSemanticInputChangeSupersedesRun(t *testing.T) {
+	run := awaitingFinalReview(t)
+	changed := sampleInput()
+	changed.ContextManifest.Digest = contract.SHA256([]byte("別 context manifest"))
+
+	decision := requireDecision(t, run, SemanticInputChanged{
+		ChangedFields: []string{"contextManifest"},
+		Input:         changed,
+	})
+	if decision.Run.Phase != PhaseSuperseded {
+		t.Fatalf("phase = %q, want %q", decision.Run.Phase, PhaseSuperseded)
+	}
+	if got := actionKinds(decision.Actions); !reflect.DeepEqual(got, []string{"supersede_run"}) {
+		t.Fatalf("action = %v, want [supersede_run]", got)
+	}
+	supersede, ok := decision.Actions[0].(SupersedeRun)
+	if !ok || !reflect.DeepEqual(supersede.ChangedFields, []string{"contextManifest"}) {
+		t.Fatalf("supersede action に変更 field が載っていない: %+v", decision.Actions[0])
+	}
+	// 古い approval を新しい入力へ持ち越さない
+	if decision.Run.TestApproval != nil {
+		t.Fatal("supersede 後も test approval が残っている")
+	}
+}
+
+// Run aggregate は parser の出力や本文を保持してはならない。field 型を辿って
+// opaque な identity 以外が入り込んでいないことを構造として固定する。
+func TestRunHoldsOnlyOpaqueIdentity(t *testing.T) {
+	allowed := map[string]bool{
+		"contract.IssueRef":           true,
+		"contract.PullRequestRef":     true,
+		"contract.Digest":             true,
+		"contract.ContextManifestRef": true,
+		"contract.ExecutionPolicyRef": true,
+	}
+	var walk func(typ reflect.Type, path string)
+	walk = func(typ reflect.Type, path string) {
+		for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice {
+			typ = typ.Elem()
+		}
+		if typ.PkgPath() == "github.com/mrbaron3/kudo/internal/contract" {
+			name := "contract." + typ.Name()
+			if !allowed[name] {
+				t.Fatalf("%s が contract の非 identity 型 %s を保持している", path, name)
+			}
+			return
+		}
+		if typ.Kind() != reflect.Struct {
+			return
+		}
+		for i := range typ.NumField() {
+			field := typ.Field(i)
+			walk(field.Type, path+"."+field.Name)
+		}
+	}
+	walk(reflect.TypeOf(Run{}), "Run")
+}
+
+// Decide は store から読み直した任意の Run を受け取る。event を順に流して組み立てた
+// Run だけを渡していると、集約の不変条件を守る gate が test から到達不能になり、
+// 実装を外しても green のままになる。永続化された Run が壊れている場合を直接作る。
+func TestGatesRejectInconsistentStoredRun(t *testing.T) {
+	finalApprove := ReviewCompleted{
+		Kind:          contract.ReviewFinalImplementation,
+		Verdict:       contract.VerdictApprove,
+		Head:          finalHead,
+		RequestDigest: contract.SHA256([]byte("r2")),
+	}
+
+	for name, tc := range map[string]struct {
+		run   Run
+		event Event
+	}{
+		"checks bound to another head": {
+			run: Run{ID: "run-01", Phase: PhaseAwaitingFinalReview, Input: sampleInput(),
+				PublishedHead: finalHead, ChecksHead: testHead},
+			event: finalApprove,
+		},
+		"checks never bound": {
+			run: Run{ID: "run-01", Phase: PhaseAwaitingFinalReview, Input: sampleInput(),
+				PublishedHead: finalHead},
+			event: finalApprove,
+		},
+		"finalize without final approval": {
+			run: Run{ID: "run-01", Phase: PhaseFinalizingPullRequest, Input: sampleInput(),
+				PublishedHead: finalHead, ChecksHead: finalHead},
+			event: PullRequestFinalized{Head: finalHead},
+		},
+		"publish head never fixed": {
+			run:   Run{ID: "run-01", Phase: PhasePublishingTestHead, Input: sampleInput()},
+			event: HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			requireRejected(t, tc.run, tc.event, TransitionGateUnsatisfied)
+		})
+	}
+}
