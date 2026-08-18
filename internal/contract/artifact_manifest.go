@@ -37,7 +37,7 @@ type ArtifactManifestRef struct {
 // payload を持つ artifact はこの経路で entry 化する。
 func NewArtifactEntry(name string, payload ArtifactPayload) (ArtifactEntry, error) {
 	if !validArtifactName(name) {
-		return ArtifactEntry{}, fmt.Errorf("artifact の logical name が不正: %q", name)
+		return ArtifactEntry{}, protocolErr(ProtocolFieldInvalid, "name", "artifact の logical name が不正: %q", name)
 	}
 	if err := payload.Validate(); err != nil {
 		return ArtifactEntry{}, err
@@ -66,29 +66,32 @@ func EncodeArtifactManifest(manifest ArtifactManifest) (ArtifactManifestRef, Art
 
 func validateArtifactManifest(manifest ArtifactManifest) error {
 	if manifest.Schema != ArtifactManifestSchemaV1Alpha1 {
-		return fmt.Errorf("artifact manifest schema は %q でなければならない: %q",
+		return protocolErr(ProtocolSchemaUnknown, "schema",
+			"artifact manifest schema は %q でなければならない: %q",
 			ArtifactManifestSchemaV1Alpha1, manifest.Schema)
 	}
 	if len(manifest.Entries) == 0 {
-		return fmt.Errorf("artifact manifest が空")
+		return protocolErr(ProtocolFieldMissing, "entries", "artifact manifest が空")
 	}
 	seen := map[string]bool{}
 	for i, entry := range manifest.Entries {
+		field := func(name string) string { return fmt.Sprintf("entries[%d].%s", i, name) }
 		if !validArtifactName(entry.Name) {
-			return fmt.Errorf("entries[%d].name が不正: %q", i, entry.Name)
+			return protocolErr(ProtocolFieldInvalid, field("name"), "logical name が不正: %q", entry.Name)
 		}
 		if seen[entry.Name] {
-			return fmt.Errorf("entries[%d].name が重複: %s", i, entry.Name)
+			return protocolErr(ProtocolFieldDuplicate, field("name"), "logical name が重複: %s", entry.Name)
 		}
 		seen[entry.Name] = true
-		if !validCanonicalLine(entry.MediaType) {
-			return fmt.Errorf("entries[%d].mediaType が不正: %q", i, entry.MediaType)
+		if !validCanonicalLine(entry.MediaType, MaxCanonicalLineBytes) {
+			return protocolErr(canonicalTextCode(entry.MediaType, MaxCanonicalLineBytes), field("mediaType"),
+				"空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
 		}
 		if entry.Length < 0 {
-			return fmt.Errorf("entries[%d].length が負", i)
+			return protocolErr(ProtocolFieldInvalid, field("length"), "length が負")
 		}
 		if !entry.Digest.Valid() {
-			return fmt.Errorf("entries[%d].digest が不正: %q", i, entry.Digest)
+			return protocolErr(ProtocolFieldInvalid, field("digest"), "digest が不正: %q", entry.Digest)
 		}
 	}
 	return nil
@@ -146,7 +149,7 @@ func encodeArtifactManifest(manifest ArtifactManifest) []byte {
 // ReadArtifactManifestArtifact は ref/payload を照合して保存 bytes を返す。
 func ReadArtifactManifestArtifact(ref ArtifactManifestRef, payload ArtifactPayload) ([]byte, error) {
 	if !validSchemaIdentity(ref.Schema, artifactManifestSchemaPrefix) {
-		return nil, fmt.Errorf("ArtifactManifestRef schema が不正: %q", ref.Schema)
+		return nil, protocolErr(ProtocolSchemaUnknown, "schema", "ArtifactManifestRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindArtifactManifest, ref.Schema, ref.Digest, payload)
 }

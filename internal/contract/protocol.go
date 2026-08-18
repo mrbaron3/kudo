@@ -47,11 +47,34 @@ func validProtocolID(value string) bool {
 	return true
 }
 
+// canonical text の byte 上限。上限は受理可否だけに影響し、canonical bytes と digest の
+// 計算方法は変えない。
+//
+// 上限を置くのは、これらの値が model provider の出力に由来し、canonical bytes と
+// PostgreSQL text の両方へそのまま載るためである。上限が無いと、単一の attempt が
+// row size と digest 計算量を通じて後続の全 Operation へ影響しうる。
+const (
+	// MaxCanonicalTextBytes は evidence、finding の expected / observed など複数行本文の
+	// 上限である。失敗した test 出力や diff hunk の抜粋を収めるには十分広く、単一 attempt が
+	// 保存層を圧迫するには狭い水準として 64 KiB を採る。
+	MaxCanonicalTextBytes = 64 << 10
+	// MaxCanonicalLineBytes は finding summary、media type、external ref、
+	// repository-relative path など単一行の値の上限である。
+	MaxCanonicalLineBytes = 1 << 10
+)
+
 // validCanonicalText は canonical YAML と PostgreSQL text へそのまま載せられる本文かを返す。
 // LF と TAB だけを構造として許可する。単独 CR を含む他の control character は、
 // Issue body と同じ理由（保存段階まで失敗を遅らせない）で信頼境界で拒否する。
-func validCanonicalText(value string) bool {
+//
+// maxBytes を引数に取るのは、この述語が protocol 層と Issue Contract の authority path の
+// 両方から呼ばれ、妥当な上限が呼び出し側ごとに違うためである。既定値を持たせると、
+// 新しい呼び出し側が上限を意識しないまま無関係な水準を継承する。
+func validCanonicalText(value string, maxBytes int) bool {
 	if !utf8.ValidString(value) || strings.TrimSpace(value) == "" {
+		return false
+	}
+	if len(value) > maxBytes {
 		return false
 	}
 	for _, r := range value {
@@ -65,16 +88,26 @@ func validCanonicalText(value string) bool {
 }
 
 // validCanonicalLine は改行と TAB を含まない単一行の値を検証する。
-func validCanonicalLine(value string) bool {
-	return validCanonicalText(value) && !strings.ContainsAny(value, "\n\t")
+func validCanonicalLine(value string, maxBytes int) bool {
+	return validCanonicalText(value, maxBytes) && !strings.ContainsAny(value, "\n\t")
+}
+
+// canonicalTextCode は拒否理由を上限超過とその他の形式違反へ分ける。
+// 上限超過は producer 側が本文を切り詰めれば通る失敗であり、control character 混入や
+// 空文字とは対処が違う。同じ code へ潰すと、Controller は両者を区別できない。
+func canonicalTextCode(value string, maxBytes int) ProtocolCode {
+	if len(value) > maxBytes {
+		return ProtocolFieldTooLong
+	}
+	return ProtocolFieldInvalid
 }
 
 func validateVersionedRef(name, schema string, digest Digest, prefix string) error {
 	if !validSchemaIdentity(schema, prefix) {
-		return fmt.Errorf("%s の schema が不正: %q", name, schema)
+		return protocolErr(ProtocolSchemaUnknown, name, "schema が不正: %q", schema)
 	}
 	if !digest.Valid() {
-		return fmt.Errorf("%s の digest が不正: %q", name, digest)
+		return protocolErr(ProtocolFieldInvalid, name, "digest が不正: %q", digest)
 	}
 	return nil
 }
@@ -101,11 +134,12 @@ func canonicalStringSet(values []string) []string {
 func validateDigestSet(name string, digests []Digest) error {
 	seen := map[Digest]bool{}
 	for i, digest := range digests {
+		field := fmt.Sprintf("%s[%d]", name, i)
 		if !digest.Valid() {
-			return fmt.Errorf("%s[%d] が不正な digest: %q", name, i, digest)
+			return protocolErr(ProtocolFieldInvalid, field, "digest が不正: %q", digest)
 		}
 		if seen[digest] {
-			return fmt.Errorf("%s[%d] が重複: %s", name, i, digest)
+			return protocolErr(ProtocolFieldDuplicate, field, "digest が重複: %s", digest)
 		}
 		seen[digest] = true
 	}
@@ -117,11 +151,13 @@ func validateDigestSet(name string, digests []Digest) error {
 func validatePolicyRefs(refs []string) error {
 	seen := map[string]bool{}
 	for i, ref := range refs {
+		field := fmt.Sprintf("policyRefs[%d]", i)
 		if !validAuthorityPath(ref) {
-			return fmt.Errorf("policyRefs[%d] が repository-relative path でない: %q", i, ref)
+			return protocolErr(canonicalTextCode(ref, MaxCanonicalLineBytes), field,
+				"repository-relative path でない: %q", ref)
 		}
 		if seen[ref] {
-			return fmt.Errorf("policyRefs[%d] が重複: %s", i, ref)
+			return protocolErr(ProtocolFieldDuplicate, field, "policy ref が重複: %s", ref)
 		}
 		seen[ref] = true
 	}
@@ -131,11 +167,13 @@ func validatePolicyRefs(refs []string) error {
 func validateLineSet(name string, values []string) error {
 	seen := map[string]bool{}
 	for i, value := range values {
-		if !validCanonicalLine(value) {
-			return fmt.Errorf("%s[%d] が不正: %q", name, i, value)
+		field := fmt.Sprintf("%s[%d]", name, i)
+		if !validCanonicalLine(value, MaxCanonicalLineBytes) {
+			return protocolErr(canonicalTextCode(value, MaxCanonicalLineBytes), field,
+				"canonical な単一行でない")
 		}
 		if seen[value] {
-			return fmt.Errorf("%s[%d] が重複: %s", name, i, value)
+			return protocolErr(ProtocolFieldDuplicate, field, "値が重複: %s", value)
 		}
 		seen[value] = true
 	}

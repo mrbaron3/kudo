@@ -1,7 +1,6 @@
 package contract
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -99,11 +98,12 @@ type WorkerOperation struct {
 // 参照先の canonical YAML は parse しない。
 func ValidateWorkerOperation(op WorkerOperation) error {
 	if op.Schema != WorkerOperationSchemaV1Alpha1 {
-		return fmt.Errorf("worker operation schema は %q でなければならない: %q", WorkerOperationSchemaV1Alpha1, op.Schema)
+		return protocolErr(ProtocolSchemaUnknown, "schema",
+			"worker operation schema は %q でなければならない: %q", WorkerOperationSchemaV1Alpha1, op.Schema)
 	}
 	rule, ok := operationKindRules[op.Kind]
 	if !ok {
-		return fmt.Errorf("operation kind が不正: %q", op.Kind)
+		return protocolErr(ProtocolKindUnknown, "kind", "operation kind が不正: %q", op.Kind)
 	}
 	for _, field := range []struct{ name, value string }{
 		{"operationId", op.OperationID},
@@ -111,17 +111,17 @@ func ValidateWorkerOperation(op WorkerOperation) error {
 		{"causationId", op.CausationID},
 	} {
 		if !validProtocolID(field.value) {
-			return fmt.Errorf("%s が不正: %q", field.name, field.value)
+			return protocolErr(ProtocolFieldInvalid, field.name, "identifier が不正: %q", field.value)
 		}
 	}
 	if !validIssueRef(op.Issue) {
-		return errors.New("issue が不正")
+		return protocolErr(ProtocolFieldInvalid, "issue", "Issue reference が不正")
 	}
 	if err := validateVersionedRef("executionPolicy", op.ExecutionPolicy.Schema, op.ExecutionPolicy.Digest, executionPolicySchemaPrefix); err != nil {
 		return err
 	}
 	if op.CreatedAt.IsZero() {
-		return errors.New("createdAt が空")
+		return protocolErr(ProtocolFieldMissing, "createdAt", "作成時刻が空")
 	}
 	if err := validateOperationContext(op, rule); err != nil {
 		return err
@@ -130,7 +130,8 @@ func ValidateWorkerOperation(op WorkerOperation) error {
 		return err
 	}
 	if rule.priorArtifacts && len(op.InputArtifacts) == 0 {
-		return fmt.Errorf("kind %q は先行 artifact の参照を必須とする", op.Kind)
+		return protocolErr(ProtocolKindConstraint, "inputArtifacts",
+			"kind %q は先行 artifact の参照を必須とする", op.Kind)
 	}
 	return validatePolicyRefs(op.PolicyRefs)
 }
@@ -139,31 +140,31 @@ func validateOperationContext(op WorkerOperation, rule operationKindRule) error 
 	if !rule.resolvedContext {
 		switch {
 		case op.Observation != nil:
-			return fmt.Errorf("kind %q はまだ Issue Observation を持てない", op.Kind)
+			return protocolErr(ProtocolKindConstraint, "issueObservation", "kind %q はまだ Issue Observation を持てない", op.Kind)
 		case op.ContextManifest != nil:
-			return fmt.Errorf("kind %q はまだ Context Manifest を持てない", op.Kind)
+			return protocolErr(ProtocolKindConstraint, "contextManifest", "kind %q はまだ Context Manifest を持てない", op.Kind)
 		case op.HeadSHA != "":
-			return fmt.Errorf("kind %q はまだ head を持てない", op.Kind)
+			return protocolErr(ProtocolKindConstraint, "headSha", "kind %q はまだ head を持てない", op.Kind)
 		case len(op.InputArtifacts) > 0:
-			return fmt.Errorf("kind %q はまだ input artifact を持てない", op.Kind)
+			return protocolErr(ProtocolKindConstraint, "inputArtifacts", "kind %q はまだ input artifact を持てない", op.Kind)
 		}
 		return nil
 	}
 
 	if op.Observation == nil {
-		return fmt.Errorf("kind %q は Issue Observation を省略できない", op.Kind)
+		return protocolErr(ProtocolKindConstraint, "issueObservation", "kind %q は Issue Observation を省略できない", op.Kind)
 	}
 	if err := validateVersionedRef("issueObservation", op.Observation.Schema, op.Observation.Digest, issueObservationSchemaPrefix); err != nil {
 		return err
 	}
 	if op.ContextManifest == nil {
-		return fmt.Errorf("kind %q は Context Manifest を省略できない", op.Kind)
+		return protocolErr(ProtocolKindConstraint, "contextManifest", "kind %q は Context Manifest を省略できない", op.Kind)
 	}
 	if err := validateVersionedRef("contextManifest", op.ContextManifest.Schema, op.ContextManifest.Digest, contextManifestSchemaPrefix); err != nil {
 		return err
 	}
 	if !validGitSHA(op.HeadSHA) {
-		return fmt.Errorf("headSha が不正: %q", op.HeadSHA)
+		return protocolErr(ProtocolFieldInvalid, "headSha", "commit SHA が不正: %q", op.HeadSHA)
 	}
 	return nil
 }
@@ -244,22 +245,23 @@ type OperationResult struct {
 // ValidateOperationResult は Result 単体の整合性を検証する。
 func ValidateOperationResult(result OperationResult) error {
 	if result.Schema != WorkerResultSchemaV1Alpha1 {
-		return fmt.Errorf("worker result schema は %q でなければならない: %q", WorkerResultSchemaV1Alpha1, result.Schema)
+		return protocolErr(ProtocolSchemaUnknown, "schema",
+			"worker result schema は %q でなければならない: %q", WorkerResultSchemaV1Alpha1, result.Schema)
 	}
 	if !result.OperationDigest.Valid() {
-		return fmt.Errorf("operationDigest が不正: %q", result.OperationDigest)
+		return protocolErr(ProtocolFieldInvalid, "operationDigest", "digest が不正: %q", result.OperationDigest)
 	}
 	if !validProtocolID(result.AttemptID) {
-		return fmt.Errorf("attemptId が不正: %q", result.AttemptID)
+		return protocolErr(ProtocolFieldInvalid, "attemptId", "identifier が不正: %q", result.AttemptID)
 	}
 	if !operationOutcomes[result.Outcome] {
-		return fmt.Errorf("operation outcome が不正: %q", result.Outcome)
+		return protocolErr(ProtocolFieldInvalid, "outcome", "operation outcome が不正: %q", result.Outcome)
 	}
 	if result.HeadSHA != "" && !validGitSHA(result.HeadSHA) {
-		return fmt.Errorf("headSha が不正: %q", result.HeadSHA)
+		return protocolErr(ProtocolFieldInvalid, "headSha", "commit SHA が不正: %q", result.HeadSHA)
 	}
 	if result.CompletedAt.IsZero() {
-		return errors.New("completedAt が空")
+		return protocolErr(ProtocolFieldMissing, "completedAt", "完了時刻が空")
 	}
 	if err := validateChangedInputFields(result.Outcome, result.ChangedInputFields); err != nil {
 		return err
@@ -276,20 +278,23 @@ func ValidateOperationResult(result OperationResult) error {
 func validateChangedInputFields(outcome OperationOutcome, fields []string) error {
 	if outcome != OutcomeStaleInput {
 		if len(fields) > 0 {
-			return fmt.Errorf("outcome %q は changedInputFields を持てない", outcome)
+			return protocolErr(ProtocolOutcomeConflict, "changedInputFields",
+				"outcome %q は changedInputFields を持てない", outcome)
 		}
 		return nil
 	}
 	if len(fields) == 0 {
-		return errors.New("stale_input はどの field が変わったかを記録しなければならない")
+		return protocolErr(ProtocolFieldMissing, "changedInputFields",
+			"stale_input はどの field が変わったかを記録しなければならない")
 	}
 	seen := map[string]bool{}
 	for i, field := range fields {
+		name := fmt.Sprintf("changedInputFields[%d]", i)
 		if !operationInputFields[field] {
-			return fmt.Errorf("changedInputFields[%d] が semantic input field でない: %q", i, field)
+			return protocolErr(ProtocolFieldInvalid, name, "semantic input field でない: %q", field)
 		}
 		if seen[field] {
-			return fmt.Errorf("changedInputFields[%d] が重複: %s", i, field)
+			return protocolErr(ProtocolFieldDuplicate, name, "field が重複: %s", field)
 		}
 		seen[field] = true
 	}
@@ -333,16 +338,18 @@ func BindOperationResult(op WorkerOperation, result OperationResult) error {
 		return err
 	}
 	if result.OperationDigest != digest {
-		return fmt.Errorf("result が別の Operation identity を参照している: got %s, want %s",
+		return protocolErr(ProtocolIdentityMismatch, "operationDigest",
+			"result が別の Operation identity を参照している: got %s, want %s",
 			result.OperationDigest, digest)
 	}
 
 	rule := operationKindRules[op.Kind]
 	switch {
 	case !rule.resolvedContext && result.HeadSHA != "":
-		return fmt.Errorf("kind %q の Result は head を固定しない", op.Kind)
+		return protocolErr(ProtocolKindConstraint, "headSha", "kind %q の Result は head を固定しない", op.Kind)
 	case rule.resolvedContext && result.Outcome == OutcomeSucceeded && result.HeadSHA == "":
-		return fmt.Errorf("kind %q の succeeded Result は head を固定しなければならない", op.Kind)
+		return protocolErr(ProtocolKindConstraint, "headSha",
+			"kind %q の succeeded Result は head を固定しなければならない", op.Kind)
 	}
 	if result.Outcome != OutcomeSucceeded {
 		return nil
@@ -356,16 +363,19 @@ func BindOperationResult(op WorkerOperation, result OperationResult) error {
 // 残さない Result を通すと、後続 Operation と review は存在しない artifact を入力に選ぶ。
 func bindSucceededOutput(op WorkerOperation, result OperationResult, rule operationKindRule) error {
 	if rule.outputArtifacts && len(result.OutputArtifacts) == 0 {
-		return fmt.Errorf("kind %q の succeeded Result は output artifact を固定しなければならない", op.Kind)
+		return protocolErr(ProtocolKindConstraint, "outputArtifacts",
+			"kind %q の succeeded Result は output artifact を固定しなければならない", op.Kind)
 	}
 	if rule.pullRequestRef && !containsPullRequestRef(result.ExternalRefs, op.Issue) {
-		return fmt.Errorf("kind %q の succeeded Result は同じ repository の canonical な PR reference を残さなければならない: %v",
+		return protocolErr(ProtocolKindConstraint, "externalRefs",
+			"kind %q の succeeded Result は同じ repository の canonical な PR reference を残さなければならない: %v",
 			op.Kind, result.ExternalRefs)
 	}
 	// head を進めない kind が別 head を報告できると、review していない head に対する
 	// 外部 mutation が gate を通る。
 	if rule.preservesHead && result.HeadSHA != op.HeadSHA {
-		return fmt.Errorf("kind %q の Result head は承認済み head と一致しなければならない: got %s, want %s",
+		return protocolErr(ProtocolIdentityMismatch, "headSha",
+			"kind %q の Result head は承認済み head と一致しなければならない: got %s, want %s",
 			op.Kind, result.HeadSHA, op.HeadSHA)
 	}
 	return nil
@@ -396,12 +406,12 @@ type OperationAttemptOutcome struct {
 func (o OperationAttemptOutcome) Validate() error {
 	switch {
 	case o.Result != nil && o.Failure != nil:
-		return errors.New("terminal Result と attempt failure を同時に持てない")
+		return protocolErr(ProtocolOutcomeConflict, "", "terminal Result と attempt failure を同時に持てない")
 	case o.Result != nil:
 		return ValidateOperationResult(*o.Result)
 	case o.Failure != nil:
 		return o.Failure.Validate()
 	default:
-		return errors.New("attempt outcome が Result も failure も持たない")
+		return protocolErr(ProtocolOutcomeConflict, "", "attempt outcome が Result も failure も持たない")
 	}
 }

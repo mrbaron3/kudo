@@ -1,7 +1,6 @@
 package contract
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -58,25 +57,26 @@ type ReviewRequest struct {
 // Issue Contract を parse しない。
 func ValidateReviewRequest(req ReviewRequest) error {
 	if req.Schema != ReviewRequestSchemaV1Alpha1 {
-		return fmt.Errorf("review request schema は %q でなければならない: %q", ReviewRequestSchemaV1Alpha1, req.Schema)
+		return protocolErr(ProtocolSchemaUnknown, "schema",
+			"review request schema は %q でなければならない: %q", ReviewRequestSchemaV1Alpha1, req.Schema)
 	}
 	if !reviewKinds[req.Kind] {
-		return fmt.Errorf("review kind が不正: %q", req.Kind)
+		return protocolErr(ProtocolKindUnknown, "kind", "review kind が不正: %q", req.Kind)
 	}
 	if !validProtocolID(req.RequestID) {
-		return fmt.Errorf("requestId が不正: %q", req.RequestID)
+		return protocolErr(ProtocolFieldInvalid, "requestId", "identifier が不正: %q", req.RequestID)
 	}
 	if !validProtocolID(req.ProducerRunID) {
-		return fmt.Errorf("producerRunId が不正: %q", req.ProducerRunID)
+		return protocolErr(ProtocolFieldInvalid, "producerRunId", "identifier が不正: %q", req.ProducerRunID)
 	}
 	if !validIssueRef(req.Issue) {
-		return errors.New("issue が不正")
+		return protocolErr(ProtocolFieldInvalid, "issue", "Issue reference が不正")
 	}
 	if err := validateVersionedRef("issueObservation", req.Observation.Schema, req.Observation.Digest, issueObservationSchemaPrefix); err != nil {
 		return err
 	}
 	if !validGitSHA(req.HeadSHA) {
-		return fmt.Errorf("headSha が不正: %q", req.HeadSHA)
+		return protocolErr(ProtocolFieldInvalid, "headSha", "commit SHA が不正: %q", req.HeadSHA)
 	}
 	if err := validateVersionedRef("contextManifest", req.ContextManifest.Schema, req.ContextManifest.Digest, contextManifestSchemaPrefix); err != nil {
 		return err
@@ -90,13 +90,13 @@ func ValidateReviewRequest(req ReviewRequest) error {
 	// reviewer は「明示された policy」だけで判断する。policy を省略した request は、
 	// reviewer に評価基準を推測させることになるため受理しない。
 	if len(req.PolicyRefs) == 0 {
-		return errors.New("policyRefs が空")
+		return protocolErr(ProtocolFieldMissing, "policyRefs", "評価基準となる policy が明示されていない")
 	}
 	if err := validatePolicyRefs(req.PolicyRefs); err != nil {
 		return err
 	}
 	if req.CreatedAt.IsZero() {
-		return errors.New("createdAt が空")
+		return protocolErr(ProtocolFieldMissing, "createdAt", "作成時刻が空")
 	}
 	return nil
 }
@@ -180,67 +180,89 @@ type ReviewResult struct {
 // gate 判定が finding を読まずに誤った方向へ進む。
 func ValidateReviewResult(result ReviewResult) error {
 	if result.Schema != ReviewResultSchemaV1Alpha1 {
-		return fmt.Errorf("review result schema は %q でなければならない: %q", ReviewResultSchemaV1Alpha1, result.Schema)
+		return protocolErr(ProtocolSchemaUnknown, "schema",
+			"review result schema は %q でなければならない: %q", ReviewResultSchemaV1Alpha1, result.Schema)
 	}
 	if !result.RequestDigest.Valid() {
-		return fmt.Errorf("requestDigest が不正: %q", result.RequestDigest)
+		return protocolErr(ProtocolFieldInvalid, "requestDigest", "digest が不正: %q", result.RequestDigest)
 	}
 	if !validProtocolID(result.ReviewRunID) {
-		return fmt.Errorf("reviewRunId が不正: %q", result.ReviewRunID)
+		return protocolErr(ProtocolFieldInvalid, "reviewRunId", "identifier が不正: %q", result.ReviewRunID)
 	}
 	if !reviewVerdicts[result.Verdict] {
-		return fmt.Errorf("review verdict が不正: %q", result.Verdict)
+		return protocolErr(ProtocolFieldInvalid, "verdict", "review verdict が不正: %q", result.Verdict)
 	}
 	if result.CreatedAt.IsZero() {
-		return errors.New("createdAt が空")
+		return protocolErr(ProtocolFieldMissing, "createdAt", "作成時刻が空")
 	}
 
+	// finding の identity（妥当性と一意性）はここで判定する。一意性は finding 間の関係で
+	// あり単体では決まらないため、content の検証だけを validateReviewFinding へ分ける。
 	seen := map[string]bool{}
 	blocking := 0
 	for i, finding := range result.Findings {
 		if !validProtocolID(finding.ID) {
-			return fmt.Errorf("findings[%d].id が不正: %q", i, finding.ID)
+			return protocolErr(ProtocolFieldInvalid, findingField(i, "id"), "identifier が不正: %q", finding.ID)
 		}
 		if seen[finding.ID] {
-			return fmt.Errorf("findings[%d].id が重複: %s", i, finding.ID)
+			return protocolErr(ProtocolFieldDuplicate, findingField(i, "id"), "finding id が重複: %s", finding.ID)
 		}
 		seen[finding.ID] = true
-		if !findingSeverities[finding.Severity] {
-			return fmt.Errorf("findings[%d].severity が不正: %q", i, finding.Severity)
+		if err := validateReviewFinding(i, finding); err != nil {
+			return err
 		}
 		if finding.Severity == SeverityBlocking {
 			blocking++
 		}
-		if !validCanonicalLine(finding.Summary) {
-			return fmt.Errorf("findings[%d].summary が不正", i)
-		}
-		for _, field := range []struct{ name, value string }{
-			{"expected", finding.Expected},
-			{"observed", finding.Observed},
-		} {
-			if !validCanonicalText(field.value) {
-				return fmt.Errorf("findings[%d].%s が不正", i, field.name)
-			}
-		}
-		if len(finding.EvidenceRefs) == 0 {
-			return fmt.Errorf("findings[%d].evidenceRefs が空", i)
-		}
-		if err := validateDigestSet(fmt.Sprintf("findings[%d].evidenceRefs", i), finding.EvidenceRefs); err != nil {
-			return err
-		}
 	}
 
-	switch result.Verdict {
+	return validateVerdictMatchesFindings(result.Verdict, blocking)
+}
+
+// validateVerdictMatchesFindings は verdict と blocking finding の対応を検証する。
+// 矛盾した Result を通すと、Controller は finding を読まずに gate を判断してしまう。
+func validateVerdictMatchesFindings(verdict ReviewVerdict, blocking int) error {
+	switch verdict {
 	case VerdictApprove:
 		if blocking > 0 {
-			return errors.New("approve は blocking finding を持てない")
+			return protocolErr(ProtocolOutcomeConflict, "verdict", "approve は blocking finding を持てない")
 		}
 	case VerdictRequestChanges, VerdictNeedsHuman:
 		if blocking == 0 {
-			return fmt.Errorf("%q は blocking finding を必要とする", result.Verdict)
+			return protocolErr(ProtocolOutcomeConflict, "verdict", "%q は blocking finding を必要とする", verdict)
 		}
 	}
 	return nil
+}
+
+func findingField(index int, name string) string {
+	return fmt.Sprintf("findings[%d].%s", index, name)
+}
+
+// validateReviewFinding は finding 単体の content を検証する。
+// ID の妥当性と一意性は呼び出し側が判定済みであることを前提とする。
+func validateReviewFinding(index int, finding ReviewFinding) error {
+	if !findingSeverities[finding.Severity] {
+		return protocolErr(ProtocolFieldInvalid, findingField(index, "severity"),
+			"severity が不正: %q", finding.Severity)
+	}
+	if !validCanonicalLine(finding.Summary, MaxCanonicalLineBytes) {
+		return protocolErr(canonicalTextCode(finding.Summary, MaxCanonicalLineBytes), findingField(index, "summary"),
+			"空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
+	}
+	for _, body := range []struct{ name, value string }{
+		{"expected", finding.Expected},
+		{"observed", finding.Observed},
+	} {
+		if !validCanonicalText(body.value, MaxCanonicalTextBytes) {
+			return protocolErr(canonicalTextCode(body.value, MaxCanonicalTextBytes), findingField(index, body.name),
+				"空、canonical text でない、または上限 %d byte を超えている", MaxCanonicalTextBytes)
+		}
+	}
+	if len(finding.EvidenceRefs) == 0 {
+		return protocolErr(ProtocolFieldMissing, findingField(index, "evidenceRefs"), "finding が根拠を持たない")
+	}
+	return validateDigestSet(findingField(index, "evidenceRefs"), finding.EvidenceRefs)
 }
 
 // ReviewResultDigest は Result の content identity を返す。
@@ -294,7 +316,8 @@ func BindReviewResult(req ReviewRequest, result ReviewResult) error {
 		return err
 	}
 	if result.RequestDigest != digest {
-		return fmt.Errorf("result が別の Review Request identity を参照している: got %s, want %s",
+		return protocolErr(ProtocolIdentityMismatch, "requestDigest",
+			"result が別の Review Request identity を参照している: got %s, want %s",
 			result.RequestDigest, digest)
 	}
 	return nil
@@ -311,12 +334,12 @@ type ReviewAttemptOutcome struct {
 func (o ReviewAttemptOutcome) Validate() error {
 	switch {
 	case o.Result != nil && o.Failure != nil:
-		return errors.New("quality verdict と attempt failure を同時に持てない")
+		return protocolErr(ProtocolOutcomeConflict, "", "quality verdict と attempt failure を同時に持てない")
 	case o.Result != nil:
 		return ValidateReviewResult(*o.Result)
 	case o.Failure != nil:
 		return o.Failure.Validate()
 	default:
-		return errors.New("attempt outcome が verdict も failure も持たない")
+		return protocolErr(ProtocolOutcomeConflict, "", "attempt outcome が verdict も failure も持たない")
 	}
 }

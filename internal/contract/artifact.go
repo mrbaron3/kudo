@@ -3,8 +3,6 @@ package contract
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
-	"fmt"
 	"strings"
 )
 
@@ -67,59 +65,46 @@ func newArtifactPayload(kind ArtifactKind, schema, mediaType string, data []byte
 	}
 }
 
+// artifactKindRule は kind ごとの schema namespace と media type を固定する。
+// schemaPrefix が空の kind は versioned schema を持たない。
+type artifactKindRule struct {
+	schemaPrefix string
+	mediaType    string
+}
+
+var artifactKindRules = map[ArtifactKind]artifactKindRule{
+	ArtifactKindRawIssueBody:     {mediaType: MediaTypeMarkdown},
+	ArtifactKindIssueObservation: {schemaPrefix: issueObservationSchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindTaskContext:      {schemaPrefix: taskContextSchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindContextManifest:  {schemaPrefix: contextManifestSchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindExecutionPolicy:  {schemaPrefix: executionPolicySchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindArtifactManifest: {schemaPrefix: artifactManifestSchemaPrefix, mediaType: MediaTypeYAML},
+}
+
 // Validate は metadata と content bytes の binding を検証する。
 func (p ArtifactPayload) Validate() error {
-	switch p.Kind {
-	case ArtifactKindRawIssueBody:
-		if p.Schema != "" {
-			return errors.New("raw Issue body artifact に schema は指定しない")
-		}
-		if p.MediaType != MediaTypeMarkdown {
-			return fmt.Errorf("raw Issue body media type が不正: %q", p.MediaType)
-		}
-	case ArtifactKindIssueObservation:
-		if !validSchemaIdentity(p.Schema, issueObservationSchemaPrefix) {
-			return fmt.Errorf("Issue Observation artifact schema が不正: %q", p.Schema)
-		}
-		if p.MediaType != MediaTypeYAML {
-			return fmt.Errorf("Issue Observation media type が不正: %q", p.MediaType)
-		}
-	case ArtifactKindTaskContext:
-		if !validSchemaIdentity(p.Schema, taskContextSchemaPrefix) {
-			return fmt.Errorf("Task Context artifact schema が不正: %q", p.Schema)
-		}
-		if p.MediaType != MediaTypeYAML {
-			return fmt.Errorf("Task Context media type が不正: %q", p.MediaType)
-		}
-	case ArtifactKindContextManifest:
-		if !validSchemaIdentity(p.Schema, contextManifestSchemaPrefix) {
-			return fmt.Errorf("Context Manifest artifact schema が不正: %q", p.Schema)
-		}
-		if p.MediaType != MediaTypeYAML {
-			return fmt.Errorf("Context Manifest media type が不正: %q", p.MediaType)
-		}
-	case ArtifactKindExecutionPolicy:
-		if !validSchemaIdentity(p.Schema, executionPolicySchemaPrefix) {
-			return fmt.Errorf("Execution Policy artifact schema が不正: %q", p.Schema)
-		}
-		if p.MediaType != MediaTypeYAML {
-			return fmt.Errorf("Execution Policy media type が不正: %q", p.MediaType)
-		}
-	case ArtifactKindArtifactManifest:
-		if !validSchemaIdentity(p.Schema, artifactManifestSchemaPrefix) {
-			return fmt.Errorf("Artifact Manifest artifact schema が不正: %q", p.Schema)
-		}
-		if p.MediaType != MediaTypeYAML {
-			return fmt.Errorf("Artifact Manifest media type が不正: %q", p.MediaType)
-		}
-	default:
-		return fmt.Errorf("artifact kind が不正: %q", p.Kind)
+	rule, ok := artifactKindRules[p.Kind]
+	if !ok {
+		return protocolErr(ProtocolKindUnknown, "kind", "artifact kind が不正: %q", p.Kind)
+	}
+	switch {
+	case rule.schemaPrefix == "" && p.Schema != "":
+		return protocolErr(ProtocolKindConstraint, "schema",
+			"kind %q は versioned schema を持たない: %q", p.Kind, p.Schema)
+	case rule.schemaPrefix != "" && !validSchemaIdentity(p.Schema, rule.schemaPrefix):
+		return protocolErr(ProtocolSchemaUnknown, "schema",
+			"kind %q の artifact schema が不正: %q", p.Kind, p.Schema)
+	}
+	if p.MediaType != rule.mediaType {
+		return protocolErr(ProtocolFieldInvalid, "mediaType",
+			"kind %q の media type は %q でなければならない: %q", p.Kind, rule.mediaType, p.MediaType)
 	}
 	if !p.Digest.Valid() {
-		return fmt.Errorf("artifact digest が不正: %q", p.Digest)
+		return protocolErr(ProtocolFieldInvalid, "digest", "artifact digest が不正: %q", p.Digest)
 	}
 	if got := SHA256(p.Data); got != p.Digest {
-		return fmt.Errorf("artifact digest mismatch: got %s, want %s", got, p.Digest)
+		return protocolErr(ProtocolIdentityMismatch, "digest",
+			"artifact digest が bytes と一致しない: got %s, want %s", got, p.Digest)
 	}
 	return nil
 }
@@ -129,22 +114,25 @@ func (p ArtifactPayload) Validate() error {
 // artifact も同じ bytes のまま読み出せる。
 func readVersionedArtifact(kind ArtifactKind, schema string, digest Digest, payload ArtifactPayload) ([]byte, error) {
 	if schema == "" {
-		return nil, errors.New("artifact ref schema が空")
+		return nil, protocolErr(ProtocolFieldMissing, "schema", "artifact ref schema が空")
 	}
 	if !digest.Valid() {
-		return nil, fmt.Errorf("artifact ref digest が不正: %q", digest)
+		return nil, protocolErr(ProtocolFieldInvalid, "digest", "artifact ref digest が不正: %q", digest)
 	}
 	if err := payload.Validate(); err != nil {
 		return nil, err
 	}
 	if payload.Kind != kind {
-		return nil, fmt.Errorf("artifact kind mismatch: got %q, want %q", payload.Kind, kind)
+		return nil, protocolErr(ProtocolIdentityMismatch, "kind",
+			"artifact kind が ref と一致しない: got %q, want %q", payload.Kind, kind)
 	}
 	if payload.Schema != schema {
-		return nil, fmt.Errorf("artifact schema mismatch: got %q, want %q", payload.Schema, schema)
+		return nil, protocolErr(ProtocolIdentityMismatch, "schema",
+			"artifact schema が ref と一致しない: got %q, want %q", payload.Schema, schema)
 	}
 	if payload.Digest != digest {
-		return nil, fmt.Errorf("artifact ref mismatch: got %s, want %s", payload.Digest, digest)
+		return nil, protocolErr(ProtocolIdentityMismatch, "digest",
+			"artifact digest が ref と一致しない: got %s, want %s", payload.Digest, digest)
 	}
 	return append([]byte(nil), payload.Data...), nil
 }
