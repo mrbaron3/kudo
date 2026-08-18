@@ -32,7 +32,7 @@ raw Issue body、Issue comment、親・依存Issueのprose、以前のprovider c
 
 ### 1. Deterministic prerequisites
 
-Review handlerはsemantic reviewを開始する前に、Request binding、artifactのdigest・length、head、live Issue freshnessを検証する。欠落、破損、別head、stale inputはfindingで補わず、protocolまたはexecution上の失敗として返す。
+Review handlerはsemantic reviewを開始する前に、Request binding、artifactのdigest・length、head、live Issue freshnessを検証する。欠落、破損、別head、stale inputはfindingで補わず、protocol、staleness、execution上の失敗を区別して返す。
 
 保存されたRED evidenceの内容が期待するREDを示すかは品質判断である。commandが実行済みというmetadataだけを理由にapproveしない。
 
@@ -74,7 +74,7 @@ AC IDをtitleへ埋め込む等の具体的な追跡形式はrepository policy�
 - 全必須観点を満たし、blocking findingがない場合だけ`approve`とする。
 - 同じIssue Contract内でtest、plan、fixture、RED evidenceを修正できる欠陥は`request_changes`とする。
 - Issueまたはauthorityの曖昧さ、安全判断、scope決定が必要で修正方針を一意に選べない場合は`needs_human`とする。
-- 命名や説明の改善だけでテストの検出力、追跡性、RED妥当性に影響しない指摘は`advisory`にできる。
+- 命名や説明の改善だけでテストの検出力、追跡性、RED妥当性に影響しない指摘は、verdictではなく`severity: advisory`のfindingとして残せる。
 - 観点ごとのscoreや加重平均でblocking findingを相殺しない。一つのfresh sessionが全観点を評価してよく、観点ごとの別sessionを要求しない。
 
 各findingは、違反した期待、実際の観測、対象ACまたはpolicy箇所、artifact evidenceを特定できる`expected`、`observed`、`evidenceRefs`を持つ。
