@@ -14,6 +14,8 @@ Kudo の文書は、目標、振る舞い、技術構造、外部 protocol、実
 | Protocol | [Task Context Protocol](contracts/task-context-v1alpha1.md) | Issue Observation、canonical Task Context、Context Manifest、Execution Policy |
 | Protocol | [Worker Operation Protocol](contracts/operation-protocol-v1alpha1.md) | Controller から Issue Worker への durable Operation / Result |
 | Protocol | [Implementation–Review Protocol](contracts/review-protocol-v1alpha1.md) | immutable review request/result と verdict semantics |
+| Policy | [Test Validity Review Policy](review-policies/test-validity-v1alpha1.md) | test plan、test code、RED evidenceを評価する標準観点 |
+| Policy | [Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md) | final headの常時必須観点と条件付き観点 |
 | Delivery | [Implementation plan](implementation-plan.md) | 現在地、実装順序、各 milestone と全体の exit criteria |
 | Decision | [ADR-0001](decisions/0001-compose-runtime.md) | Docker Compose を正式基盤とする判断 |
 | History | [Servo からの移行判断](migration-from-servo.md) | 参照元から採用・非採用にした概念 |
@@ -22,6 +24,7 @@ Kudo の文書は、目標、振る舞い、技術構造、外部 protocol、実
 ## Authority
 
 - `docs/contracts/` 配下は versioned protocol baseline であり、互換性に関わる変更は parsing、fixture、test と同時に行う。
+- `docs/review-policies/` 配下はReview Requestの`policyRefs`から参照するversioned品質基準である。意味を変える場合は新しいversioned pathを追加し、進行中Requestの基準を上書きしない。
 - Accepted ADR は技術選択の正本である。置き換える場合は既存 ADR を黙って書き換えず、新しい ADR で supersede する。
 - Workflow は利用者から見える順序と gate、Architecture は内部責務、Runtime platform は deployment contract を定義する。同じ事項を複数文書へ詳述しない。
 - Implementation plan の「現在地」は実装状況を表す。目標仕様を縮小する根拠にはしない。
