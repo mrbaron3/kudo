@@ -114,7 +114,7 @@ func sameRepository(r IssueRef, self repositoryRef) bool {
 // policy ref のいずれとしても canonical bytes と PostgreSQL text へ載るため、改行や
 // control character を含む値を通すと、拒否が保存段階まで遅れる。
 func validAuthorityPath(p string) bool {
-	if !validCanonicalLine(p) {
+	if !validCanonicalLine(p, MaxCanonicalLineBytes) {
 		return false
 	}
 	if strings.HasPrefix(p, "/") || strings.Contains(p, "\\") {

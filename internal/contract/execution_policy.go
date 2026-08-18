@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // ExecutionPolicySchemaV1Alpha1 は Run 開始時に固定する execution policy schema である。
@@ -52,7 +51,8 @@ func EncodeExecutionPolicy(policy ExecutionPolicy) (ExecutionPolicyRef, Artifact
 
 func validateExecutionPolicy(policy ExecutionPolicy) error {
 	if policy.Schema != ExecutionPolicySchemaV1Alpha1 {
-		return fmt.Errorf("execution policy schema は %q でなければならない", ExecutionPolicySchemaV1Alpha1)
+		return protocolErr(ProtocolSchemaUnknown, "schema",
+			"execution policy schema は %q でなければならない: %q", ExecutionPolicySchemaV1Alpha1, policy.Schema)
 	}
 	if err := validateWorkerExecutionPolicy("issueWorker", policy.IssueWorker); err != nil {
 		return err
@@ -70,27 +70,28 @@ func validateWorkerExecutionPolicy(name string, policy WorkerExecutionPolicy) er
 		{"adapter", policy.Adapter},
 		{"adapterVersion", policy.AdapterVersion},
 	}
+	// canonical な単一行の判定は validCanonicalLine に一本化する。以前はここで
+	// utf8 妥当性と `\r\n\x00` の混入だけを個別に検査しており、共有述語より弱い規則が
+	// この経路にだけ残っていた。上限や control character の規則を強化しても policy だけ
+	// 古い規則のまま通る状態を作らないため、述語を重複させない。
 	for _, field := range fields {
-		if !utf8.ValidString(field.value) || strings.TrimSpace(field.value) == "" {
-			return fmt.Errorf("%s.%s が空または UTF-8 でない", name, field.name)
-		}
-		if strings.ContainsAny(field.value, "\r\n\x00") {
-			return fmt.Errorf("%s.%s に改行または NUL は許可しない", name, field.name)
+		if !validCanonicalLine(field.value, MaxCanonicalLineBytes) {
+			return protocolErr(canonicalTextCode(field.value, MaxCanonicalLineBytes),
+				name+"."+field.name, "空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
 		}
 	}
 	if policy.Timeout <= 0 {
-		return fmt.Errorf("%s.timeout は正でなければならない", name)
+		return protocolErr(ProtocolFieldInvalid, name+".timeout", "timeout は正でなければならない: %v", policy.Timeout)
 	}
 	seen := map[string]bool{}
 	for i, permission := range policy.ToolPermissions {
-		if !utf8.ValidString(permission) || strings.TrimSpace(permission) == "" {
-			return fmt.Errorf("%s.toolPermissions[%d] が空または UTF-8 でない", name, i)
-		}
-		if strings.ContainsAny(permission, "\r\n\x00") {
-			return fmt.Errorf("%s.toolPermissions[%d] に改行または NUL は許可しない", name, i)
+		field := fmt.Sprintf("%s.toolPermissions[%d]", name, i)
+		if !validCanonicalLine(permission, MaxCanonicalLineBytes) {
+			return protocolErr(canonicalTextCode(permission, MaxCanonicalLineBytes), field,
+				"空、canonical な単一行でない、または上限 %d byte を超えている", MaxCanonicalLineBytes)
 		}
 		if seen[permission] {
-			return fmt.Errorf("%s.toolPermissions[%d] が重複", name, i)
+			return protocolErr(ProtocolFieldDuplicate, field, "tool permission が重複: %s", permission)
 		}
 		seen[permission] = true
 	}
@@ -121,7 +122,7 @@ func encodeWorkerExecutionPolicy(b *strings.Builder, policy WorkerExecutionPolic
 // ReadExecutionPolicyArtifact は ref/payload を照合して保存 bytes を返す。
 func ReadExecutionPolicyArtifact(ref ExecutionPolicyRef, payload ArtifactPayload) ([]byte, error) {
 	if !validSchemaIdentity(ref.Schema, executionPolicySchemaPrefix) {
-		return nil, fmt.Errorf("ExecutionPolicyRef schema が不正: %q", ref.Schema)
+		return nil, protocolErr(ProtocolSchemaUnknown, "schema", "ExecutionPolicyRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindExecutionPolicy, ref.Schema, ref.Digest, payload)
 }

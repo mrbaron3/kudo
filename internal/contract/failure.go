@@ -1,10 +1,5 @@
 package contract
 
-import (
-	"errors"
-	"fmt"
-)
-
 // FailureClass は attempt を失敗させた execution / transport failure の分類である。
 // review の品質 verdict とは別の値空間であり、相互に変換しない。
 type FailureClass string
@@ -41,13 +36,14 @@ type AttemptFailure struct {
 // Validate は failure record として保存できる形かを検証する。
 func (f AttemptFailure) Validate() error {
 	if !failureClasses[f.Class] {
-		return fmt.Errorf("failure class が不正: %q", f.Class)
+		return protocolErr(ProtocolFieldInvalid, "class", "failure class が不正: %q", f.Class)
 	}
 	if !validProtocolID(f.AttemptID) {
-		return fmt.Errorf("attemptId が不正: %q", f.AttemptID)
+		return protocolErr(ProtocolFieldInvalid, "attemptId", "attempt identifier が不正: %q", f.AttemptID)
 	}
-	if !validCanonicalText(f.Evidence) {
-		return errors.New("evidence が空または canonical text でない")
+	if !validCanonicalText(f.Evidence, MaxCanonicalTextBytes) {
+		return protocolErr(canonicalTextCode(f.Evidence, MaxCanonicalTextBytes), "evidence",
+			"空、canonical text でない、または上限 %d byte を超えている", MaxCanonicalTextBytes)
 	}
 	return nil
 }

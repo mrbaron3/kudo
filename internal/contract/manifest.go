@@ -1,7 +1,6 @@
 package contract
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -63,48 +62,52 @@ func EncodeContextManifest(claim ClaimRequirements, manifest ContextManifest) (C
 
 func validateContextManifest(manifest ContextManifest) error {
 	if manifest.Schema != ContextManifestSchemaV1Alpha1 {
-		return fmt.Errorf("context manifest schema は %q でなければならない", ContextManifestSchemaV1Alpha1)
+		return protocolErr(ProtocolSchemaUnknown, "schema",
+			"context manifest schema は %q でなければならない: %q", ContextManifestSchemaV1Alpha1, manifest.Schema)
 	}
 	if !validSchemaIdentity(manifest.TaskContext.Schema, taskContextSchemaPrefix) {
-		return errors.New("TaskContextRef schema が不正")
+		return protocolErr(ProtocolSchemaUnknown, "taskContext", "TaskContextRef schema が不正: %q", manifest.TaskContext.Schema)
 	}
 	if !manifest.TaskContext.Digest.Valid() {
-		return errors.New("TaskContextRef digest が不正")
+		return protocolErr(ProtocolFieldInvalid, "taskContext", "TaskContextRef digest が不正: %q", manifest.TaskContext.Digest)
 	}
 	if !validGitSHA(manifest.BaseSHA) {
-		return errors.New("base SHA は 40 または 64 桁の lowercase hex でなければならない")
+		return protocolErr(ProtocolFieldInvalid, "baseSha",
+			"base SHA は 40 または 64 桁の lowercase hex でなければならない: %q", manifest.BaseSHA)
 	}
 	if manifest.Parent != nil && !validIssueRef(*manifest.Parent) {
-		return errors.New("parent IssueRef が不正")
+		return protocolErr(ProtocolFieldInvalid, "parent", "parent Issue reference が不正")
 	}
 
 	seenDependencies := map[string]bool{}
 	for i, dependency := range manifest.Dependencies {
 		if !validIssueRef(dependency.Issue) {
-			return fmt.Errorf("dependencies[%d].issue が不正", i)
+			return protocolErr(ProtocolFieldInvalid, fmt.Sprintf("dependencies[%d].issue", i), "Issue reference が不正")
 		}
 		if !dependency.CompletionDigest.Valid() {
-			return fmt.Errorf("dependencies[%d].completionDigest が不正", i)
+			return protocolErr(ProtocolFieldInvalid, fmt.Sprintf("dependencies[%d].completionDigest", i),
+				"digest が不正: %q", dependency.CompletionDigest)
 		}
 		key := dependency.Issue.String()
 		if seenDependencies[key] {
-			return fmt.Errorf("dependencies[%d].issue が重複", i)
+			return protocolErr(ProtocolFieldDuplicate, fmt.Sprintf("dependencies[%d].issue", i), "Issue が重複: %s", key)
 		}
 		seenDependencies[key] = true
 	}
 
 	seenAuthority := map[string]bool{}
 	for i, authority := range manifest.AuthorityRefs {
-		key, err := validateAuthorityIdentity(authority.Ref)
+		key, err := validateAuthorityIdentity(fmt.Sprintf("authorityRefs[%d].ref", i), authority.Ref)
 		if err != nil {
-			return fmt.Errorf("authorityRefs[%d].ref: %w", i, err)
+			return err
 		}
 		if seenAuthority[key] {
-			return fmt.Errorf("authorityRefs[%d].ref が重複", i)
+			return protocolErr(ProtocolFieldDuplicate, fmt.Sprintf("authorityRefs[%d].ref", i), "authority が重複: %s", key)
 		}
 		seenAuthority[key] = true
 		if !authority.ContentDigest.Valid() {
-			return fmt.Errorf("authorityRefs[%d].contentDigest が不正", i)
+			return protocolErr(ProtocolFieldInvalid, fmt.Sprintf("authorityRefs[%d].contentDigest", i),
+				"digest が不正: %q", authority.ContentDigest)
 		}
 	}
 	return nil
@@ -117,42 +120,45 @@ func validateContextManifest(manifest ContextManifest) error {
 func validateManifestMatchesClaim(claim ClaimRequirements, manifest ContextManifest) error {
 	switch {
 	case claim.Parent == nil && manifest.Parent != nil:
-		return errors.New("Task Context が parent を持たないのに manifest に parent がある")
+		return protocolErr(ProtocolIdentityMismatch, "parent", "Task Context が parent を持たないのに manifest に parent がある")
 	case claim.Parent != nil && manifest.Parent == nil:
-		return errors.New("Task Context の parent が manifest で解決されていない")
+		return protocolErr(ProtocolIdentityMismatch, "parent", "Task Context の parent が manifest で解決されていない")
 	case claim.Parent != nil && claim.Parent.String() != manifest.Parent.String():
-		return fmt.Errorf("parent が Task Context と一致しない: got %s, want %s",
+		return protocolErr(ProtocolIdentityMismatch, "parent", "parent が Task Context と一致しない: got %s, want %s",
 			manifest.Parent.String(), claim.Parent.String())
 	}
 
 	if len(manifest.Dependencies) != len(claim.DependsOn) {
-		return fmt.Errorf("dependencies の件数が dependsOn と一致しない: got %d, want %d",
-			len(manifest.Dependencies), len(claim.DependsOn))
+		return protocolErr(ProtocolIdentityMismatch, "dependencies",
+			"件数が dependsOn と一致しない: got %d, want %d", len(manifest.Dependencies), len(claim.DependsOn))
 	}
 	for i, dependency := range manifest.Dependencies {
 		if dependency.Issue.String() != claim.DependsOn[i].String() {
-			return fmt.Errorf("dependencies[%d] が dependsOn の宣言順と一致しない: got %s, want %s",
-				i, dependency.Issue.String(), claim.DependsOn[i].String())
+			return protocolErr(ProtocolIdentityMismatch, fmt.Sprintf("dependencies[%d]", i),
+				"dependsOn の宣言順と一致しない: got %s, want %s",
+				dependency.Issue.String(), claim.DependsOn[i].String())
 		}
 	}
 
 	if len(manifest.AuthorityRefs) != len(claim.AuthorityRefs) {
-		return fmt.Errorf("authorityRefs の件数が Task Context と一致しない: got %d, want %d",
+		return protocolErr(ProtocolIdentityMismatch, "authorityRefs",
+			"件数が Task Context と一致しない: got %d, want %d",
 			len(manifest.AuthorityRefs), len(claim.AuthorityRefs))
 	}
 	for i, authority := range manifest.AuthorityRefs {
 		// 重複検出と同じ identity 関数で比較し、path と Issue reference の
 		// 同一性判定が 2 通りに分かれないようにする。
-		got, err := validateAuthorityIdentity(authority.Ref)
+		got, err := validateAuthorityIdentity(fmt.Sprintf("authorityRefs[%d].ref", i), authority.Ref)
 		if err != nil {
-			return fmt.Errorf("authorityRefs[%d].ref: %w", i, err)
+			return err
 		}
-		want, err := validateAuthorityIdentity(claim.AuthorityRefs[i])
+		want, err := validateAuthorityIdentity(fmt.Sprintf("taskContext.authorityRefs[%d]", i), claim.AuthorityRefs[i])
 		if err != nil {
-			return fmt.Errorf("Task Context の authorityRefs[%d] が不正: %w", i, err)
+			return err
 		}
 		if got != want {
-			return fmt.Errorf("authorityRefs[%d] が Task Context の宣言順と一致しない: got %s, want %s", i, got, want)
+			return protocolErr(ProtocolIdentityMismatch, fmt.Sprintf("authorityRefs[%d]", i),
+				"Task Context の宣言順と一致しない: got %s, want %s", got, want)
 		}
 	}
 	return nil
@@ -170,20 +176,23 @@ func validGitSHA(value string) bool {
 	return true
 }
 
-func validateAuthorityIdentity(ref AuthorityRef) (string, error) {
+// validateAuthorityIdentity は authority の重複検出と順序比較に使う identity key を返す。
+// field は error に載せる protocol 上の位置であり、呼び出し側が index を含めて渡す。
+func validateAuthorityIdentity(field string, ref AuthorityRef) (string, error) {
 	switch {
 	case ref.Path != "" && ref.Issue == nil:
 		if !validAuthorityPath(ref.Path) {
-			return "", errors.New("repository-relative path が不正")
+			return "", protocolErr(canonicalTextCode(ref.Path, MaxCanonicalLineBytes), field,
+				"repository-relative path が不正: %q", ref.Path)
 		}
 		return "path:" + ref.Path, nil
 	case ref.Path == "" && ref.Issue != nil:
 		if !validIssueRef(*ref.Issue) {
-			return "", errors.New("IssueRef が不正")
+			return "", protocolErr(ProtocolFieldInvalid, field, "Issue reference が不正")
 		}
 		return "issue:" + ref.Issue.String(), nil
 	default:
-		return "", errors.New("path または IssueRef のどちらか一方だけが必要")
+		return "", protocolErr(ProtocolFieldInvalid, field, "path または Issue reference のどちらか一方だけが必要")
 	}
 }
 
@@ -225,7 +234,7 @@ func encodeContextManifest(manifest ContextManifest) []byte {
 // ReadContextManifestArtifact は ref/payload を照合して保存 bytes を返す。
 func ReadContextManifestArtifact(ref ContextManifestRef, payload ArtifactPayload) ([]byte, error) {
 	if !validSchemaIdentity(ref.Schema, contextManifestSchemaPrefix) {
-		return nil, fmt.Errorf("ContextManifestRef schema が不正: %q", ref.Schema)
+		return nil, protocolErr(ProtocolSchemaUnknown, "schema", "ContextManifestRef schema が不正: %q", ref.Schema)
 	}
 	return readVersionedArtifact(ArtifactKindContextManifest, ref.Schema, ref.Digest, payload)
 }

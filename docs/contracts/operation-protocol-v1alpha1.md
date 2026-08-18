@@ -141,6 +141,37 @@ Issue Workerだけがimplementation worktree、branch、commit、Pull Requestを
 
 unknown schema/version、unknown kind、欠落required field、kindに許されないfield combination、digest/bytes不一致をrejectする。invalid payloadをproviderへ渡さず、retry可能なtransport failureにも変換しない。
 
+### Validation error classification
+
+拒否理由は機械可読なcodeで分類する。Controllerはerror文字列の一致で分岐しない。文字列に依存すると、message表現を変えただけでControllerの分岐が壊れ、逆に分岐を保つためにmessageを固定する必要が生じる。
+
+| code | 意味 |
+| --- | --- |
+| `protocol_schema_unknown` | envelope自身またはversioned refのschemaが既知versionでない |
+| `protocol_kind_unknown` | Operation kindまたはReview kindが語彙に無い |
+| `protocol_field_missing` | required fieldが空 |
+| `protocol_field_invalid` | fieldの値が形式規則を満たさない |
+| `protocol_field_duplicate` | 集合として扱うfieldに重複がある |
+| `protocol_field_too_long` | canonical textの上限を超えている |
+| `protocol_kind_constraint` | 個々のfieldは妥当だが、そのkindでは持てないか省略できない |
+| `protocol_identity_mismatch` | 再計算したdigestと参照されたidentityが一致しない |
+| `protocol_outcome_conflict` | 結末の排他規則違反（verdictとfailureの同時保持、verdictとfindingの矛盾等） |
+
+この分類はprotocol validation専用であり、Issue Contract parserのclaim rejection codeとは別の値空間である。parserのcodeはIssue bodyの行・section・fieldを指すtext由来の診断であり、protocol validationは解決済みの値に対する判定で行番号を持たない。
+
+いずれのcodeもretry可能なtransport failureではない。protocol validationの失敗はimmutableな入力に対するpermanentな契約違反であり、同じ入力でretryしても結果は変わらない。分類できない失敗をretry可能側の既定へ倒すと、契約違反を無限にretryしうるため、既定はretryしない側とする。
+
+### Canonical text limits
+
+canonical textには上限を定める。これらの値はmodel providerの出力に由来し、canonical bytesとPostgreSQL textの両方へそのまま載る。上限が無いと、単一のattemptがrow sizeとdigest計算量を通じて後続の全Operationへ影響しうる。
+
+| 対象 | 上限 |
+| --- | --- |
+| 複数行本文（attempt failureの`evidence`、findingの`expected`／`observed`） | 65536 byte |
+| 単一行の値（findingの`summary`、artifact manifestの`mediaType`、`externalRefs`の各要素、Execution Policyの各field、repository-relative path） | 1024 byte |
+
+上限は受理可否だけに影響し、canonical bytesの構成方法とdigestの計算方法を変えない。上限ちょうどの値は受理する。上限超過は`protocol_field_too_long`として分類し、control character混入や空文字による`protocol_field_invalid`と区別する。producer側が本文を切り詰めれば通る失敗と、値そのものが不正な失敗は対処が違う。
+
 `policyRefs`と`authorityRefs`のrepository-relative pathは、canonicalな単一行であることを要求する。改行やcontrol characterを含む値はcanonical bytesとPostgreSQL textの両方へ載るため、protocol層で拒否する。
 
 `operationId`、`runId`、`attemptId`、`causationId`等のidentifierは、英数字で始まり、英数字と`-`、`_`、`.`だけを含む128文字以内の値とする。Runはworkspaceを持つためidentifierはpath segmentへも載りうる。`.`や`..`のような値をprotocol層で通すと、拒否がfilesystem層まで遅れる。

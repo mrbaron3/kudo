@@ -121,6 +121,10 @@ verdictは次のいずれかとする。
 
 findingは`expected`、`observed`、`evidenceRefs`を持ち、単なる感想にしない。Review Resultはproducerのworktree、branch、PRを変更せず、新しいartifactとして保存する。
 
+`summary`は1024 byte以内の単一行、`expected`と`observed`は65536 byte以内のcanonical textとする。上限と分類codeの規定は`operation-protocol-v1alpha1.md`のValidation節に置き、両protocolで同じ値を使う。上限を超えるfindingは受理せず、`protocol_field_too_long`として分類する。上限はReview Result identityの計算方法を変えない。
+
+Review RequestとReview Resultのvalidation失敗も、Operation側と同じcode体系で分類する。Controllerは品質verdictとvalidation失敗を別経路で扱うため、validation失敗のcodeを`request_changes`や`needs_human`へ読み替えない。
+
 Result identityは、schema、参照するrequest digest、verdict、findingから決まる。`reviewRunId`と`createdAt`は含めないため、同じrequestへの同じ判断は同じcontent identityを持つ。findingは`id`のlexicographic順へ正規化してencodeする。reviewerが列挙した順序は判断の一部ではなく、model providerは同じ判断でも順序を再現しないため、並びだけが違うResultを別identityにしない。`evidenceRefs`も同じ理由で順序を持たない集合として扱う。binding検証はResultが参照するrequest digestの一致で行う。
 
 `request_changes`後の修正Operationには、Issue Observation、Context Manifestが指すTask Context、対象head、Review Result、必要なartifact referenceだけを渡す。以前のImplementation/Review sessionをresumeしない。修正後は新しいheadとrequest digestで再reviewする。

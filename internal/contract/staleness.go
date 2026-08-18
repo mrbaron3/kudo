@@ -1,8 +1,6 @@
 package contract
 
 import (
-	"errors"
-	"fmt"
 	"slices"
 )
 
@@ -87,7 +85,8 @@ func CompareOperationInput(op WorkerOperation, latest LatestOperationInput) (Sem
 		return SemanticDifference{}, err
 	}
 	if !operationKindRules[op.Kind].resolvedContext {
-		return SemanticDifference{}, fmt.Errorf("kind %q はまだ semantic input を持たない", op.Kind)
+		return SemanticDifference{}, protocolErr(ProtocolKindConstraint, "kind",
+			"kind %q はまだ semantic input を持たない", op.Kind)
 	}
 	if err := validateLatestInput(latest.Observation, latest.ContextManifest, latest.ExecutionPolicy, latest.HeadSHA, latest.PolicyRefs); err != nil {
 		return SemanticDifference{}, err
@@ -160,7 +159,7 @@ func validateLatestInput(observation IssueObservationRef, manifest ContextManife
 		return err
 	}
 	if !validGitSHA(headSHA) {
-		return fmt.Errorf("headSha が不正: %q", headSHA)
+		return protocolErr(ProtocolFieldInvalid, "headSha", "commit SHA が不正: %q", headSHA)
 	}
 	return validatePolicyRefs(policyRefs)
 }
@@ -198,7 +197,8 @@ func (l ObservationLineage) Append(ref IssueObservationRef) (ObservationLineage,
 		return ObservationLineage{}, err
 	}
 	if len(l.entries) == 0 {
-		return ObservationLineage{}, errors.New("初期観測を持たない lineage へ追記できない")
+		return ObservationLineage{}, protocolErr(ProtocolFieldMissing, "issueObservation",
+			"初期観測を持たない lineage へ追記できない")
 	}
 	if l.entries[len(l.entries)-1] == ref {
 		return l, nil
