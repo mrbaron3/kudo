@@ -21,11 +21,12 @@ Reviewerは次の明示された入力だけを使う。
 - implementation patchまたはfinal source snapshot
 - final headを再構築できるimmutable source artifact
 - RED、GREEN、refactor後verification、Issue Verification、repository required checksのevidence
-- performance観点にboundが宣言されている場合の測定evidence（command、実行条件、結果summary）
+- performance観点にboundが宣言されている場合の`performance-evidence`内の測定evidence（command、実行条件、結果summary）
 - test、fixture、helper、commandに対する変更と再承認のlineage
 - Pull Request用summary、risk、manual verificationのdraft artifact
 
 raw Issue body、Issue comment、親・依存Issueのprose、以前のprovider conversation、Issue Workerのmutable worktreeは評価根拠へ追加しない。
+live Issueの取得とIssue Observationとのdigest照合はfreshness検証にだけ使い、raw bodyの内容を評価根拠へ追加しない。
 
 ## Review order
 
@@ -34,9 +35,11 @@ raw Issue body、Issue comment、親・依存Issueのprose、以前のprovider c
 Review handlerはsemantic reviewを開始する前に、少なくとも次を検証する。
 
 - Review Request、Context Manifest、Execution Policy、Artifact Manifest、final headのbindingが一致する。
+- live Issueのbody digestがIssue Observationと一致する。
 - approved test validity Resultが同じIssue context、test-only head、test artifactへbindされている。
 - approved test、fixture、helper、test commandに変更がある場合、その版に対するtest validity approvalが存在する。
 - GREEN、refactor後verification、Issue Verification、required checksがfinal headにbindされ、必要なcommandが成功している。
+- performance boundが宣言されている場合、`performance-evidence`に測定command、実行条件、結果summaryがあり、final headへbindされている。
 - required artifactが欠落、破損、別head、staleではない。
 
 これらのRequest integrityを検証できない場合はfindingで補わず、protocol、staleness、execution上の失敗として返す。成功evidenceの内容がIssueを十分に検証するかは後続の品質判断である。
@@ -60,7 +63,7 @@ Review handlerはsemantic reviewを開始する前に、少なくとも次を検
 #### Test integrity and quality
 
 - approved testを削除、skip、弱体化、未検出化してGREENにしていない。
-- test、fixture、helper、commandの変更がある場合はtest review gateへ戻り、現在版が再承認されている。
+- test、fixture、helper、commandの変更版に対するapprovalの有無はDeterministic prerequisitesで検証し、ここでは変更がtestの検出力やtraceabilityを損なっていないかを評価する。
 - 全Acceptance Criteriaへのtraceabilityと、退行を検出できる意味のあるassertionがfinal headでも維持されている。
 - implementation中に判明したerror、boundary、regressionに必要なtestが不足していない。
 
@@ -104,7 +107,7 @@ performanceの測定はreviewの一部として実行しない。boundが宣言�
 - 全常時必須観点と全該当条件付き観点を満たし、blocking findingがない場合だけ`approve`とする。
 - 同じIssue Contract内でproduction code、test review、evidenceを修正できる欠陥は`request_changes`とする。
 - authority conflict、安全判断、scopeまたはproduct decisionが必要で修正方針を一意に選べない場合は`needs_human`とする。
-- behavior、risk、保守性に影響しない改善提案は`advisory`にできる。
+- behavior、risk、保守性に影響しない改善提案は、verdictではなく`severity: advisory`のfindingとして残せる。
 - 観点ごとのscoreや加重平均でblocking findingを相殺しない。一つのfresh sessionが全観点を評価してよく、観点ごとの別sessionを要求しない。
 
 各findingは、違反した期待、実際の観測、対象ACまたはpolicy箇所、artifact evidenceを特定できる`expected`、`observed`、`evidenceRefs`を持つ。
