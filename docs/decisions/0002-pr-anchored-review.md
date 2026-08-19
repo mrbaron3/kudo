@@ -53,7 +53,7 @@ PRはRunの人間可視なanchorであり、「publish」を単位に更新さ�
 - publishはIssue Workerのidempotency keyと期待head照合（compare-and-push）で二重mutationと外部干渉を防ぐ。
 - PR body更新はartifactから決定論的に生成し、source headを変えないためreview bindingを壊さない（既存契約の規則を維持）。
 - PR bodyは自動管理であることを明記し、人間の編集はhandoff後まで想定しない。
-- 外部干渉（人間による同branchへのpush、PRのclose/merge、base変更）はlive PR observationとreconciliationで検出し、staleまたは`needs_human`として扱う。品質verdictには変換しない。
+- 外部干渉はlive PR observationとreconciliationで検出する。同branchへのpushによるhead不一致とbase変更はstale、PRのclose/mergeはRunを`needs_human`phaseへ送るため人間へescalateする。PR body編集とdraft/ready遷移だけの差分はaudit lineageへ追記し、いずれも品質verdictには変換しない。
 - draft PR上のCIはtest-only headではREDになる。これは隠すべき異常ではなくTDDの位相の正直な表示であり、required checksのenforcementはready遷移時にのみ意味を持つ。
 
 ### 2. Workflow変更
@@ -66,7 +66,7 @@ sequenceDiagram
     participant GH as GitHub
 
     IW-->>C: test plan/patch + RED evidence
-    C->>IW: publish_test_head
+    C->>IW: publish_head(test-only head)
     IW->>GH: branch push + draft PR ensure
     IW-->>C: PR ref + published head
     C->>RW: review(test_validity, PR anchored)
@@ -74,7 +74,7 @@ sequenceDiagram
     RW-->>C: approve / request_changes / needs_human
     C->>IW: implement(approved tests)
     IW-->>C: GREEN + refactor/check evidence
-    C->>IW: publish_final_head
+    C->>IW: publish_head(final head)
     IW->>GH: 同一PRへpush
     C->>RW: review(final_implementation, PR anchored)
     RW-->>C: approve
@@ -173,7 +173,7 @@ findings: []
 #### Staleness追加規則
 
 - live PR headがrequestの`headSha`と一致しない場合は品質verdictを返さず、stale inputとしてControllerへ返す。
-- PRが外部でclose/mergeされた場合はRunを停止し`needs_human`とする。
+- PRが外部でclose/mergeされた場合は品質verdictを返さず、Runを`needs_human`phaseへ送るため人間へescalateする。
 - PR baseはclaim時のbaseと一致しなければならない。不一致はstale（Context Manifest経由のbase staleness判定と同じ扱い）とする。
 
 ### 4. 観点適用判断とsession assembly
@@ -206,7 +206,7 @@ session assemblyは次のとおり。
 
 1. **Lease**: role=reviewのqueued Requestをleaseし、heartbeatを維持する。
 2. **Protocol validation**: strict parse。Request identityを構成するref群のschema+digest binding検証。
-3. **Live freshness**: Issue Observation digest照合（既存）に加え、live PRを取得しopen状態・head一致・base一致・draft状態を確認して`pull-request-observation` artifactを固定する。不一致はstale。
+3. **Live freshness**: Issue Observation digest照合（既存）に加え、live PRを取得しopen状態・head一致・base一致・draft状態を確認して`pull-request-observation` artifactを固定する。headまたはbaseの不一致はstale、close/mergeは品質verdictを返さず、Runを`needs_human`phaseへ送るため人間へescalateし、PR body編集またはdraft/ready遷移だけの差分はaudit lineageへ追記する。
 4. **Artifact resolution**: manifestの全entryをdigest/length照合で取得し、immutable source snapshotから`headSha`検証済みdisposable checkoutを構築する。
 5. **Deterministic prerequisites**: policy §1の機械検証（binding整合、approved-test lineage、evidenceのhead binding、bound宣言時の測定evidenceの数値照合）。
 6. **Session**: fresh provider processへ組み立てたcontextを渡す。structured output（YAML applicability宣言とfindings）をstrict parseし、不正outputはbounded retry後にexecution failureとする。
@@ -238,7 +238,7 @@ package配置と主なtest（TDDで先にテストを書く）:
 | 対象 | 変更 |
 | --- | --- |
 | workflow.md | §3以降の順序（publish挿入、PR作成時点、finalize/ready化）、state図、gate semantics |
-| architecture.md | Issue Worker（早期publish責務）、Review Worker（PR read、scope computation）、mutation authority表（PR: draft作成が早まる） |
+| architecture.md | Issue Worker（早期publish責務）、Review Worker（PR read、applicability宣言と完全性検証）、mutation authority表（PR: draft作成が早まる） |
 | contracts/review-protocol-v1alpha1.md | Request field追加、Result applicability宣言、staleness規則、PR observation schema |
 | migration-from-servo.md | 「PR作成前のfinal review gate」を本ADRでsupersedeした旨を追記 |
 | review-policies/final-implementation-v1alpha1.md | Performance適用条件（bound宣言または実行surface）と測定evidence規則（#47のdraftへ適用済み） |

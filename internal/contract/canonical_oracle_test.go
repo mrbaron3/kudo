@@ -391,6 +391,61 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 		t.Fatalf("finding が escape 前の値へ戻らない: %+v", result.Findings[0])
 	}
 
+	// PR observation は canonical protocol で初めて implicit bool scalar を使う。
+	// 独立 parser が文字列ではなく bool として復元できることを固定する。
+	observation := samplePullRequestObservation()
+	parsedObservation := decodeOracle[struct {
+		Schema      string `json:"schema"`
+		PullRequest string `json:"pullRequest"`
+		State       string `json:"state"`
+		Draft       bool   `json:"draft"`
+		HeadSHA     string `json:"headSha"`
+		BaseRef     string `json:"baseRef"`
+		BodyDigest  string `json:"bodyDigest"`
+	}](t, yamlOracle(t, encodePullRequestObservation(observation)))
+	if parsedObservation.Schema != PullRequestObservationSchemaV1Alpha1 ||
+		parsedObservation.PullRequest != observation.PullRequest.String() ||
+		parsedObservation.State != string(observation.State) ||
+		!parsedObservation.Draft ||
+		parsedObservation.HeadSHA != observation.HeadSHA ||
+		parsedObservation.BaseRef != observation.BaseRef ||
+		parsedObservation.BodyDigest != string(observation.BodyDigest) {
+		t.Fatalf("Pull Request Observation が復元されない: %+v", parsedObservation)
+	}
+
+	// final Result の perspectives は nested mapping の list と bool を組み合わせる。
+	// golden fixture との自己比較だけでなく、外部 parser で構造と canonical 順を確認する。
+	finalRequest := sampleFinalReviewRequest(t)
+	parsedFinalResult := decodeOracle[struct {
+		Verdict      string `json:"verdict"`
+		Perspectives []struct {
+			Perspective  string   `json:"perspective"`
+			Applicable   bool     `json:"applicable"`
+			Reason       string   `json:"reason"`
+			EvidenceRefs []string `json:"evidenceRefs"`
+		} `json:"perspectives"`
+		Findings []struct{} `json:"findings"`
+	}](t, yamlOracle(t, encodeReviewResultIdentity(sampleFinalReviewResult(t, finalRequest))))
+	wantPerspectives := []string{"accessibility", "performance", "type-design", "ux"}
+	gotPerspectives := make([]string, len(parsedFinalResult.Perspectives))
+	for i, perspective := range parsedFinalResult.Perspectives {
+		if perspective.Reason == "" || len(perspective.EvidenceRefs) == 0 {
+			t.Fatalf("perspectives[%d] の根拠が復元されない: %+v", i, perspective)
+		}
+		gotPerspectives[i] = perspective.Perspective
+	}
+	if parsedFinalResult.Verdict != string(VerdictApprove) ||
+		!reflect.DeepEqual(gotPerspectives, wantPerspectives) ||
+		len(parsedFinalResult.Findings) != 0 {
+		t.Fatalf("final Review Result が復元されない: %+v", parsedFinalResult)
+	}
+	if parsedFinalResult.Perspectives[0].Applicable ||
+		parsedFinalResult.Perspectives[1].Applicable ||
+		!parsedFinalResult.Perspectives[2].Applicable ||
+		parsedFinalResult.Perspectives[3].Applicable {
+		t.Fatalf("applicable bool が復元されない: %+v", parsedFinalResult.Perspectives)
+	}
+
 	manifest := sampleArtifactManifest(t)
 	_, manifestPayload, err := EncodeArtifactManifest(manifest)
 	if err != nil {

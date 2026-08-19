@@ -201,7 +201,8 @@ retry policy は error class ごとに決める。
 - review の blocking finding: `request_changes`として修正 Operation へ routing
 - changed Context Manifest/Execution Policy/head/artifact/policy/PR ref: stale。新しい identity で再評価し、古い approval は破棄
 - changed Issue Observation / PR observation のみ（Task Context と Context Manifest が同じ）: audit lineage へ追記し、identity と approval は維持
-- PR の外部 close/merge、base 不一致、branch への外部 push: blind mutation せず stale または`needs_human`
+- PR の head 不一致（branch への外部 push を含む）またはbase 不一致: blind mutation せず stale
+- PR の外部 close/merge: blind mutation せず、品質 verdict に変換せずに Run を`needs_human`phaseへ送るため人間へescalate
 
 ## Scheduling and concurrency
 

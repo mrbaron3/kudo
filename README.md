@@ -10,9 +10,9 @@ Kudo は、人間が定型の GitHub Issue を用意すると、独立した tes
 2. Controller が GitHub webhook または定期 polling から同じ Issue reconciliation を起動する。
 3. Issue Worker が現在の Issue と参照先を検証して claim し、Controller が Issue を`ai-in-progress`へ投影する。
 4. 新規 provider session がテストを先に作り、対象機能が未実装であることを示す RED 証跡を固定する。
-5. Review Worker の新規 read-only session が Issue と immutable artifact を読み、test validity を判定する。指摘があれば、新規の修正 session へ versioned finding を返す。
-6. 承認済みテストを入力に、新規 implementation session が GREEN、refactor、規定の検証を完了する。
-7. Review Worker が最終成果を独立レビューし、approve 後に Issue Worker だけが Pull Request を作成する。
+5. Issue Worker が test-only head を draft Pull Request へ publish し、Review Worker の新規 read-only session が published head と immutable artifact から test validity を判定する。指摘があれば、新規の修正 session へ versioned finding を返す。
+6. 承認済みテストを入力に、新規 implementation session が GREEN、refactor、規定の検証を完了し、Issue Worker が final head を同じ draft Pull Request へ publish する。
+7. Review Worker が published final head を独立レビューし、approve 後に Issue Worker だけが Pull Request body を確定して draft を解除する。
 8. Issue を`ai-review-waiting`へ投影し、人間の Pull Request review へ引き渡す。
 
 各 model-bearing Operation は必ず fresh session で実行します。同じ Run の worktree を引き継ぐ場合も、前 session の transcript や private memory は渡さず、Issue Observation、canonical Task Context、commit、artifact、Review Result だけを明示的に handoff します。

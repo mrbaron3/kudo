@@ -108,7 +108,7 @@ RED 固定後、Controller は`publish_head`を発行する。Issue Worker は�
 
 ### 4. Test validity review
 
-Controller は immutable input から、publish 済み draft PR の head へ繋留された`test_validity` Review Request を作り、[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)を`policyRefs`へ含める。required policy refが欠落または未対応のRequestはbinding境界でrejectされ、reviewerの推測で補わない。policy取得のtransport failureもquality verdictへ変換しない。Review Worker は live Issue に加えて live PR（open/draft 状態、head/base の一致）を照合し、不一致は品質 verdict ではなく stale として返す。そのうえで fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence をpolicyの標準観点で評価する。
+Controller は immutable input から、publish 済み draft PR の head へ繋留された`test_validity` Review Request を作り、[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)を`policyRefs`へ含める。required policy refが欠落または未対応のRequestはbinding境界でrejectされ、reviewerの推測で補わない。policy取得のtransport failureもquality verdictへ変換しない。Review Worker は live Issue に加えて live PR（open/draft 状態、head/base の一致）を照合する。headまたはbaseの不一致は品質 verdict ではなく stale、close/mergeは品質 verdict に変換せず、Run を`needs_human`phaseへ送るため人間へescalateし、PR body編集またはdraft/ready遷移だけの差分はaudit lineageへ追記する。そのうえで fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence をpolicyの標準観点で評価する。
 
 - `approve`: 承認対象 digest を固定し、implementation へ進む。
 - `request_changes`: blocking finding を versioned Result として返す。Controller は同じ Run/worktree を所有する Issue Worker の新しい`revise_tests` session へ finding と artifact を渡す。
@@ -150,7 +150,7 @@ Pull Request 自体は RED 固定後から draft として存在する。final a
 
 PR の ready 化が durable に記録された後、Controller は`ai-in-progress`を外し、`ai-review-waiting`を付ける。これが Kudo の正常 handoff terminal である。merge、Issue close、PR review comment への対応はこの workflow の外に置く。
 
-Run 中に人間が同 branch へ push した場合、PR を close/merge した場合、base を変更した場合は外部干渉であり、compare-and-push と review の live 照合で検出して stale または`needs_human`として扱う。blind に上書きしない。
+Run 中に人間が同 branch へ push した場合、PR を close/merge した場合、base を変更した場合は外部干渉であり、compare-and-push と review の live 照合で検出する。branch pushによるhead不一致とbase変更はstale、close/mergeは品質 verdict に変換せず、Run を`needs_human`phaseへ送るため人間へescalateし、blind に上書きしない。
 
 ## Durable states
 
