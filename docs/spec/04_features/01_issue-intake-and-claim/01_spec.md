@@ -34,7 +34,7 @@ canonical encoding は versioned contract を正本とする。
 
 - **回復系: Webhook の欠落**
   - Given candidate Issue の webhook が到達していない。
-  - When startup または既定60秒ごとの polling が実行される。
+  - When startup または既定15分ごとの polling が実行される。
   - Then webhook と同じ `ReconcileIssue` に IssueRef が渡され、実行候補として検出される。
 
 - **冪等性: 重複通知**

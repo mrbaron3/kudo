@@ -30,7 +30,7 @@ Servo の`docs/requirements/lightweight-tdd-issue-to-pr-run/`にあった draft 
 次は Servo からの移植ではなく、Kudo で改めて決めた。
 
 - `mrbaron3` assignment と`ai-ready`をcandidate条件にする簡潔なrouting
-- Webhookをprimary通知、60秒pollingを必須fallbackとするunified reconciliation
+- Webhookをprimary通知、15分pollingを必須fallbackとするunified reconciliation
 - `ai-ready`、`ai-in-progress`、`ai-merged`、`ai-needs-human`のstatus projection
 - model-bearing Operation ごとのfresh Codex/Claude sessionと、Orca handoffに似た明示artifact handoff
 - test reviewに加えたfinal implementation review gate。当初はPR作成をfinal approve後に置いたが、[ADR-0002](../../adr/0002-pr-anchored-review.md)でsupersedeし、RED固定後にdraft PRをpublishして全review roundをPRへ繋留した。さらに[ADR-0005](../../adr/0005-auto-merge.md)で、final approveをready化と自動mergeのgateにし、正常終端をmergeとIssue closeにした

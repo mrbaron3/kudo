@@ -167,7 +167,7 @@ configuration は command flag より environment / mounted config を基本と�
 | `KUDO_REPOSITORIES` | 許可された`owner/repository`一覧 |
 | `KUDO_TARGET_ASSIGNEE` | 既定`mrbaron3` |
 | `KUDO_READY_LABEL` | 既定`ai-ready` |
-| `KUDO_POLL_INTERVAL` | 既定`60s`。正数かつ最低値を検証する |
+| `KUDO_POLL_INTERVAL` | 既定`15m`。正数かつ最低値を検証する。未認証GitHub readは60 req/hour（IP単位）のため、認証を持たない構成で短くしすぎるとclaim用の枠が残らない |
 | `KUDO_ARTIFACT_ROOT` | 既定`/var/lib/kudo/artifacts` |
 | `KUDO_WORKSPACE_ROOT` | Issue Worker専用。既定`/var/lib/kudo/workspaces` |
 | `KUDO_PROVIDER_ALLOWLIST` | `codex`、`claude`の許可集合 |
