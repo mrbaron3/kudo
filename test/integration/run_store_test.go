@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	postgresadapter "github.com/mrbaron3/kudo/internal/adapter/postgres"
 	"github.com/mrbaron3/kudo/internal/contract"
@@ -98,22 +100,22 @@ func TestMigrateUpIsVersionedAndIdempotent(t *testing.T) {
 		t.Fatalf("schema version を検証できない: %v", err)
 	}
 
-	var count int
 	var version int
 	if err := pool.QueryRow(ctx, `
-		SELECT count(*), max(version)
-		FROM kudo_schema_migrations
-	`).Scan(&count, &version); err != nil {
+		SELECT COALESCE(max(version_id), 0)
+		FROM goose_db_version
+		WHERE is_applied
+	`).Scan(&version); err != nil {
 		t.Fatalf("migration 履歴を取得できない: %v", err)
 	}
-	if count != postgresadapter.CurrentSchemaVersion || version != postgresadapter.CurrentSchemaVersion {
-		t.Fatalf("migration 履歴 = count %d, version %d, want %d", count, version, postgresadapter.CurrentSchemaVersion)
+	if version != postgresadapter.CurrentSchemaVersion {
+		t.Fatalf("適用済み version = %d, want %d", version, postgresadapter.CurrentSchemaVersion)
 	}
 
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO kudo_schema_migrations (version, name, checksum)
-		VALUES ($1, 'future', $2)
-	`, postgresadapter.CurrentSchemaVersion+1, contract.SHA256([]byte("future migration"))); err != nil {
+		INSERT INTO goose_db_version (version_id, is_applied)
+		VALUES ($1, true)
+	`, postgresadapter.CurrentSchemaVersion+1); err != nil {
 		t.Fatalf("future schema version の fixture を作成できない: %v", err)
 	}
 	if err := postgresadapter.ValidateSchemaVersion(ctx, pool); !errors.Is(err, postgresadapter.ErrSchemaVersionMismatch) {
@@ -250,9 +252,90 @@ func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 	if !errors.Is(err, postgresadapter.ErrImmutableRunInput) {
 		t.Fatalf("active Run の ref 書き換え error = %v, want ErrImmutableRunInput", err)
 	}
+}
 
-	if _, err := pool.Exec(ctx, "DELETE FROM kudo_run_issue_observations WHERE run_id = $1", stored.ID); err == nil {
-		t.Fatal("append-only Issue Observation lineage を削除できた")
+// TestRunStoreRestoresReviewRoundBudget は round counter が process をまたいで残ることを検証する。
+//
+// 上限が縛るのは「人間が次に見るまでに何 round 回すか」であり、counter が揮発すると
+// crash や lease 失効のたびに予算が満額へ戻って無人区間が実質無制限になる。
+// pin 済みの Escalation Policy と上限も、同じ Run が同じ予算で再開するために復元する。
+func TestRunStoreRestoresReviewRoundBudget(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	observation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("rounds-observation")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-rounds", 1303, observation.Digest), observation)
+	if err != nil {
+		t.Fatalf("Run を作成できない: %v", err)
+	}
+
+	next := created
+	next.Phase = workflow.PhaseAuthoringTests
+	next.Rounds = workflow.ReviewRounds{TestValidity: 2}
+	next.TotalRounds = workflow.ReviewRounds{TestValidity: 5, FinalImplementation: 1}
+	if _, err := store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: created.Version,
+		Event:           workflow.KindReviewCompleted,
+		Run:             next,
+	}); err != nil {
+		t.Fatalf("round counter を進められない: %v", err)
+	}
+
+	// 別 store instance から読み直し、process-local memory ではなく DB から復元されることを示す。
+	restored, err := postgresadapter.NewRunStore(pool).Load(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Run を復元できない: %v", err)
+	}
+	if restored.Rounds != next.Rounds {
+		t.Errorf("Rounds = %+v, want %+v", restored.Rounds, next.Rounds)
+	}
+	if restored.TotalRounds != next.TotalRounds {
+		t.Errorf("TotalRounds = %+v, want %+v", restored.TotalRounds, next.TotalRounds)
+	}
+	if restored.RoundLimits != created.RoundLimits {
+		t.Errorf("RoundLimits = %+v, want %+v", restored.RoundLimits, created.RoundLimits)
+	}
+	if restored.EscalationPolicy != created.EscalationPolicy {
+		t.Errorf("EscalationPolicy = %+v, want %+v", restored.EscalationPolicy, created.EscalationPolicy)
+	}
+}
+
+// TestRunStoreRejectsRoundsAboveTotal は無人区間 counter が生涯 counter を超える保存を
+// database が拒むことを検証する。reset 忘れと総数の取りこぼしはどちらもこの形で現れる。
+func TestRunStoreRejectsRoundsAboveTotal(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	observation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("rounds-invariant-observation")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-rounds-invariant", 1304, observation.Digest), observation)
+	if err != nil {
+		t.Fatalf("Run を作成できない: %v", err)
+	}
+
+	next := created
+	next.Phase = workflow.PhaseAuthoringTests
+	next.Rounds = workflow.ReviewRounds{TestValidity: 3}
+	next.TotalRounds = workflow.ReviewRounds{TestValidity: 1}
+	_, err = store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: created.Version,
+		Event:           workflow.KindReviewCompleted,
+		Run:             next,
+	})
+	if err == nil {
+		t.Fatal("rounds > total_rounds が保存できてしまった")
+	}
+	if !strings.Contains(err.Error(), "runs_rounds_within_total") {
+		t.Fatalf("error = %v, want runs_rounds_within_total 違反", err)
 	}
 }
 
@@ -354,6 +437,49 @@ func TestRunStoreAllowsOnlyOneWriterPerIssue(t *testing.T) {
 	}
 }
 
+// TestRunStoreSchemaGuardsNameTheirConstraints は、schema 側の書き込み禁止 guard が
+// error へ載せる constraint 名を固定する。trigger が RAISE EXCEPTION の CONSTRAINT で名乗る
+// 名前は DDL object として実在せず、migration 適用時にも Go の compile 時にも検証されない。
+// error 面の contract として test でだけ固定できる。
+func TestRunStoreSchemaGuardsNameTheirConstraints(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	observation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("schema-guard")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-schema-guard", 1305, observation.Digest), observation)
+	if err != nil {
+		t.Fatalf("Run を作成できない: %v", err)
+	}
+
+	// Store の事前判定を迂回し、schema 自身の guard へ到達させる。
+	_, err = pool.Exec(ctx, `
+		UPDATE runs
+		SET context_manifest_digest = $2
+		WHERE id = $1
+	`, created.ID, contract.SHA256([]byte("rewritten-context")))
+	assertConstraintViolation(t, err, "runs_input_immutable")
+
+	_, err = pool.Exec(ctx, "DELETE FROM run_issue_observations WHERE run_id = $1", created.ID)
+	assertConstraintViolation(t, err, "run_issue_observations_append_only")
+}
+
+func assertConstraintViolation(t *testing.T, err error, want string) {
+	t.Helper()
+
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		t.Fatalf("error = %v, want *pgconn.PgError %q", err, want)
+	}
+	if postgresError.ConstraintName != want {
+		t.Fatalf("constraint 名 = %q, want %q", postgresError.ConstraintName, want)
+	}
+}
+
 func claimedRun(id string, issueNumber int, observation contract.Digest) workflow.Run {
 	return workflow.Run{
 		ID:    id,
@@ -369,6 +495,11 @@ func claimedRun(id string, issueNumber int, observation contract.Digest) workflo
 				Digest: contract.SHA256([]byte(id + "-policy")),
 			},
 		},
+		EscalationPolicy: contract.EscalationPolicyRef{
+			Schema: contract.EscalationPolicySchemaV1Alpha1,
+			Digest: contract.SHA256([]byte(id + "-escalation")),
+		},
+		RoundLimits: contract.ReviewRoundLimits{TestValidity: 3, FinalImplementation: 3},
 		Observation: observation,
 	}
 }

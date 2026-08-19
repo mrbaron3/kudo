@@ -15,7 +15,7 @@ import (
 	"github.com/mrbaron3/kudo/internal/workflow"
 )
 
-const activeRunConstraint = "kudo_runs_one_writer_per_issue"
+const activeRunConstraint = "runs_one_writer_per_issue"
 
 // runDB は pool と既存 transaction の共通境界である。pgx.Tx を渡した場合、各操作の
 // transaction は savepoint となり、呼び出し側の transaction に参加する。
@@ -81,6 +81,7 @@ func (s *RunStore) Create(ctx context.Context, run workflow.Run, observation con
 	refs := []versionedRef{
 		{Schema: run.Input.ContextManifest.Schema, Digest: run.Input.ContextManifest.Digest},
 		{Schema: run.Input.ExecutionPolicy.Schema, Digest: run.Input.ExecutionPolicy.Digest},
+		{Schema: run.EscalationPolicy.Schema, Digest: run.EscalationPolicy.Digest},
 		{Schema: observation.Schema, Digest: observation.Digest},
 	}
 	for _, ref := range refs {
@@ -93,7 +94,7 @@ func (s *RunStore) Create(ctx context.Context, run workflow.Run, observation con
 		return workflow.Run{}, classifyWriteError("Run を保存する", err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO kudo_run_transitions
+		INSERT INTO run_transitions
 			(run_id, version, event_kind, from_phase, to_phase)
 		VALUES ($1, $2, $3, $4, $5)
 	`, run.ID, run.Version, workflow.KindClaimSucceeded, nil, run.Phase); err != nil {
@@ -190,7 +191,7 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 	}
 
 	result, err := tx.Exec(ctx, `
-		UPDATE kudo_runs
+		UPDATE runs
 		SET version = $2,
 			phase = $3,
 			pull_request_ref = $4,
@@ -201,12 +202,18 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 			test_approval_head = $9,
 			test_approval_request_digest = $10,
 			final_approval_head = $11,
-			final_approval_request_digest = $12
-		WHERE id = $1 AND version = $13
+			final_approval_request_digest = $12,
+			rounds_test_validity = $13,
+			rounds_final_implementation = $14,
+			total_rounds_test_validity = $15,
+			total_rounds_final_implementation = $16
+		WHERE id = $1 AND version = $17
 	`, next.ID, next.Version, next.Phase, nullablePullRequest(next.PullRequest),
 		next.FixedHead, next.PublishedHead, next.PublishedTestHead, next.ChecksHead,
 		nullableApprovalHead(next.TestApproval), nullableApprovalDigest(next.TestApproval),
 		nullableApprovalHead(next.FinalApproval), nullableApprovalDigest(next.FinalApproval),
+		next.Rounds.TestValidity, next.Rounds.FinalImplementation,
+		next.TotalRounds.TestValidity, next.TotalRounds.FinalImplementation,
 		transition.ExpectedVersion)
 	if err != nil {
 		return workflow.Run{}, classifyWriteError("Run transition を保存する", err)
@@ -215,7 +222,7 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 		return workflow.Run{}, ErrVersionConflict
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO kudo_run_transitions
+		INSERT INTO run_transitions
 			(run_id, version, event_kind, from_phase, to_phase)
 		VALUES ($1, $2, $3, $4, $5)
 	`, next.ID, next.Version, transition.Event, current.Phase, next.Phase); err != nil {
@@ -236,7 +243,7 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 func (s *RunStore) ObservationLineage(ctx context.Context, id string) ([]ObservationRecord, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT run_version, schema, digest
-		FROM kudo_run_issue_observations
+		FROM run_issue_observations
 		WHERE run_id = $1
 		ORDER BY run_version
 	`, id)
@@ -276,7 +283,7 @@ func (s *RunStore) ObservationLineage(ctx context.Context, id string) ([]Observa
 func (s *RunStore) TransitionHistory(ctx context.Context, id string) ([]TransitionRecord, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT version, event_kind, from_phase, to_phase
-		FROM kudo_run_transitions
+		FROM run_transitions
 		WHERE run_id = $1
 		ORDER BY version
 	`, id)
@@ -316,7 +323,7 @@ func (s *RunStore) TransitionHistory(ctx context.Context, id string) ([]Transiti
 
 func (s *RunStore) requireRun(ctx context.Context, id string) error {
 	var exists int
-	err := s.db.QueryRow(ctx, "SELECT 1 FROM kudo_runs WHERE id = $1", id).Scan(&exists)
+	err := s.db.QueryRow(ctx, "SELECT 1 FROM runs WHERE id = $1", id).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrRunNotFound
 	}
@@ -339,14 +346,18 @@ func loadRun(ctx context.Context, db runQuerier, id string, forUpdate bool) (wor
 		SELECT run.id, run.issue_ref, run.version, run.phase,
 			run.context_manifest_schema, run.context_manifest_digest,
 			run.execution_policy_schema, run.execution_policy_digest,
+			run.escalation_policy_schema, run.escalation_policy_digest,
 			observation.digest, run.pull_request_ref,
 			run.fixed_head, run.published_head, run.published_test_head, run.checks_head,
 			run.test_approval_head, run.test_approval_request_digest,
-			run.final_approval_head, run.final_approval_request_digest
-		FROM kudo_runs AS run
+			run.final_approval_head, run.final_approval_request_digest,
+			run.round_limit_test_validity, run.round_limit_final_implementation,
+			run.rounds_test_validity, run.rounds_final_implementation,
+			run.total_rounds_test_validity, run.total_rounds_final_implementation
+		FROM runs AS run
 		LEFT JOIN LATERAL (
 			SELECT digest
-			FROM kudo_run_issue_observations
+			FROM run_issue_observations
 			WHERE run_id = run.id
 			ORDER BY run_version DESC
 			LIMIT 1
@@ -369,7 +380,7 @@ func loadLatestObservation(ctx context.Context, db runQuerier, id string) (contr
 	var ref contract.IssueObservationRef
 	err := db.QueryRow(ctx, `
 		SELECT schema, digest
-		FROM kudo_run_issue_observations
+		FROM run_issue_observations
 		WHERE run_id = $1
 		ORDER BY run_version DESC
 		LIMIT 1
@@ -396,9 +407,13 @@ func scanRun(row rowScanner) (workflow.Run, error) {
 		&run.ID, &issueRef, &run.Version, &run.Phase,
 		&run.Input.ContextManifest.Schema, &run.Input.ContextManifest.Digest,
 		&run.Input.ExecutionPolicy.Schema, &run.Input.ExecutionPolicy.Digest,
+		&run.EscalationPolicy.Schema, &run.EscalationPolicy.Digest,
 		&observationDigest, &pullRequestRef,
 		&run.FixedHead, &run.PublishedHead, &run.PublishedTestHead, &run.ChecksHead,
 		&testHead, &testDigest, &finalHead, &finalDigest,
+		&run.RoundLimits.TestValidity, &run.RoundLimits.FinalImplementation,
+		&run.Rounds.TestValidity, &run.Rounds.FinalImplementation,
+		&run.TotalRounds.TestValidity, &run.TotalRounds.FinalImplementation,
 	)
 	if err != nil {
 		return workflow.Run{}, err
@@ -438,25 +453,34 @@ func scanRun(row rowScanner) (workflow.Run, error) {
 
 func insertRun(ctx context.Context, tx pgx.Tx, run workflow.Run) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO kudo_runs (
+		INSERT INTO runs (
 			id, issue_ref, version, phase,
 			context_manifest_schema, context_manifest_digest,
 			execution_policy_schema, execution_policy_digest,
+			escalation_policy_schema, escalation_policy_digest,
 			pull_request_ref,
 			fixed_head, published_head, published_test_head, checks_head,
 			test_approval_head, test_approval_request_digest,
-			final_approval_head, final_approval_request_digest
+			final_approval_head, final_approval_request_digest,
+			round_limit_test_validity, round_limit_final_implementation,
+			rounds_test_validity, rounds_final_implementation,
+			total_rounds_test_validity, total_rounds_final_implementation
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8,
-			$9, $10, $11, $12, $13, $14, $15, $16, $17
+			$9, $10, $11, $12, $13, $14, $15, $16, $17,
+			$18, $19, $20, $21, $22, $23, $24, $25
 		)
 	`, run.ID, run.Issue.String(), run.Version, run.Phase,
 		run.Input.ContextManifest.Schema, run.Input.ContextManifest.Digest,
 		run.Input.ExecutionPolicy.Schema, run.Input.ExecutionPolicy.Digest,
+		run.EscalationPolicy.Schema, run.EscalationPolicy.Digest,
 		nullablePullRequest(run.PullRequest),
 		run.FixedHead, run.PublishedHead, run.PublishedTestHead, run.ChecksHead,
 		nullableApprovalHead(run.TestApproval), nullableApprovalDigest(run.TestApproval),
 		nullableApprovalHead(run.FinalApproval), nullableApprovalDigest(run.FinalApproval),
+		run.RoundLimits.TestValidity, run.RoundLimits.FinalImplementation,
+		run.Rounds.TestValidity, run.Rounds.FinalImplementation,
+		run.TotalRounds.TestValidity, run.TotalRounds.FinalImplementation,
 	)
 	return err
 }
@@ -468,7 +492,7 @@ type versionedRef struct {
 
 func insertArtifactRef(ctx context.Context, tx pgx.Tx, ref versionedRef) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO kudo_artifact_refs (schema, digest)
+		INSERT INTO artifact_refs (schema, digest)
 		VALUES ($1, $2)
 		ON CONFLICT DO NOTHING
 	`, ref.Schema, ref.Digest)
@@ -477,7 +501,7 @@ func insertArtifactRef(ctx context.Context, tx pgx.Tx, ref versionedRef) error {
 
 func insertObservation(ctx context.Context, tx pgx.Tx, runID string, version int64, ref contract.IssueObservationRef) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO kudo_run_issue_observations (run_id, run_version, schema, digest)
+		INSERT INTO run_issue_observations (run_id, run_version, schema, digest)
 		VALUES ($1, $2, $3, $4)
 	`, runID, version, ref.Schema, ref.Digest)
 	return err
@@ -498,6 +522,23 @@ func validateCreate(run workflow.Run, observation contract.IssueObservationRef) 
 	}
 	if run.Observation != observation.Digest {
 		return invalidRun("初期 IssueObservationRef digest が Run の Observation と一致しない")
+	}
+	if err := validateVersionedRef("Escalation Policy", run.EscalationPolicy.Schema, run.EscalationPolicy.Digest); err != nil {
+		return err
+	}
+	// round 上限は claim の時点で解決済みでなければならない。0 を許すと最初の
+	// request_changes で必ず escalate する Run が gate を持つ顔で保存される。
+	for _, limit := range []struct {
+		name  string
+		value int
+	}{
+		{"testValidity", run.RoundLimits.TestValidity},
+		{"finalImplementation", run.RoundLimits.FinalImplementation},
+	} {
+		if limit.value < contract.MinReviewRounds || limit.value > contract.MaxReviewRounds {
+			return invalidRun("review round 上限 %s は %d 以上 %d 以下でなければならない: %d",
+				limit.name, contract.MinReviewRounds, contract.MaxReviewRounds, limit.value)
+		}
 	}
 	return nil
 }

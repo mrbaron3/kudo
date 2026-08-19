@@ -205,6 +205,16 @@ schema migration は`migrate` service が application 起動前に行う。migra
 - binary は対応 schema version 範囲を readiness で検証する。
 - queue payload、artifact manifest、Review protocol は schema version を持ち、DB migration だけで無断変換しない。
 
+### Migration runner
+
+migration の適用と履歴管理は [goose](https://github.com/pressly/goose) が担う。「Prefer the Go standard library」の例外として依存を追加したのは、migration runner が version 順序、部分適用からの再開、同時起動の直列化を持つ well-known な boundary であり、自作すると同じ問題を再実装したうえで検証コストを自分で負うことになるためである。SQL は binary へ embed し、`migrate` service は同じ image から起動する。
+
+goose の履歴 table 名は `goose_db_version` とする。慣習名の `schema_migrations` は Rails、Ecto、golang-migrate がいずれも既定で作るため、同一 schema に別 tool の履歴があると存在確認は成功したうえで列の型が合わず、「未初期化」でも「version 不一致」でもない診断不能な失敗になる。
+
+goose の履歴は version 番号だけを持ち、適用済み migration の中身が後から書き換えられたことを runtime では検出できない。この検出は build 時の golden test（`internal/adapter/postgres/migrate_test.go` の `migrationDigests`）が担う。適用済み file を変更すると CI が落ちるため、schema 変更は必ず新しい migration として追加する。
+
+table 名に application prefix は付けない。この database は Kudo 専用である。同居が必要になった場合の分離は identifier ではなく PostgreSQL schema（`CREATE SCHEMA kudo` と `search_path`）で行う。**この分離機構は未実装であり、production の接続設定を作る時点で決める。**
+
 ## Backup and recovery
 
 authoritative backup set は PostgreSQL と artifact volume である。issue workspace volume も短期 recovery を速めるため backup 対象にできるが、長期的な正本にはしない。

@@ -2,11 +2,74 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io/fs"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// migrationDigests は適用済み migration の内容を build 時に固定する。
+//
+// goose の履歴 table は version 番号だけを持ち、適用済み migration の中身が後から
+// 変わったことを runtime では検出できない。適用済み file の書き換えは、稼働中の
+// database と binary の期待が無言で食い違う唯一の経路なので、ここで固定して CI が落とす。
+//
+// 新しい migration を足すときだけ entry を追加する。既存 entry の値を書き換えることは
+// 「適用済みの migration を改変した」ことを意味し、その database は再現できなくなる。
+var migrationDigests = map[string]string{
+	"0001_run_store.sql": "sha256:e634b8fb5a13b9edf994ddeb522f1c5ab88b46be42e259a2fbd57eed77532c5b",
+}
+
+func TestMigrationFileContentsAreFixed(t *testing.T) {
+	root, err := fs.Sub(migrationsFS, migrationsDir)
+	if err != nil {
+		t.Fatalf("migration filesystem を開けない: %v", err)
+	}
+	entries, err := fs.ReadDir(root, ".")
+	if err != nil {
+		t.Fatalf("migration を列挙できない: %v", err)
+	}
+
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		seen[name] = true
+
+		want, ok := migrationDigests[name]
+		if !ok {
+			t.Errorf("migration %s が migrationDigests に無い。新規追加なら entry を足す", name)
+			continue
+		}
+
+		data, err := fs.ReadFile(root, name)
+		if err != nil {
+			t.Errorf("migration %s を読めない: %v", name, err)
+			continue
+		}
+		sum := sha256.Sum256(data)
+		got := "sha256:" + hex.EncodeToString(sum[:])
+		if got != want {
+			t.Errorf("migration %s の内容が変わっている\n got %s\nwant %s\n"+
+				"適用済み migration を改変すると、既存 database を再現できなくなる。"+
+				"意図した変更なら新しい migration を足す", name, got, want)
+		}
+	}
+
+	for name := range migrationDigests {
+		if !seen[name] {
+			t.Errorf("migrationDigests の %s が migrations/ に無い", name)
+		}
+	}
+}
+
+func TestMigrationCountMatchesCurrentSchemaVersion(t *testing.T) {
+	if len(migrationDigests) != CurrentSchemaVersion {
+		t.Fatalf("migration 数 = %d, CurrentSchemaVersion = %d", len(migrationDigests), CurrentSchemaVersion)
+	}
+}
 
 func TestValidateSchemaVersionRejectsUninitializedSchema(t *testing.T) {
 	querier := &stubQuerier{rows: []pgx.Row{
@@ -21,27 +84,20 @@ func TestValidateSchemaVersionRejectsUninitializedSchema(t *testing.T) {
 	}
 }
 
-func TestValidateAppliedMigrationsRejectsVersionAndChecksumDrift(t *testing.T) {
-	want := migrations[0]
-	tests := map[string][]appliedMigration{
-		"gap": {
-			{version: 2, name: want.name, checksum: want.checksum},
-		},
-		"future": {
-			{version: 1, name: want.name, checksum: want.checksum},
-			{version: 2, name: "0002_future", checksum: "sha256:future"},
-		},
-		"name drift": {
-			{version: 1, name: "0001_renamed", checksum: want.checksum},
-		},
-		"checksum drift": {
-			{version: 1, name: want.name, checksum: "sha256:changed"},
-		},
+func TestValidateSchemaVersionRejectsVersionDrift(t *testing.T) {
+	tests := map[string]int64{
+		"未適用":    0,
+		"future": CurrentSchemaVersion + 1,
 	}
 
-	for name, applied := range tests {
+	for name, version := range tests {
 		t.Run(name, func(t *testing.T) {
-			err := validateAppliedMigrations(applied, true)
+			querier := &stubQuerier{rows: []pgx.Row{
+				scanRow(func(dest ...any) { *(dest[0].(*bool)) = true }),
+				scanRow(func(dest ...any) { *(dest[0].(*int64)) = version }),
+			}}
+
+			err := ValidateSchemaVersion(context.Background(), querier)
 			if !errors.Is(err, ErrSchemaVersionMismatch) {
 				t.Fatalf("error = %v, want ErrSchemaVersionMismatch", err)
 			}
@@ -49,18 +105,13 @@ func TestValidateAppliedMigrationsRejectsVersionAndChecksumDrift(t *testing.T) {
 	}
 }
 
-func TestValidateAppliedMigrationsAcceptsExactCurrentVersion(t *testing.T) {
-	if len(migrations) != CurrentSchemaVersion {
-		t.Fatalf("migration count = %d, CurrentSchemaVersion = %d", len(migrations), CurrentSchemaVersion)
-	}
+func TestValidateSchemaVersionAcceptsCurrentVersion(t *testing.T) {
+	querier := &stubQuerier{rows: []pgx.Row{
+		scanRow(func(dest ...any) { *(dest[0].(*bool)) = true }),
+		scanRow(func(dest ...any) { *(dest[0].(*int64)) = CurrentSchemaVersion }),
+	}}
 
-	want := migrations[0]
-	err := validateAppliedMigrations([]appliedMigration{{
-		version:  want.version,
-		name:     want.name,
-		checksum: want.checksum,
-	}}, true)
-	if err != nil {
+	if err := ValidateSchemaVersion(context.Background(), querier); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 }

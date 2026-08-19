@@ -60,15 +60,15 @@ func TestPostgreSQLRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if _, err := conn.Exec(ctx, "CREATE TEMPORARY TABLE kudo_smoke (id int PRIMARY KEY, note text NOT NULL)"); err != nil {
+	if _, err := conn.Exec(ctx, "CREATE TEMPORARY TABLE smoke (id int PRIMARY KEY, note text NOT NULL)"); err != nil {
 		t.Fatalf("temporary table を作成できない: %v", err)
 	}
-	if _, err := conn.Exec(ctx, "INSERT INTO kudo_smoke (id, note) VALUES ($1, $2)", 1, "m0"); err != nil {
+	if _, err := conn.Exec(ctx, "INSERT INTO smoke (id, note) VALUES ($1, $2)", 1, "m0"); err != nil {
 		t.Fatalf("INSERT に失敗した: %v", err)
 	}
 
 	var note string
-	if err := conn.QueryRow(ctx, "SELECT note FROM kudo_smoke WHERE id = $1", 1).Scan(&note); err != nil {
+	if err := conn.QueryRow(ctx, "SELECT note FROM smoke WHERE id = $1", 1).Scan(&note); err != nil {
 		t.Fatalf("SELECT に失敗した: %v", err)
 	}
 	if note != "m0" {
