@@ -61,7 +61,7 @@ IssueRef から Task の execution context と review identity を決定論的�
 - `kudo.issue/v1alpha1`の fixed section と YAML block の strict parser
 - unknown/duplicate field、不正 enum、欠落/重複 AC、曖昧 authority の validation
 - Issue Observation、Task Context、Context Manifest の canonical encoding と SHA-256 identity
-- Execution Policy snapshot と Operation envelope/result の canonical identity
+- Execution Policy / Escalation Policy snapshot と Operation envelope/result の canonical identity
 - Review Request / Result / Artifact Manifest の validation と staleness rule
 - claim/review/transport error taxonomy
 - fixture corpus と canonicalization golden test

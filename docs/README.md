@@ -11,7 +11,7 @@ Kudo の文書は、目標、振る舞い、技術構造、外部 protocol、実
 | Operations | [Development environment](development.md) | Compose 開発基盤の初期設定と標準 command |
 | Integration | [GitHub routing policy](github-routing.md) | candidate 条件、webhook/polling、label lifecycle |
 | Protocol | [Issue Contract](contracts/issue-contract-v1alpha1.md) | 人間が記述する Task Issue の機械可読 contract |
-| Protocol | [Task Context Protocol](contracts/task-context-v1alpha1.md) | Issue Observation、canonical Task Context、Context Manifest、Execution Policy |
+| Protocol | [Task Context Protocol](contracts/task-context-v1alpha1.md) | Issue Observation、canonical Task Context、Context Manifest、Execution Policy、Escalation Policy |
 | Protocol | [Worker Operation Protocol](contracts/operation-protocol-v1alpha1.md) | Controller から Issue Worker への durable Operation / Result |
 | Protocol | [Implementation–Review Protocol](contracts/review-protocol-v1alpha1.md) | immutable review request/result と verdict semantics |
 | Policy | [Test Validity Review Policy](review-policies/test-validity-v1alpha1.md) | test plan、test code、RED evidenceを評価する標準観点 |
@@ -19,6 +19,7 @@ Kudo の文書は、目標、振る舞い、技術構造、外部 protocol、実
 | Delivery | [Implementation plan](implementation-plan.md) | 現在地、実装順序、各 milestone と全体の exit criteria |
 | Decision | [ADR-0001](decisions/0001-compose-runtime.md) | Docker Compose を正式基盤とする判断 |
 | Decision | [ADR-0002](decisions/0002-pr-anchored-review.md) | レビューの起点を Pull Request へ移し、観点適用を session の宣言で残す判断 |
+| Decision | [ADR-0003](decisions/0003-review-round-limit.md) | `request_changes` loop へ round 上限を置き、gate 予算を Escalation Policy として Run へ固定する判断 |
 | History | [Servo からの移行判断](migration-from-servo.md) | 参照元から採用・非採用にした概念 |
 | Deferred | [Evaluation harness](deferred/evaluation-harness.md) | runtime から意図的に分離した評価機能 |
 

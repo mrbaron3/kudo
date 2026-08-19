@@ -35,6 +35,7 @@ const (
 	ArtifactKindTaskContext            ArtifactKind = "task-context"
 	ArtifactKindContextManifest        ArtifactKind = "context-manifest"
 	ArtifactKindExecutionPolicy        ArtifactKind = "execution-policy"
+	ArtifactKindEscalationPolicy       ArtifactKind = "escalation-policy"
 	ArtifactKindArtifactManifest       ArtifactKind = "artifact-manifest"
 	ArtifactKindPullRequestObservation ArtifactKind = "pull-request-observation"
 )
@@ -79,6 +80,7 @@ var artifactKindRules = map[ArtifactKind]artifactKindRule{
 	ArtifactKindTaskContext:            {schemaPrefix: taskContextSchemaPrefix, mediaType: MediaTypeYAML},
 	ArtifactKindContextManifest:        {schemaPrefix: contextManifestSchemaPrefix, mediaType: MediaTypeYAML},
 	ArtifactKindExecutionPolicy:        {schemaPrefix: executionPolicySchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindEscalationPolicy:       {schemaPrefix: escalationPolicySchemaPrefix, mediaType: MediaTypeYAML},
 	ArtifactKindArtifactManifest:       {schemaPrefix: artifactManifestSchemaPrefix, mediaType: MediaTypeYAML},
 	ArtifactKindPullRequestObservation: {schemaPrefix: pullRequestObservationSchemaPrefix, mediaType: MediaTypeYAML},
 }

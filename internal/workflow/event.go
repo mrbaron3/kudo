@@ -64,6 +64,11 @@ type InputIdentity struct {
 type ClaimSucceeded struct {
 	Input       InputIdentity
 	Observation contract.Digest
+	// EscalationPolicy と RoundLimits は Run へ pin する Controller 側の gate 予算である。
+	// ref と解決済みの値の両方を運ぶのは、pure transition が artifact を decode できない
+	// 一方で、escalation の根拠としては digest が必要なためである。
+	EscalationPolicy contract.EscalationPolicyRef
+	RoundLimits      contract.ReviewRoundLimits
 }
 
 // OperationStarted は dispatch した Operation を Worker が実行し始めたことを表す。
@@ -127,8 +132,11 @@ type AttemptFailed struct {
 }
 
 // HumanEscalated は Controller または Worker が人の判断を要求したことを表す。
+//
+// Reason は語彙の code に限り、state machine が Run state から自ら導出する理由
+// （review verdict、round 上限、retry budget）は指定できない。
 type HumanEscalated struct {
-	Reason string
+	Reason EscalationReason
 }
 
 func (ClaimSucceeded) EventKind() EventKind       { return KindClaimSucceeded }
