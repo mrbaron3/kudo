@@ -67,7 +67,7 @@ kindごとのfield要件は次のとおりとする。validatorは省略だけ�
 | `author_tests` | 必須 | 任意 |
 | `revise_tests`、`implement`、`repair_implementation`、`publish_head`、`finalize_pull_request` | 必須 | 1件以上必須 |
 
-`publish_head`はRED evidence固定後とGREEN/refactor evidence固定後の両方で使い、同じdraft PRへheadを再publishする。publishはreview approveをgateにしない。`finalize_pull_request`はfinal approveにbindされたheadに対してだけ発行され、ready化がhandoff terminalになる（gate規則は[Implementation–Review Protocol](review-protocol-v1alpha1.md)を正とする）。どちらもbranchへのmutation前に期待headとlive branch headを照合し（compare-and-push）、外部pushを検出した場合はblind mutationせずstaleまたはescalationとして返す。
+`publish_head`はRED evidence固定後とGREEN/refactor evidence固定後の両方で使い、同じdraft PRへheadを再publishする。publishはreview approveをgateにしない。`finalize_pull_request`はfinal approveにbindされたheadに対してだけ発行され、ready化がhandoff terminalになる（gate規則は[Implementation–Review Protocol](review-protocol-v1alpha1.md)を正とする）。どちらもbranchへのmutation前に期待headとlive branch headを照合し（compare-and-push）、外部pushによるhead不一致を検出した場合はblind mutationせず`stale_input`として返す。
 
 model-bearing Operationは、同じRun/worktreeを扱う場合もfresh provider process/sessionを作る。継続に必要な情報はcurrent commit、input artifact、versioned Review Resultとして渡し、resume tokenやconversation transcriptを渡さない。
 
@@ -142,7 +142,7 @@ artifactはcontent addressで一意になるが、digestだけでは「そのbyt
 
 nameの形式規則はArtifact Manifestのentry nameと同一とする（`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`、relative pathとして正規形、128 byte以内）。
 
-この語彙はartifactの`kind`とは別の値空間である。`kind`はbytes自体の規則（versioned schemaとmedia type）を決めるが、logical nameはtableの中での役割を決める。`source-bundle`のようにkindを持たない不透明bytesがあり、逆にauthorityがIssue referenceのときは同じkindのraw bodyが別々のnameで複数入るため、両者は1対1に対応しない。綴りが一致する4件は既定のnameをkindから取っただけであり、一方の都合でもう一方を変えてよい関係ではない。
+この語彙はartifactの`kind`とは別の値空間である。`kind`はbytes自体の規則（versioned schemaとmedia type）を決めるが、logical nameはtableの中での役割を決める。`source-bundle`のようにkindを持たない不透明bytesがあり、逆にauthorityがIssue referenceのときは同じkindのraw bodyが別々のnameで複数入るため、両者は1対1に対応しない。綴りが一致するものは既定のnameをkindから取っただけであり、一方の都合でもう一方を変えてよい関係ではない。
 
 必須集合はprotocolの一部としてcore実装へ固定し、Execution Policyのような配備側artifactへ持たせない。Execution Policyはproducerが作ってOperationへ添えるartifactであり、そこへ必須集合を置くと、producerが自分に課されるgate条件を自分で緩められる。
 

@@ -14,7 +14,7 @@ import (
 // media type）を決めるが、logical name は artifact が table の中で果たす役割を決める。
 // source bundle のように kind を持たない不透明 bytes があり、逆に authority が Issue
 // reference のときは同じ kind の raw body が別々の name で複数入るため、両者は 1 対 1 に
-// 対応しない。綴りが一致する 4 件は偶然ではなく既定の name を kind から取っただけで、
+// 対応しない。綴りが一致するものは既定の name を kind から取っただけで、
 // 一方の都合でもう一方を変えてよい関係ではない。
 //
 // 語彙は配備設定ではなく契約として pure core に置く。必須集合を Execution Policy 等の
