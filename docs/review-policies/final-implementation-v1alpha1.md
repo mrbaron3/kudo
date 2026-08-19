@@ -21,7 +21,7 @@ Reviewerは次の明示された入力だけを使う。
 - implementation patchまたはfinal source snapshot
 - final headを再構築できるimmutable source artifact
 - RED、GREEN、refactor後verification、Issue Verification、repository required checksのevidence
-- performance観点にboundが宣言されている場合の`check-evidence`内の測定evidence（command、実行条件、結果summary）
+- performance観点にboundが宣言されている場合の`performance-evidence`内の測定evidence（command、実行条件、結果summary）
 - test、fixture、helper、commandに対する変更と再承認のlineage
 - Pull Request用summary、risk、manual verificationのdraft artifact
 
@@ -39,7 +39,7 @@ Review handlerはsemantic reviewを開始する前に、少なくとも次を検
 - approved test validity Resultが同じIssue context、test-only head、test artifactへbindされている。
 - approved test、fixture、helper、test commandに変更がある場合、その版に対するtest validity approvalが存在する。
 - GREEN、refactor後verification、Issue Verification、required checksがfinal headにbindされ、必要なcommandが成功している。
-- performance boundが宣言されている場合、`check-evidence`に測定command、実行条件、結果summaryがあり、final headへbindされている。
+- performance boundが宣言されている場合、`performance-evidence`に測定command、実行条件、結果summaryがあり、final headへbindされている。
 - required artifactが欠落、破損、別head、staleではない。
 
 これらのRequest integrityを検証できない場合はfindingで補わず、protocol、staleness、execution上の失敗として返す。成功evidenceの内容がIssueを十分に検証するかは後続の品質判断である。
