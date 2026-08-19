@@ -57,6 +57,7 @@ go run ./cmd/kudo help
 
 文書の役割と優先順位は [Documentation map](docs/README.md) にまとめています。
 
+- [Kudo 仕様書](docs/spec/README.md)
 - [Product vision](docs/vision.md)
 - [End-to-end workflow](docs/workflow.md)
 - [Architecture](docs/architecture.md)

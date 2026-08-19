@@ -4,6 +4,7 @@ Kudo の文書は、目標、振る舞い、技術構造、外部 protocol、実
 
 | 分類 | 文書 | 定義するもの |
 | --- | --- | --- |
+| Specification | [Kudo 仕様書](spec/README.md) | 目的から中央システム仕様、機能受け入れ要件、詳細設計へ進む横断的な入口 |
 | Product | [Product vision](vision.md) | 利用者価値、対象範囲、完成条件、非目標 |
 | Product | [End-to-end workflow](workflow.md) | Issue 受付から PR handoff までの状態遷移と TDD/review loop |
 | Architecture | [Architecture](architecture.md) | Controller / Worker の責務、権限、永続化、並行性、Go package 境界 |
@@ -31,6 +32,7 @@ Kudo の文書は、目標、振る舞い、技術構造、外部 protocol、実
 - Workflow は利用者から見える順序と gate、Architecture は内部責務、Runtime platform は deployment contract を定義する。同じ事項を複数文書へ詳述しない。
 - Implementation plan の「現在地」は実装状況を表す。目標仕様を縮小する根拠にはしない。
 - README と diagram は導入用の要約である。詳細と矛盾した場合は、該当する protocol、ADR、workflow specification を優先する。
+- `docs/spec/` は完成形を横断的に読むための中央仕様と索引である。進捗は Implementation plan、厳密な field・遷移・権限・deployment contract は上表の関心事別の正本を優先する。
 
 ## Language and identifiers
 
