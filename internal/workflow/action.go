@@ -53,9 +53,11 @@ type ScheduleRetry struct {
 	Class contract.FailureClass
 }
 
-// SupersedeRun は Run を打ち切り、新しい identity で再 claim させる意図である。
+// SupersedeRun は Run を打ち切り、Input の identity で再 claim させる意図である。
+// 終了した Run 自体の Input は監査 lineage として元の値を保持する。
 type SupersedeRun struct {
 	ChangedFields []string
+	Input         InputIdentity
 }
 
 func (DispatchOperation) ActionKind() ActionKind { return ActionDispatchOperation }

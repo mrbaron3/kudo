@@ -34,6 +34,10 @@ type Run struct {
 	FixedHead string
 	// PublishedHead は PR へ publish 済みで review が繋留される head である。
 	PublishedHead string
+	// PublishedTestHead は test validity review に publish した最新 head である。
+	// final request_changes 後の修復では PublishedHead が以前の実装 head を指すため、
+	// test approval の binding を独立に検証できるよう保持する。
+	PublishedTestHead string
 	// ChecksHead は refactor 後の required checks が通った head である。
 	// PublishedHead と別に持つのは、checks を通していない head が publish されても
 	// final approve の gate を通せないようにするためである。

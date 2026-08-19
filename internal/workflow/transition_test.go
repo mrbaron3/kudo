@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	testHead  = "89abcdef0123456789abcdef0123456789abcdef"
-	finalHead = "fedcba9876543210fedcba9876543210fedcba98"
+	testHead     = "89abcdef0123456789abcdef0123456789abcdef"
+	finalHead    = "fedcba9876543210fedcba9876543210fedcba98"
+	repairedHead = "0123456789abcdef0123456789abcdef01234567"
 )
 
 func sampleInput() InputIdentity {
@@ -167,6 +168,62 @@ func TestDecideIsPureAndDoesNotMutateArguments(t *testing.T) {
 	}
 }
 
+func TestPointerEventsHaveTheSameSemanticsAsValues(t *testing.T) {
+	authoring := advance(t, claimedRun(t), OperationStarted{Kind: contract.OperationAuthorTests})
+	publishingTest := advance(t, authoring, TestsAuthored{Head: testHead})
+	implementing := advance(t, awaitingTestReview(t), ReviewCompleted{
+		Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
+		Head: testHead, RequestDigest: contract.SHA256([]byte("test-request")),
+	})
+	finalizing := advance(t, awaitingFinalReview(t), ReviewCompleted{
+		Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictApprove,
+		Head: finalHead, RequestDigest: contract.SHA256([]byte("final-request")),
+	})
+	changed := sampleInput()
+	changed.ContextManifest.Digest = contract.SHA256([]byte("changed-context"))
+
+	for _, tc := range []struct {
+		name    string
+		run     Run
+		value   Event
+		pointer Event
+	}{
+		{"claim", Run{ID: "run-01"}, ClaimSucceeded{Input: sampleInput()}, &ClaimSucceeded{Input: sampleInput()}},
+		{"operation started", claimedRun(t), OperationStarted{Kind: contract.OperationAuthorTests}, &OperationStarted{Kind: contract.OperationAuthorTests}},
+		{"tests authored", authoring, TestsAuthored{Head: testHead}, &TestsAuthored{Head: testHead}},
+		{"head published", publishingTest, HeadPublished{Head: testHead, PullRequest: samplePullRequest()}, &HeadPublished{Head: testHead, PullRequest: samplePullRequest()}},
+		{"review completed", awaitingTestReview(t), ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead}, &ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead}},
+		{"implementation fixed", implementing, ImplementationFixed{Head: finalHead, ChecksPassed: true}, &ImplementationFixed{Head: finalHead, ChecksPassed: true}},
+		{"pull request finalized", finalizing, PullRequestFinalized{Head: finalHead}, &PullRequestFinalized{Head: finalHead}},
+		{"observation recorded", awaitingTestReview(t), ObservationRecorded{Observation: contract.SHA256([]byte("o2"))}, &ObservationRecorded{Observation: contract.SHA256([]byte("o2"))}},
+		{"semantic input changed", awaitingTestReview(t), SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: changed}, &SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: changed}},
+		{"attempt failed", awaitingTestReview(t), AttemptFailed{Class: contract.FailureTimeout}, &AttemptFailed{Class: contract.FailureTimeout}},
+		{"human escalated", awaitingTestReview(t), HumanEscalated{Reason: "authority conflict"}, &HumanEscalated{Reason: "authority conflict"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := requireDecision(t, tc.run, tc.value)
+			got := requireDecision(t, tc.run, tc.pointer)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("pointer event の decision = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestTypedNilPointerEventIsRejectedWithoutPanic(t *testing.T) {
+	var event *ClaimSucceeded
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("typed nil event で panic した: %v", recovered)
+		}
+	}()
+
+	_, err := Decide(Run{ID: "run-01"}, event)
+	if !errors.Is(err, TransitionUnknownEvent) {
+		t.Fatalf("typed nil event の error = %v, want %q", err, TransitionUnknownEvent)
+	}
+}
+
 // 宣言されていない (phase, event) の組は一つ残らず拒否されなければならない。
 // 母集団を表と phase/event の語彙から取ることで、phase や event を追加したときに
 // 実装と test が同じ組を見落として通り抜けることを防ぐ。
@@ -240,6 +297,53 @@ func TestImplementationRequiresTestValidityApproval(t *testing.T) {
 		Head:          testHead,
 		RequestDigest: contract.SHA256([]byte("r1")),
 	}, TransitionGateUnsatisfied)
+}
+
+func TestRepublishRequiresOriginalPullRequest(t *testing.T) {
+	otherPullRequest := samplePullRequest()
+	otherPullRequest.Number++
+
+	revisedTests := advance(t, awaitingTestReview(t),
+		ReviewCompleted{
+			Kind: contract.ReviewTestValidity, Verdict: contract.VerdictRequestChanges,
+			Head: testHead, RequestDigest: contract.SHA256([]byte("revise-tests")),
+		},
+		TestsAuthored{Head: repairedHead},
+	)
+	finalImplementation := advance(t, awaitingTestReview(t),
+		ReviewCompleted{
+			Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
+			Head: testHead, RequestDigest: contract.SHA256([]byte("test-approve")),
+		},
+		ImplementationFixed{Head: finalHead, ChecksPassed: true},
+	)
+
+	for _, tc := range []struct {
+		name string
+		run  Run
+		head string
+	}{
+		{"revised test head", revisedTests, repairedHead},
+		{"final implementation head", finalImplementation, finalHead},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requireRejected(t, tc.run, HeadPublished{
+				Head: tc.head, PullRequest: otherPullRequest,
+			}, TransitionGateUnsatisfied)
+		})
+	}
+}
+
+func TestRepairImplementationRetainsTheApprovedTestBinding(t *testing.T) {
+	run := advance(t, awaitingFinalReview(t), ReviewCompleted{
+		Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictRequestChanges,
+		Head: finalHead, RequestDigest: contract.SHA256([]byte("repair")),
+	})
+
+	decision := requireDecision(t, run, ImplementationFixed{Head: repairedHead, ChecksPassed: true})
+	if decision.Run.Phase != PhasePublishingFinalHead {
+		t.Fatalf("repair 後の phase = %q, want %q", decision.Run.Phase, PhasePublishingFinalHead)
+	}
 }
 
 // AC-3: final approve と required checks の binding が無ければ PR 準備へ進めない。
@@ -364,6 +468,7 @@ func TestObservationOnlyChangeDoesNotSupersedeRun(t *testing.T) {
 
 func TestSemanticInputChangeSupersedesRun(t *testing.T) {
 	run := awaitingFinalReview(t)
+	original := run.Input
 	changed := sampleInput()
 	changed.ContextManifest.Digest = contract.SHA256([]byte("別 context manifest"))
 
@@ -380,6 +485,12 @@ func TestSemanticInputChangeSupersedesRun(t *testing.T) {
 	supersede, ok := decision.Actions[0].(SupersedeRun)
 	if !ok || !reflect.DeepEqual(supersede.ChangedFields, []string{"contextManifest"}) {
 		t.Fatalf("supersede action に変更 field が載っていない: %+v", decision.Actions[0])
+	}
+	if decision.Run.Input != original {
+		t.Fatal("supersede された Run の semantic input が上書きされた")
+	}
+	if supersede.Input != changed {
+		t.Fatalf("supersede action に新しい semantic input が載っていない: %+v", supersede)
 	}
 	// 古い approval を新しい入力へ持ち越さない
 	if decision.Run.TestApproval != nil {
@@ -453,6 +564,17 @@ func TestGatesRejectInconsistentStoredRun(t *testing.T) {
 		"publish head never fixed": {
 			run:   Run{ID: "run-01", Phase: PhasePublishingTestHead, Input: sampleInput()},
 			event: HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
+		},
+		"implementation without test approval": {
+			run: Run{ID: "run-01", Phase: PhaseImplementing, Input: sampleInput(),
+				FixedHead: testHead, PublishedHead: testHead, PublishedTestHead: testHead},
+			event: ImplementationFixed{Head: finalHead, ChecksPassed: true},
+		},
+		"implementation with approval for another test head": {
+			run: Run{ID: "run-01", Phase: PhaseImplementing, Input: sampleInput(),
+				FixedHead: testHead, PublishedHead: testHead, PublishedTestHead: testHead,
+				TestApproval: &Approval{Head: finalHead, RequestDigest: contract.SHA256([]byte("test-approve"))}},
+			event: ImplementationFixed{Head: finalHead, ChecksPassed: true},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

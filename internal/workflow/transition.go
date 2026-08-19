@@ -1,6 +1,10 @@
 package workflow
 
-import "github.com/mrbaron3/kudo/internal/contract"
+import (
+	"reflect"
+
+	"github.com/mrbaron3/kudo/internal/contract"
+)
 
 // PhaseNew は Run がまだ存在しないことを表す zero value である。
 // durable phase ではないため Phases() には含めない。
@@ -59,7 +63,11 @@ func Decide(run Run, event Event) (Decision, error) {
 	if event == nil {
 		return Decision{}, transitionErr(TransitionUnknownEvent, run.Phase, "", "event が nil")
 	}
-	kind := event.EventKind()
+	normalized, kind, ok := normalizeEvent(event)
+	if !ok {
+		return Decision{}, transitionErr(TransitionUnknownEvent, run.Phase, kind,
+			"event の具象型が語彙に無い、または typed nil である")
+	}
 	if !knownEventKind(kind) {
 		return Decision{}, transitionErr(TransitionUnknownEvent, run.Phase, kind, "event kind が語彙に無い")
 	}
@@ -75,13 +83,45 @@ func Decide(run Run, event Event) (Decision, error) {
 			return Decision{}, transitionErr(TransitionNotAllowed, run.Phase, kind,
 				"停止中の Run はこの event を受け付けない")
 		}
-		return universal.apply(run, event)
+		return universal.apply(run, normalized)
 	}
 	apply, ok := transitions[transitionKey{run.Phase, kind}]
 	if !ok {
 		return Decision{}, transitionErr(TransitionNotAllowed, run.Phase, kind, "この phase では宣言されていない")
 	}
-	return apply(run, event)
+	return apply(run, normalized)
+}
+
+// normalizeEvent は公開 event の値・ポインタ表現を値へ揃える。EventKind が値 receiver
+// なのでポインタも Event を満たすが、handler は閉じた値型だけを受け取る。
+// typed nil と EventKind だけを偽装した別型は dispatch 前に拒否する。
+func normalizeEvent(event Event) (Event, EventKind, bool) {
+	value := reflect.ValueOf(event)
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return nil, "", false
+		}
+		if dereferenced, ok := value.Elem().Interface().(Event); ok {
+			event = dereferenced
+		}
+	}
+
+	switch event.(type) {
+	case ClaimSucceeded,
+		OperationStarted,
+		TestsAuthored,
+		HeadPublished,
+		ReviewCompleted,
+		ImplementationFixed,
+		PullRequestFinalized,
+		ObservationRecorded,
+		SemanticInputChanged,
+		AttemptFailed,
+		HumanEscalated:
+		return event, event.EventKind(), true
+	default:
+		return nil, "", false
+	}
 }
 
 // allowed は (phase, event) が宣言されているかを返す。Decide と同じ判定順を使う。
@@ -159,7 +199,12 @@ func onTestsAuthored(run Run, event Event) (Decision, error) {
 }
 
 func onTestHeadPublished(run Run, event Event) (Decision, error) {
-	return onHeadPublished(run, event, PhaseAwaitingTestReview, contract.ReviewTestValidity)
+	decision, err := onHeadPublished(run, event, PhaseAwaitingTestReview, contract.ReviewTestValidity)
+	if err != nil {
+		return Decision{}, err
+	}
+	decision.Run.PublishedTestHead = decision.Run.PublishedHead
+	return decision, nil
 }
 
 func onFinalHeadPublished(run Run, event Event) (Decision, error) {
@@ -174,6 +219,11 @@ func onHeadPublished(run Run, event Event, next Phase, review contract.ReviewKin
 	if published.Head != run.FixedHead {
 		return gate(run, published.EventKind(), "固定済み head と一致しない: got %s, want %s",
 			published.Head, run.FixedHead)
+	}
+	if run.PullRequest != (contract.PullRequestRef{}) &&
+		run.PullRequest.String() != published.PullRequest.String() {
+		return gate(run, published.EventKind(), "最初に bind した Pull Request と一致しない: got %s, want %s",
+			published.PullRequest.String(), run.PullRequest.String())
 	}
 	run.Phase = next
 	run.PublishedHead = published.Head
@@ -253,6 +303,14 @@ func checkReviewBinding(run Run, completed ReviewCompleted, expected contract.Re
 
 func onImplementationFixed(run Run, event Event) (Decision, error) {
 	fixed := event.(ImplementationFixed)
+	if run.TestApproval == nil {
+		return gate(run, fixed.EventKind(), "test validity approve が無い")
+	}
+	if run.PublishedTestHead == "" || run.TestApproval.Head != run.PublishedTestHead {
+		return gate(run, fixed.EventKind(),
+			"test validity approve が publish 済み test head へ bind されていない: got %s, want %s",
+			run.TestApproval.Head, run.PublishedTestHead)
+	}
 	if fixed.Head == "" {
 		return gate(run, fixed.EventKind(), "実装を固定した head が空である")
 	}
@@ -289,10 +347,9 @@ func onObservationRecorded(run Run, event Event) (Decision, error) {
 func onSemanticInputChanged(run Run, event Event) (Decision, error) {
 	changed := event.(SemanticInputChanged)
 	run.Phase = PhaseSuperseded
-	run.Input = changed.Input
 	run.TestApproval = nil
 	run.FinalApproval = nil
-	return decide(run, SupersedeRun{ChangedFields: changed.ChangedFields})
+	return decide(run, SupersedeRun{ChangedFields: changed.ChangedFields, Input: changed.Input})
 }
 
 // onAttemptFailed は transport / execution failure を品質判断へ変換しない。
