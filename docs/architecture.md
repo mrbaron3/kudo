@@ -47,7 +47,7 @@ Controller は control plane であり、次を所有する。
 - Run state machine と許可された transition の検証
 - Issue/Run scoped lease と concurrent capacity の調停
 - versioned Worker Operation と Review Request の dispatch
-- timeout、retry、stale input、escalation の routing
+- timeout、retry、review round 予算、stale input、escalation の routing
 - transactional outbox による GitHub label/comment projection
 
 Controller は model/provider session を持たず、Issue の不足情報を補う prompt を作らない。Review Result の schema、request binding、staleness は検証するが、reviewer の品質 verdict を approve に変更しない。
@@ -183,6 +183,8 @@ Runtime transport は interface の method call を模倣する必要はない�
 | Outbox | projection identity。state commit と同じ transaction で作成する |
 | Review binding | request digest と result digest。入力変更時に stale と判定する |
 | Execution Policy | provider/model/adapter version、tool/timeout policyのdigest。Run途中で暗黙に変更しない |
+| Escalation Policy | review round 上限のdigest。claim時にRunへpinし、semantic inputには含めない。値の変更は既存reviewをstaleにせず次のclaimから有効になる |
+| Review round counter | Run ID + review gate。gateごとに独立し、quality verdictが確定したroundだけを数える。無人区間counterはescalationで0へ戻り、生涯counterは単調増加する |
 | Artifact metadata | digest、media type、length、producer、created time。bytes は volume に置く |
 
 Operation は少なくとも`queued`、`leased`、`succeeded`、`retry_wait`、`failed_terminal`を区別する。Run phase と transport failure を同じ enum に押し込まない。
@@ -198,11 +200,13 @@ retry policy は error class ごとに決める。
 - timeout、rate limit、一時的な network/provider failure: exponential backoff と jitter で retry
 - invalid provider output: bounded retry 後に execution failure として記録し、品質 verdict には変換しない
 - contract/authority conflict、安全判断: `needs_human`
-- review の blocking finding: `request_changes`として修正 Operation へ routing
+- review の blocking finding: `request_changes`として修正 Operation へ routing。ただし当該 gate の round 上限に達した場合は修正 Operation を発行せず、`review_round_limit_exceeded`として`needs_human`
 - changed Context Manifest/Execution Policy/head/artifact/policy/PR ref: stale。新しい identity で再評価し、古い approval は破棄
 - changed Issue Observation / PR observation のみ（Task Context と Context Manifest が同じ）: audit lineage へ追記し、identity と approval は維持
 - PR の head 不一致（branch への外部 push を含む）またはbase 不一致: blind mutation せず stale
 - PR の外部 close/merge: blind mutation せず、品質 verdict に変換せずに Run を`needs_human`phaseへ送るため人間へescalate
+
+review round 上限は retry budget と別の予算である。retry budget は同じ logical Operation を何回 execution attempt するかを決め、round 上限は quality verdict が`request_changes`のまま何 round 自動修正を続けるかを決める。片方を使い切ってももう片方は消費しない。詳細は [ADR-0003](decisions/0003-review-round-limit.md) を正とする。
 
 ## Scheduling and concurrency
 
@@ -248,6 +252,7 @@ Implementation と Review が共有できるのは次だけである。
 - provider application の private state
 - Controller の application-private memory
 - Issue Worker の write credential
+- review round counter、round 上限、Escalation Policy（Controller の gate 予算であり、reviewer の判断入力ではない）
 
 ## Mutation authority
 
@@ -316,6 +321,6 @@ flowchart TD
 
 ## Telemetry
 
-Run ID、Operation ID、attempt、IssueRef、state transition、duration、provider、token/cost、artifact digest、verdict を structured log と trace/metric に出せるようにする。secret、Issue の非公開本文、provider transcript、source bytes を既定で telemetry へ送らない。
+Run ID、Operation ID、attempt、IssueRef、state transition、duration、provider、token/cost、artifact digest、verdict、gate ごとの無人区間 / 生涯 review round 数、escalation 回数、escalation reason code を structured log と trace/metric に出せるようにする。round 分布と escalation reason の内訳は Escalation Policy の既定値を実測から見直すための唯一の材料であり、欠けると上限値が勘のまま固定される。secret、Issue の非公開本文、provider transcript、source bytes を既定で telemetry へ送らない。
 
 Telemetry backend の欠落や sampling は workflow correctness に影響させない。復旧に必要な state と lineage は PostgreSQL と Artifact Store に残す。

@@ -156,6 +156,7 @@ func TestArtifactSchemasAreIndependent(t *testing.T) {
 		TaskContextSchemaV1Alpha1,
 		ContextManifestSchemaV1Alpha1,
 		ExecutionPolicySchemaV1Alpha1,
+		EscalationPolicySchemaV1Alpha1,
 	}
 	seen := map[string]bool{}
 	for _, schema := range schemas {

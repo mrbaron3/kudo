@@ -272,6 +272,31 @@ func TestManifestAndPolicyParseWithExternalYAMLParser(t *testing.T) {
 	}
 }
 
+// Escalation Policy の round 上限は decimal string として encode する。
+// implicit int にすると YAML 実装ごとの数値表現の差が canonical bytes へ漏れるため、
+// 独立実装が string として読み戻せることを差分オラクルで確認する。
+func TestEscalationPolicyParsesWithExternalYAMLParser(t *testing.T) {
+	_, payload, err := EncodeEscalationPolicy(sampleEscalationPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	policy := decodeOracle[struct {
+		Schema       string `json:"schema"`
+		ReviewRounds struct {
+			TestValidity        string `json:"testValidity"`
+			FinalImplementation string `json:"finalImplementation"`
+		} `json:"reviewRounds"`
+	}](t, yamlOracle(t, payload.Data))
+
+	if policy.Schema != EscalationPolicySchemaV1Alpha1 {
+		t.Fatalf("schema = %q", policy.Schema)
+	}
+	if policy.ReviewRounds.TestValidity != "3" || policy.ReviewRounds.FinalImplementation != "3" {
+		t.Fatalf("review round 上限が復元されない: %+v", policy.ReviewRounds)
+	}
+}
+
 // oracleRef は versioned ref の入れ子 mapping を表す。
 type oracleRef struct {
 	Schema string `json:"schema"`

@@ -111,21 +111,47 @@ Kudo が認識する label は次の4種類に限定する。
 
 state transition と projection intent を同じ database transaction に記録し、outbox が GitHub mutation を retry する。GitHub API failure で確定済み Run state を巻き戻さない。polling が一時的に残った`ai-ready`を再発見しても、active Run constraint で二重 Run を防ぐ。
 
-dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`を消費しない。test/final review の`request_changes`は自動修正 loop なので`ai-in-progress`を保つ。
+dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`を消費しない。test/final review の`request_changes`は自動修正 loop なので`ai-in-progress`を保つ。ただし当該 gate の review round 上限に達した`request_changes`は自動 loop を終了させ、`ai-needs-human`へ投影する（[ADR-0003](decisions/0003-review-round-limit.md)）。
 
 ### Human escalation
 
-`ai-needs-human`の対象には次を含む。
+停止理由は機械可読な code で分類する。Controller は error 文字列や自由記述で分岐しない。message 表現を変えただけで分岐が壊れ、逆に分岐を保つために message を固定する必要が生じるためである。
 
-- Review Result が`needs_human`
-- Contract、Acceptance、authority の矛盾、不足、曖昧さ
-- Context Manifest（Task Context、authority content、base）、Execution Policy、head、artifact の unexpected change による stale input
-- 危険な mutation に対する明示的許可不足
-- 自動選択できない仕様判断
-- 必須 credential または外部設定が人間の操作なしに復旧できない状態
-- bounded retry を超え、operator の診断が必要な execution failure
+| code | 意味 |
+| --- | --- |
+| `review_needs_human` | Review Result の verdict が`needs_human` |
+| `review_round_limit_exceeded` | review gate の round 上限に達しても blocking finding が解消しなかった。reviewer の判断ではなく Controller の予算切れである |
+| `retry_budget_exhausted` | bounded retry を超え、operator の診断が必要な execution failure |
+| `contract_authority_conflict` | Contract、Acceptance Criteria、authority の矛盾、不足、曖昧さ |
+| `external_mutation_conflict` | PR の外部 close/merge のように blind mutation できない外部干渉 |
+| `unsafe_mutation_unauthorized` | 危険な mutation に対する明示的許可不足 |
+| `specification_decision_required` | 自動選択できない仕様判断 |
+| `external_configuration_required` | 必須 credential または外部設定が人間の操作なしに復旧できない状態 |
+
+`review_needs_human`、`review_round_limit_exceeded`、`retry_budget_exhausted`は Controller が Run state から自ら導出する。Worker や adapter からの明示的 escalation 要求ではこれらを指定できない。指定できると、上限に達していない Run を「上限到達」として停止でき、code と Run の lineage が食い違う。
+
+Context Manifest（Task Context、authority content、base）、Execution Policy、head、artifact の unexpected change は escalation ではなく stale として扱い、古い Run を superseded にして再 claim へ回す。再 claim が contract 不備で通らない場合だけ`contract_authority_conflict`として escalate する。
 
 Controller は label と同時に、Run ID、停止 phase、理由 code、観測内容、必要な対応、evidence reference を含む一つの日本語 status comment を作成または更新する。comment reply は実装 authority にしない。
+
+#### Review round ledger
+
+`review_round_limit_exceeded`の status comment には、最終 round の finding だけでなく**全 round の finding を round 順に並べた ledger**を載せる。最終 round だけでは、人間が差し戻しに対して何をすべきか選べない。
+
+- 同じ finding が反復している = 実装が指摘を直せていない。実装能力、context、provider 選択の問題。
+- 毎回違う finding が出ている = 何を作るべきかが決まっていない。Issue Contract または authority の問題。
+
+ledger は Run の review lineage（各 round の Review Request / Result binding）から組み立てる。Run aggregate は counter と理由 code だけを持ち、finding 本文を保持しない。
+
+各 finding には canonical fingerprint（`severity`、`summary`、`expected`、`observed`から計算する digest）を併記する。fingerprint の完全一致は「reviewer が字義どおり同じことを再度述べた」という曖昧さのない証拠である。**一致しないことは「違う指摘である」ことの証拠にはならない**片側の signal であり、その旨を ledger に明記する。Kudo は同一性の自動判定を行わない。model 由来の finding `id`は round をまたいで安定せず、前 round の finding を reviewer へ渡すと fresh session isolation を壊し、Controller が fuzzy 一致で判定すると control plane が review 判断を代行することになるためである。判断そのものは人間が行う。
+
+Escalation Policy が固定した上限値と、その policy の digest も comment に含める。「なぜこの回数で止まったのか」の根拠を Run から確定できるようにする。
+
+**今回の無人区間の round 数と、Run の生涯 round 数・差し戻し回数を併記する。** 差し戻すたびに round 予算は満額へ戻るため、この数字が繰り返しを可視化する唯一の材料になる。
+
+人間が介入してもなお gate を通らないことは、round 予算の不足ではなく、Issue Contract、authority、分割の粒度、Execution Policy の provider/model 選択のどれかが誤っているという signal である。Kudo はこの状況に対して自動停止の上限を置かない。上限を置くと signal を読む前に数字が判断を代行し、「これ以上は無理」という結論を機械が出すことになる。どの前提が誤っているかは差し戻しのたびに人間が判断する。
+
+Kudo が保証するのは「無人で回り続けないこと」と「区間の終わりごとに判断材料を渡すこと」であり、「何回で諦めるか」は判断そのものなので自動化しない。
 
 人間は Issue 本文または`authorityRefs`が指す正本を修正し、再度`ai-ready`を付ける。reconciliation が安全な再開または新しい Run を確定した時点で、Kudo は`ai-needs-human`を外して`ai-in-progress`へ投影する。
 

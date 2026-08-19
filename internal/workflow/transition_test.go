@@ -48,8 +48,10 @@ func advance(t *testing.T, run Run, events ...Event) Run {
 func claimedRun(t *testing.T) Run {
 	t.Helper()
 	return advance(t, Run{ID: "run-01"}, ClaimSucceeded{
-		Input:       sampleInput(),
-		Observation: contract.SHA256([]byte("observation-1")),
+		Input:            sampleInput(),
+		Observation:      contract.SHA256([]byte("observation-1")),
+		EscalationPolicy: sampleEscalationPolicyRef(),
+		RoundLimits:      sampleRoundLimits(),
 	})
 }
 
@@ -116,7 +118,8 @@ func TestNormalFlowReachesHumanHandoff(t *testing.T) {
 		phase   Phase
 		actions []string
 	}{
-		{ClaimSucceeded{Input: sampleInput(), Observation: contract.SHA256([]byte("o1"))},
+		{ClaimSucceeded{Input: sampleInput(), Observation: contract.SHA256([]byte("o1")),
+			EscalationPolicy: sampleEscalationPolicyRef(), RoundLimits: sampleRoundLimits()},
 			PhaseClaimed, []string{"project_status", "dispatch_operation"}},
 		{OperationStarted{Kind: contract.OperationAuthorTests}, PhaseAuthoringTests, nil},
 		{TestsAuthored{Head: testHead}, PhasePublishingTestHead, []string{"dispatch_operation"}},
@@ -188,7 +191,9 @@ func TestPointerEventsHaveTheSameSemanticsAsValues(t *testing.T) {
 		value   Event
 		pointer Event
 	}{
-		{"claim", Run{ID: "run-01"}, ClaimSucceeded{Input: sampleInput()}, &ClaimSucceeded{Input: sampleInput()}},
+		{"claim", Run{ID: "run-01"},
+			ClaimSucceeded{Input: sampleInput(), RoundLimits: sampleRoundLimits()},
+			&ClaimSucceeded{Input: sampleInput(), RoundLimits: sampleRoundLimits()}},
 		{"operation started", claimedRun(t), OperationStarted{Kind: contract.OperationAuthorTests}, &OperationStarted{Kind: contract.OperationAuthorTests}},
 		{"tests authored", authoring, TestsAuthored{Head: testHead}, &TestsAuthored{Head: testHead}},
 		{"head published", publishingTest, HeadPublished{Head: testHead, PullRequest: samplePullRequest()}, &HeadPublished{Head: testHead, PullRequest: samplePullRequest()}},
@@ -198,7 +203,9 @@ func TestPointerEventsHaveTheSameSemanticsAsValues(t *testing.T) {
 		{"observation recorded", awaitingTestReview(t), ObservationRecorded{Observation: contract.SHA256([]byte("o2"))}, &ObservationRecorded{Observation: contract.SHA256([]byte("o2"))}},
 		{"semantic input changed", awaitingTestReview(t), SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: changed}, &SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: changed}},
 		{"attempt failed", awaitingTestReview(t), AttemptFailed{Class: contract.FailureTimeout}, &AttemptFailed{Class: contract.FailureTimeout}},
-		{"human escalated", awaitingTestReview(t), HumanEscalated{Reason: "authority conflict"}, &HumanEscalated{Reason: "authority conflict"}},
+		{"human escalated", awaitingTestReview(t),
+			HumanEscalated{Reason: EscalationContractAuthorityConflict},
+			&HumanEscalated{Reason: EscalationContractAuthorityConflict}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := requireDecision(t, tc.run, tc.value)
@@ -229,7 +236,8 @@ func TestTypedNilPointerEventIsRejectedWithoutPanic(t *testing.T) {
 // 実装と test が同じ組を見落として通り抜けることを防ぐ。
 func TestUndeclaredTransitionsAreRejected(t *testing.T) {
 	events := map[EventKind]Event{
-		KindClaimSucceeded:       ClaimSucceeded{Input: sampleInput(), Observation: contract.SHA256([]byte("o"))},
+		KindClaimSucceeded: ClaimSucceeded{Input: sampleInput(), Observation: contract.SHA256([]byte("o")),
+			EscalationPolicy: sampleEscalationPolicyRef(), RoundLimits: sampleRoundLimits()},
 		KindOperationStarted:     OperationStarted{Kind: contract.OperationAuthorTests},
 		KindTestsAuthored:        TestsAuthored{Head: testHead},
 		KindHeadPublished:        HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
@@ -239,7 +247,7 @@ func TestUndeclaredTransitionsAreRejected(t *testing.T) {
 		KindObservationRecorded:  ObservationRecorded{Observation: contract.SHA256([]byte("o2"))},
 		KindSemanticInputChanged: SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: sampleInput()},
 		KindAttemptFailed:        AttemptFailed{Class: contract.FailureTimeout},
-		KindHumanEscalated:       HumanEscalated{Reason: "authority conflict"},
+		KindHumanEscalated:       HumanEscalated{Reason: EscalationContractAuthorityConflict},
 	}
 	for _, kind := range EventKinds() {
 		if _, ok := events[kind]; !ok {
@@ -250,7 +258,7 @@ func TestUndeclaredTransitionsAreRejected(t *testing.T) {
 	declared := 0
 	for _, phase := range Phases() {
 		for _, kind := range EventKinds() {
-			run := Run{ID: "run-01", Phase: phase, Input: sampleInput()}
+			run := Run{ID: "run-01", Phase: phase, Input: sampleInput(), RoundLimits: sampleRoundLimits()}
 			_, err := Decide(run, events[kind])
 			if allowed(phase, kind) {
 				declared++
@@ -507,6 +515,9 @@ func TestRunHoldsOnlyOpaqueIdentity(t *testing.T) {
 		"contract.Digest":             true,
 		"contract.ContextManifestRef": true,
 		"contract.ExecutionPolicyRef": true,
+		// gate 予算の ref と解決済みの上限値。prose でも parse 結果でもない。
+		"contract.EscalationPolicyRef": true,
+		"contract.ReviewRoundLimits":   true,
 	}
 	var walk func(typ reflect.Type, path string)
 	walk = func(typ reflect.Type, path string) {
@@ -548,12 +559,12 @@ func TestGatesRejectInconsistentStoredRun(t *testing.T) {
 	}{
 		"checks bound to another head": {
 			run: Run{ID: "run-01", Phase: PhaseAwaitingFinalReview, Input: sampleInput(),
-				PublishedHead: finalHead, ChecksHead: testHead},
+				RoundLimits: sampleRoundLimits(), PublishedHead: finalHead, ChecksHead: testHead},
 			event: finalApprove,
 		},
 		"checks never bound": {
 			run: Run{ID: "run-01", Phase: PhaseAwaitingFinalReview, Input: sampleInput(),
-				PublishedHead: finalHead},
+				RoundLimits: sampleRoundLimits(), PublishedHead: finalHead},
 			event: finalApprove,
 		},
 		"finalize without final approval": {

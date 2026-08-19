@@ -25,6 +25,25 @@ type Run struct {
 
 	// Input は staleness 判定の対象となる semantic identity である。
 	Input InputIdentity
+	// EscalationPolicy は claim 時に pin した gate 予算 artifact の ref である。
+	//
+	// Input へ含めない。上限は reviewer が読まない値であり review 判断の入力ではないため、
+	// 値を変えただけで進行中 Run を supersede させてはならない。監査のために保持し、
+	// escalation comment が「この Run に固定された上限」の根拠として引用する。
+	EscalationPolicy contract.EscalationPolicyRef
+	// RoundLimits は pin 済み policy から解決した gate ごとの round 上限である。
+	// transition は artifact を decode しないため、解決済みの値を Run が運ぶ。
+	RoundLimits contract.ReviewRoundLimits
+	// Rounds は現在の無人区間で確定した review round 数であり、上限判定に使う。
+	//
+	// 上限が縛るのは「人間が次にこの Run を見るまでに何 round 回すか」であって Run の
+	// 生涯合計ではない。したがって escalation のたびに 0 へ戻る。人間へ差し戻した後も
+	// counter が上限のままだと、修正後の review が予算 0 になり、1 round で収束する
+	// 修正にも automation が追従できない。
+	Rounds ReviewRounds
+	// TotalRounds は Run の生涯で確定した review round 数である。reset せず、
+	// 差し戻しを繰り返す Run を人間が識別するための lineage として使う。
+	TotalRounds ReviewRounds
 	// Observation は audit lineage の最新観測であり、identity には寄与しない。
 	Observation contract.Digest
 

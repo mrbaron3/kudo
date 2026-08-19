@@ -114,6 +114,8 @@ Controller は immutable input から、publish 済み draft PR の head へ繋�
 - `request_changes`: blocking finding を versioned Result として返す。Controller は同じ Run/worktree を所有する Issue Worker の新しい`revise_tests` session へ finding と artifact を渡す。
 - `needs_human`: 自動修正できない authority または安全判断として workflow を停止する。
 
+`request_changes`が Run に固定された`test_validity`の round 上限に達した場合、Controller は`revise_tests`を発行せず`needs_human`phase へ送る。verdict は`request_changes`のままであり、上限判定は Controller だけが行う。
+
 「元の作業へ差し戻す」とは同じ論理 lane と worktree を使うことであり、以前の provider conversation を resume することではない。修正後は新しい head を同一 draft PR へ再 publish し、新しい artifact manifest、Review Request を作り、再 review する。
 
 ### 5. GREEN and refactor
@@ -134,7 +136,7 @@ GREEN と refactor の evidence が固定された後、Controller は`publish_h
 
 final head の publish 後に、Controller は final head、approved test review、implementation patch、GREEN/refactor/check evidence を固定し、publish 済み PR へ繋留され[Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md)を`policyRefs`へ含む`final_implementation` Review Request を発行する。required policy refが欠落または未対応のRequestはbinding境界でrejectされ、reviewerの推測で補わない。policy取得のtransport failureもquality verdictへ変換しない。Review Worker は fresh read-only session で常時必須のcorrectness、regression、scope、test quality、code quality、security、evidenceを評価する。条件付き観点（UX、accessibility、type design、performance）の適用可否は同じ session がpolicyの適用条件から判断し、観点別の applicability 宣言（理由 code と evidence 付き）として Result へ残す。宣言を欠く Result は binding 境界で受理されない。
 
-`request_changes`は fresh`repair_implementation` session へ handoff し、修正後の head に新しい review を要求する。head または artifact が変われば以前の approve は stale である。`needs_human`は自動 loop を停止する。
+`request_changes`は fresh`repair_implementation` session へ handoff し、修正後の head に新しい review を要求する。head または artifact が変われば以前の approve は stale である。`needs_human`は自動 loop を停止する。`final_implementation`の round 上限に達した`request_changes`も、`repair_implementation`を発行せずに自動 loop を終了させる。counter は`test_validity`と独立であり、test 側で消費した round は final 側の予算に影響しない。
 
 ### 7. Pull Request finalize と handoff
 
@@ -160,31 +162,51 @@ stateDiagram-v2
     claimed --> authoring_tests
     authoring_tests --> publishing_test_head: RED evidence fixed
     publishing_test_head --> awaiting_test_review: PR head published
-    awaiting_test_review --> authoring_tests: request_changes / fresh revise session
+    awaiting_test_review --> authoring_tests: request_changes（round 上限未満）/ fresh revise session
     awaiting_test_review --> implementing: approve
     implementing --> publishing_final_head: GREEN + refactor checks fixed
     publishing_final_head --> awaiting_final_review: PR head published
-    awaiting_final_review --> implementing: request_changes / fresh repair session
+    awaiting_final_review --> implementing: request_changes（round 上限未満）/ fresh repair session
     awaiting_final_review --> finalizing_pull_request: approve
     finalizing_pull_request --> awaiting_human_review: PR ready + body finalized
     awaiting_human_review --> [*]
     claimed --> needs_human
     authoring_tests --> needs_human
     publishing_test_head --> needs_human
-    awaiting_test_review --> needs_human
+    awaiting_test_review --> needs_human: needs_human verdict / round 上限到達
     implementing --> needs_human
     publishing_final_head --> needs_human
-    awaiting_final_review --> needs_human
+    awaiting_final_review --> needs_human: needs_human verdict / round 上限到達
     finalizing_pull_request --> needs_human
 ```
 
 上図は Run phase を表す。retry 可能な transport/execution failure は quality state ではなく Operation の`retry_wait`として記録し、backoff 後に同じ logical Operation を新しい execution attempt で実行する。provider session は retry ごとに新規作成する。
+
+### Review round 上限
+
+`request_changes`による自動修正 loop には gate ごとの round 上限がある（[ADR-0003](decisions/0003-review-round-limit.md)）。
+
+- 上限は claim 時に Escalation Policy から Run へ固定する。`test_validity`と`final_implementation`は独立した counter と独立した上限を持つ。
+- counter は quality verdict が確定した round だけを数える。attempt failure、stale input、transport failure、protocol validation error は round を消費しない。
+- 上限が縛るのは**無人区間**、すなわち人間が次にこの Run を見るまでの round 数である。Run の生涯合計ではない。人間へ差し戻した時点で区間が終わり counter は 0 に戻るため、再開した Run は満額の予算から始まる。Run の生涯 round 数は reset しない別の counter が保持し、ledger と telemetry が使う。
+- 上限に達した round の verdict が`request_changes`の場合、Controller は修正 Operation を発行せず、理由 code `review_round_limit_exceeded`で Run を`needs_human`phase へ送る。上限に達していても`approve`は次の gate へ進む。
+- 上限判定は Controller の gate 判断であり、review の品質基準ではない。reviewer へ round 数、上限、過去 round の結果を渡さない。reviewer に「上限だから`needs_human`を返せ」と判断させない。
 
 ## Escalation and resumption
 
 `needs_human`では、Controller が理由、停止 phase、必要な対応、evidence reference を永続化してから`ai-needs-human`と日本語 comment を投影する。人間は Issue 本文または明示された authority を修正し、再度`ai-ready`を付ける。
 
 再 reconciliation では入力 digest を比較する。入力が同じで単に外部設定が復旧した場合は安全な checkpoint から同じ Run を再開できる。Issue、authority、base、approved artifact が変わった場合は古い Run を superseded とし、新しい Run と review lineage を作る。古い approval を新しい入力へ移し替えない。
+
+review round の予算は無人区間ごとに与える。人間へ差し戻した時点で区間が終わるため、escalation の理由 code によらず counter は 0 へ戻る。
+
+- **resume**（同じ Run の再開）: 満額の予算から始まる。counter を継続すると、人間が修正した後の review が予算 0 になり、次の`request_changes`で即座に再 escalate する。1 round で収束する修正にも automation が追従できず、round 上限が loop を「1 回だけ動く仕組み」へ退化させてしまう。
+- **supersede**（新しい Run）: 新しい Run identity なので当然 0 から始まる。
+- **生涯 counter**: reset しない。停止した Run が通算で何 round 費やし、何回差し戻されたかを保持する。差し戻しを繰り返す Run はこの数字で識別する。
+
+`ai-ready`は人間所有の trigger であり、resume には人間の明示的な操作と escalation comment の確認が毎回必要になる。予算の再付与は無人の暴走ではなく、人間が状況を見て継続を選ぶ行為である。生涯 round 数に対する上限は置かない。人間が介入しても gate を通らないことは予算不足ではなく、Contract、authority、分割の粒度、Execution Policy のいずれかが誤っている signal であり、その判断は差し戻しのたびに人間が行う。
+
+Escalation Policy は Run の semantic input identity に含めない。上限値の変更は既存の Review Request と approval を stale にせず、次の claim から有効になる。
 
 `needs_human`は実行を停止したpaused Runであり、同時実行中のRunとは数えないが、同じIssueに新しいRunを無条件で作れる状態でもない。再reconciliationは、同じRunのresumeまたは旧Runのsupersedeと新Run作成を一つのtransactionで決め、writerを同時に二つ存在させない。
 
@@ -194,6 +216,7 @@ stateDiagram-v2
 - polling と webhook は同じ IssueRef に対して同じ reconciliation rule を使う。
 - 1 IssueRef に active Run は最大一つとする。
 - Operation identity と execution attempt を分け、timeout 後の retry を追跡する。
+- review round counter は無人区間ごとに reset し、生涯 counter は Run 単位で単調増加させる。同じ gate への再入では reset しない。
 - worktree/branch/PR mutation は Issue Worker の idempotency key で重複を防ぐ。
 - publish/finalize は期待 head と live branch/PR を照合し、外部干渉を blind mutation せず stale / needs_human へ分類する。
 - state transition と external projection intent は同じ database transaction に記録し、outbox が GitHub へ再送する。

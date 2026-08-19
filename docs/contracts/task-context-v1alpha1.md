@@ -8,7 +8,7 @@ strict parse済みのTask Issueから、GitHub上で観測したexactな本文�
 - `kudo.task-context/v1alpha1`: model sessionへ渡すcanonical Task表現
 - `ClaimRequirements`: claim時に解決するrelationshipとauthorityのstable projection
 
-authority、dependency completion、base commitはCompilerの外で解決し、`kudo.context-manifest/v1alpha1`へ固定する。provider/model/adapter/tool/timeoutの選択は`kudo.execution-policy/v1alpha1`へ固定する。
+authority、dependency completion、base commitはCompilerの外で解決し、`kudo.context-manifest/v1alpha1`へ固定する。provider/model/adapter/tool/timeoutの選択は`kudo.execution-policy/v1alpha1`へ、Controllerが自動継続をやめるまでの予算は`kudo.escalation-policy/v1alpha1`へ固定する。
 
 ## Issue Compiler boundary
 
@@ -150,9 +150,28 @@ reviewWorker:
 
 tool permissionは順序を持たない集合としてlexicographic順にencodeし、重複を拒否する。timeoutは正のGo duration canonical stringとする。credential、token、secret path、provider session ID、workspace pathはfieldとして持たない。provider、model、adapter、adapter version、tool permission、timeoutのいずれかが変われば`ExecutionPolicyRef{schema,digest}`だけが変わり、Task ContextまたはContext Manifestへ波及させない。
 
+## Escalation Policy
+
+Escalation PolicyはRun開始時に、Controllerが自動継続をやめて人間へ渡すまでの予算を固定する。
+
+```yaml
+schema: "kudo.escalation-policy/v1alpha1"
+reviewRounds:
+  testValidity: "3"
+  finalImplementation: "3"
+```
+
+`reviewRounds`はreview gateごとに`request_changes`の自動修正loopを続けるround数の上限である。`test_validity`と`final_implementation`は独立した上限と独立したcounterを持ち、通算しない。各値は`1`以上`10`以下でなければならず、範囲はprotocol coreが固定してconfigurableにしない。`0`は「最初の`request_changes`で必ずescalate」、過大な値は事実上の無制限であり、どちらもgateとしての意味を失わせる。整数はArtifact Manifestの`length`と同じくdecimal stringとしてencodeする。
+
+Escalation PolicyはControllerのdeployment configurationからだけ解決する。Task Issue本文、`authorityRefs`、変更対象repositoryの内容、Worker Resultからは読まない。gateされる側がgate条件を供給できる経路を作らない。
+
+`EscalationPolicyRef{schema,digest}`はRunへ記録するが、Runのsemantic input identityには含めない。上限はreviewerへ渡らず、review判断の入力ではないため、値の変更は既存のReview Requestとapprovalをstaleにしない。deployment configurationの変更は次のclaimから有効になり、進行中のRunはpin済みの値を使い切る。判断の背景は[ADR-0003](../decisions/0003-review-round-limit.md)を正とする。
+
+provider、model、adapter version、tool permission、timeout、credential、secret path、session IDをfieldとして持たない。実行境界はExecution Policyが固定し、両者の役割を重ねない。
+
 ## Canonical encoding
 
-Issue Observation、Task Context、Context Manifest、Execution Policyのcanonical YAMLは次の規則を共有する。
+Issue Observation、Task Context、Context Manifest、Execution Policy、Escalation Policyのcanonical YAMLは次の規則を共有する。
 
 - encodingはUTF-8、line endingはLF、末尾は1個のLF
 - key順はschemaごとに固定し、Go map iterationへ依存しない
@@ -182,7 +201,7 @@ store前とread時にdigest/data、kind、schema/refの一致を検証する。�
 
 ## Versioning and compatibility
 
-Issue Contract、Issue Compiler、Issue Observation、Task Context、Context Manifest、Execution Policyは独立したschema/version identityを持つ。
+Issue Contract、Issue Compiler、Issue Observation、Task Context、Context Manifest、Execution Policy、Escalation Policyは独立したschema/version identityを持つ。
 
 - Issue Contractのfield/Markdown semanticを変更する場合は`kudo.issue/...`をversion upする。Task Contextの表現が互換ならTask Context schemaを連動変更しない
 - Task Contextのkey順、field、scalar/list/null表現等に非互換変更を加える場合は`kudo.task-context/...`を新しくし、旧schemaと併存させる

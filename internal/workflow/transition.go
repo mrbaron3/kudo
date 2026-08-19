@@ -167,13 +167,39 @@ func gate(run Run, kind EventKind, format string, args ...any) (Decision, error)
 
 func onClaimSucceeded(run Run, event Event) (Decision, error) {
 	claimed := event.(ClaimSucceeded)
+	// 範囲外の上限を持つ Run を作らせない。claim で弾かないと、gate 予算が壊れた Run が
+	// 最初の request_changes で即 escalate する状態を後段まで持ち越す。
+	if err := validateRoundLimits(run, claimed); err != nil {
+		return Decision{}, err
+	}
 	run.Phase = PhaseClaimed
 	run.Input = claimed.Input
 	run.Observation = claimed.Observation
+	run.EscalationPolicy = claimed.EscalationPolicy
+	run.RoundLimits = claimed.RoundLimits
 	return decide(run,
 		ProjectStatus{Label: StatusInProgress},
 		DispatchOperation{Kind: contract.OperationAuthorTests},
 	)
+}
+
+func validateRoundLimits(run Run, claimed ClaimSucceeded) error {
+	limits := []struct {
+		name  string
+		value int
+	}{
+		{"testValidity", claimed.RoundLimits.TestValidity},
+		{"finalImplementation", claimed.RoundLimits.FinalImplementation},
+	}
+	for _, limit := range limits {
+		if limit.value < contract.MinReviewRounds || limit.value > contract.MaxReviewRounds {
+			_, err := gate(run, claimed.EventKind(),
+				"review round 上限 %s は %d 以上 %d 以下でなければならない: %d",
+				limit.name, contract.MinReviewRounds, contract.MaxReviewRounds, limit.value)
+			return err
+		}
+	}
+	return nil
 }
 
 // onAuthoringStarted は claim 直後の 1 辺だけを進める。他の kind の実行開始で
@@ -236,29 +262,44 @@ func onTestReviewCompleted(run Run, event Event) (Decision, error) {
 	if err := checkReviewBinding(run, completed, contract.ReviewTestValidity); err != nil {
 		return Decision{}, err
 	}
+	// verdict を読む前に round を数える。verdict が確定した round だけを数えることで、
+	// attempt failure や stale input が予算を消費しない。
+	run.Rounds.TestValidity++
+	run.TotalRounds.TestValidity++
 	switch completed.Verdict {
 	case contract.VerdictApprove:
 		run.Phase = PhaseImplementing
 		run.TestApproval = &Approval{Head: completed.Head, RequestDigest: completed.RequestDigest}
 		return decide(run, DispatchOperation{Kind: contract.OperationImplement})
 	case contract.VerdictRequestChanges:
+		if roundLimitReached(run.Rounds.TestValidity, run.RoundLimits.TestValidity) {
+			return escalate(run, EscalationReviewRoundLimitExceeded)
+		}
 		// 同じ論理 lane へ差し戻す。fresh session は Worker 側の規律であり、
 		// phase としては test 作成へ戻ることだけを表す。
 		run.Phase = PhaseAuthoringTests
 		run.FixedHead = ""
 		return decide(run, DispatchOperation{Kind: contract.OperationReviseTests})
 	case contract.VerdictNeedsHuman:
-		return pause(run)
+		return escalate(run, EscalationReviewNeedsHuman)
 	default:
 		return gate(run, completed.EventKind(), "review verdict が不正: %q", completed.Verdict)
 	}
 }
+
+// roundLimitReached は上限に達した round かを返す。
+//
+// 比較を >= にすることで、上限が未設定（0）の Run は loop を続けずに停止する。
+// 信頼境界の既定は「止まる」側へ倒す。上限そのものは claim gate が検証する。
+func roundLimitReached(rounds, limit int) bool { return rounds >= limit }
 
 func onFinalReviewCompleted(run Run, event Event) (Decision, error) {
 	completed := event.(ReviewCompleted)
 	if err := checkReviewBinding(run, completed, contract.ReviewFinalImplementation); err != nil {
 		return Decision{}, err
 	}
+	run.Rounds.FinalImplementation++
+	run.TotalRounds.FinalImplementation++
 	switch completed.Verdict {
 	case contract.VerdictApprove:
 		// required checks が publish 済み head へ bind されていなければ approve を
@@ -273,12 +314,15 @@ func onFinalReviewCompleted(run Run, event Event) (Decision, error) {
 		run.FinalApproval = &Approval{Head: completed.Head, RequestDigest: completed.RequestDigest}
 		return decide(run, DispatchOperation{Kind: contract.OperationFinalizePullRequest})
 	case contract.VerdictRequestChanges:
+		if roundLimitReached(run.Rounds.FinalImplementation, run.RoundLimits.FinalImplementation) {
+			return escalate(run, EscalationReviewRoundLimitExceeded)
+		}
 		run.Phase = PhaseImplementing
 		run.FixedHead = ""
 		run.ChecksHead = ""
 		return decide(run, DispatchOperation{Kind: contract.OperationRepairImplementation})
 	case contract.VerdictNeedsHuman:
-		return pause(run)
+		return escalate(run, EscalationReviewNeedsHuman)
 	default:
 		return gate(run, completed.EventKind(), "review verdict が不正: %q", completed.Verdict)
 	}
@@ -359,14 +403,37 @@ func onAttemptFailed(run Run, event Event) (Decision, error) {
 	if !failed.RetryBudgetExhausted {
 		return decide(run, ScheduleRetry{Class: failed.Class})
 	}
-	return pause(run)
+	return escalate(run, EscalationRetryBudgetExhausted)
 }
 
+// onHumanEscalated は明示的な escalation 要求を受ける。state machine が Run state から
+// 導出する理由を外部から指定させないのは、counter lineage と reason code の食い違いを
+// 防ぐためである。
 func onHumanEscalated(run Run, event Event) (Decision, error) {
-	return pause(run)
+	escalated := event.(HumanEscalated)
+	switch {
+	case !escalationReasons[escalated.Reason]:
+		return gate(run, escalated.EventKind(), "escalation reason が語彙に無い: %q", escalated.Reason)
+	case derivedEscalationReasons[escalated.Reason]:
+		return gate(run, escalated.EventKind(),
+			"%q は state machine が導出する理由であり、明示的 escalation では指定できない", escalated.Reason)
+	}
+	return escalate(run, escalated.Reason)
 }
 
-func pause(run Run) (Decision, error) {
+// escalate は Run を停止し、同時に無人区間を終了させる。
+//
+// 予算の単位は Run の生涯ではなく「人間が次にこの Run を見るまで」である。
+// 理由によらず escalation は区間の終わりなので、reset をここへ置く。resume の
+// 再開 phase 選択は別問題として未設計だが、どの経路でも escalate を通るため、
+// resume が実装された時点で予算は満額から始まる。
+func escalate(run Run, reason EscalationReason) (Decision, error) {
+	stopped := run.Phase
+	stretch := run.Rounds
 	run.Phase = PhaseNeedsHuman
-	return decide(run, ProjectStatus{Label: StatusNeedsHuman})
+	run.Rounds = ReviewRounds{}
+	return decide(run,
+		ProjectStatus{Label: StatusNeedsHuman},
+		EscalateHuman{Reason: reason, StoppedAt: stopped, Rounds: stretch},
+	)
 }
