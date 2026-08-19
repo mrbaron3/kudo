@@ -28,7 +28,7 @@ headSha: <git-commit-sha>
 inputArtifacts:
   - sha256:<digest>
 policyRefs:
-  - docs/github-routing.md
+  - docs/spec/05_design/04_github-routing.md
 causationId: transition-01
 createdAt: 2026-08-11T00:00:00Z
 ```

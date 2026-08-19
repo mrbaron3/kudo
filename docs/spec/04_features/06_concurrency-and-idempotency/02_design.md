@@ -53,7 +53,7 @@ Controller の label / comment projection は transactional outbox と stable pr
 
 ## 参照
 
-- [End-to-end workflow](../../../workflow.md) — Idempotency and recovery
-- [Architecture](../../../architecture.md) — Durable model、Scheduling and concurrency
-- [Worker Operation Protocol](../../../contracts/operation-protocol-v1alpha1.md) — Attempt and lease
-- [Runtime platform](../../../runtime-platform.md) — PostgreSQL queue と workspace isolation
+- [End-to-end workflow](../../05_design/02_workflow.md) — Idempotency and recovery
+- [Architecture](../../05_design/01_architecture.md) — Durable model、Scheduling and concurrency
+- [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md) — Attempt and lease
+- [Runtime platform](../../05_design/03_runtime-platform.md) — PostgreSQL queue と workspace isolation

@@ -1,5 +1,5 @@
 schema: "kudo.worker-result/v1alpha1"
-operationDigest: "sha256:713a6c2c23b979bf68276d5c257314868c00442d9c9e2ed95c564a7cd05af4ac"
+operationDigest: "sha256:37241c197d0256f21ea0b0e7b0342da428a471be11a41dd6254d25d3b0bd4c2e"
 outcome: "stale_input"
 headSha: null
 changedInputFields:

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// 正本は docs/contracts/operation-protocol-v1alpha1.md の Artifact logical names である。
+// 正本は docs/spec/05_design/contracts/operation-protocol-v1alpha1.md の Artifact logical names である。
 
 // ArtifactName は Operation Result と Artifact Manifest が共有する logical name の語彙である。
 //

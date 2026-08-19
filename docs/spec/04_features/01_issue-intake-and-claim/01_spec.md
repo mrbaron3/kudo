@@ -23,7 +23,7 @@ canonical encoding は versioned contract を正本とする。
 **事前条件**
 
 - 対象 repository と GitHub App installation が設定済みである。
-- candidate 条件と status label が [GitHub routing policy](../../../github-routing.md) で確定している。
+- candidate 条件と status label が [GitHub routing policy](../../05_design/04_github-routing.md) で確定している。
 
 **受け入れ基準**
 
@@ -167,7 +167,7 @@ canonical encoding は versioned contract を正本とする。
 
 ## 参照する正本
 
-- [End-to-end workflow](../../../workflow.md) §1〜§2
-- [Issue Contract](../../../contracts/issue-contract-v1alpha1.md)
-- [Task Context Protocol](../../../contracts/task-context-v1alpha1.md)
-- [GitHub routing policy](../../../github-routing.md)
+- [End-to-end workflow](../../05_design/02_workflow.md) §1〜§2
+- [Issue Contract](../../05_design/contracts/issue-contract-v1alpha1.md)
+- [Task Context Protocol](../../05_design/contracts/task-context-v1alpha1.md)
+- [GitHub routing policy](../../05_design/04_github-routing.md)

@@ -31,7 +31,7 @@ NN_feature-name/
 - `02_design.md` は component、Operation、state、artifact、外部境界、failure、検証方法を記述する。
 - サブ機能は両文書内で同じ ID の見出しとして対応付け、見出しだけを理由にファイルへ分割しない。
 - 図、fixture、schema など複数の補助資料が実際に必要になった場合だけ、機能ディレクトリへ追加する。
-- 実装状況と作業順序は [Implementation plan](../../implementation-plan.md) で管理し、完成形の仕様へ混在させない。
+- 実装状況と作業順序は [Implementation plan](../06_project/01_implementation-plan.md) で管理し、完成形の仕様へ混在させない。
 
 ## Spec の構成
 
@@ -107,13 +107,13 @@ NN_feature-name/
 - provider 固有 prompt や private session state
 - Compose service、volume、secret の共通 runtime contract
 
-これらは [contracts/](../../contracts/)、[review-policies/](../../review-policies/)、
-[Architecture](../../architecture.md)、[Runtime platform](../../runtime-platform.md) の該当する正本を参照する。
+これらは [contracts/](../05_design/contracts/)、[review-policies/](../05_design/review-policies/)、
+[Architecture](../05_design/01_architecture.md)、[Runtime platform](../05_design/03_runtime-platform.md) の該当する正本を参照する。
 
 ## 更新ルール
 
 1. 変更対象が system-wide requirement か、特定機能の振る舞いか、機能固有の実現方法かを判定する。
 2. 観測可能な保証を変える場合は `01_spec.md` を先に更新する。
 3. 実現方法を変える場合は同じ機能の `02_design.md` と、必要な共通設計・ADRを更新する。
-4. protocol を変える場合は `docs/contracts/`、parser、fixture、test を同じ変更で更新する。
+4. protocol を変える場合は `docs/spec/05_design/contracts/`、parser、fixture、test を同じ変更で更新する。
 5. 一時的な進捗や未実装項目は仕様へ書かず、Implementation plan または Task Issue で管理する。

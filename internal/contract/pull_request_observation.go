@@ -2,7 +2,7 @@ package contract
 
 import "strings"
 
-// 正本は docs/contracts/review-protocol-v1alpha1.md である。
+// 正本は docs/spec/05_design/contracts/review-protocol-v1alpha1.md である。
 
 // PullRequestObservationSchemaV1Alpha1 は publish 済み Pull Request の
 // exact observation の schema である。

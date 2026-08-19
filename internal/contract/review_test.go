@@ -128,8 +128,8 @@ func sampleReviewRequest(t *testing.T) ReviewRequest {
 		ExecutionPolicy:        policyRef,
 		ArtifactManifest:       requireArtifactManifestRef(t, sampleArtifactManifest(t)),
 		PolicyRefs: []string{
-			"docs/contracts/issue-contract-v1alpha1.md",
-			"docs/review-policies/test-validity-v1alpha1.md",
+			"docs/spec/05_design/contracts/issue-contract-v1alpha1.md",
+			"docs/spec/05_design/review-policies/test-validity-v1alpha1.md",
 		},
 		CreatedAt: sampleCreatedAt,
 	}
@@ -141,7 +141,7 @@ func sampleFinalReviewRequest(t *testing.T) ReviewRequest {
 	t.Helper()
 	req := sampleReviewRequest(t)
 	req.Kind = ReviewFinalImplementation
-	req.PolicyRefs = []string{"docs/review-policies/final-implementation-v1alpha1.md"}
+	req.PolicyRefs = []string{"docs/spec/05_design/review-policies/final-implementation-v1alpha1.md"}
 	req.ArtifactManifest = requireArtifactManifestRef(t, sampleFinalImplementationManifest(t))
 	return req
 }
@@ -271,7 +271,7 @@ func TestReviewRequestValidation(t *testing.T) {
 		"empty policy refs":        func(r *ReviewRequest) { r.PolicyRefs = nil },
 		"policy ref path":          func(r *ReviewRequest) { r.PolicyRefs = []string{"../secret.md"} },
 		"missing required policy": func(r *ReviewRequest) {
-			r.PolicyRefs = []string{"docs/contracts/issue-contract-v1alpha1.md"}
+			r.PolicyRefs = []string{"docs/spec/05_design/contracts/issue-contract-v1alpha1.md"}
 		},
 		"created at": func(r *ReviewRequest) { r.CreatedAt = time.Time{} },
 	}
@@ -311,7 +311,7 @@ func TestReviewRequestRequiresKindPolicyRef(t *testing.T) {
 			if len(required) == 0 {
 				t.Fatalf("kind %q の標準 policy が宣言されていない", kind)
 			}
-			req.PolicyRefs = []string{"docs/contracts/issue-contract-v1alpha1.md"}
+			req.PolicyRefs = []string{"docs/spec/05_design/contracts/issue-contract-v1alpha1.md"}
 			err := ValidateReviewRequest(req)
 			if !errors.Is(err, ProtocolKindConstraint) {
 				t.Fatalf("標準 policy の欠落が %q へ分類されない: %v", ProtocolKindConstraint, err)
@@ -324,7 +324,7 @@ func TestReviewRequestRequiresKindPolicyRef(t *testing.T) {
 			}
 
 			// 標準 policy さえ含めば repository 固有 policy の追加は妨げない。
-			req.PolicyRefs = append([]string{"docs/github-routing.md"}, required...)
+			req.PolicyRefs = append([]string{"docs/spec/05_design/04_github-routing.md"}, required...)
 			if err := ValidateReviewRequest(req); err != nil {
 				t.Fatalf("標準 policy + 追加 policy の request を拒否した: %v", err)
 			}
@@ -548,7 +548,7 @@ func TestBindReviewResult(t *testing.T) {
 		"execution policy":  func(r *ReviewRequest) { r.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) },
 		"head":              func(r *ReviewRequest) { r.HeadSHA = sampleNextSHA },
 		"artifact manifest": func(r *ReviewRequest) { r.ArtifactManifest.Digest = SHA256([]byte("別 artifact")) },
-		"policy refs":       func(r *ReviewRequest) { r.PolicyRefs = []string{"docs/workflow.md"} },
+		"policy refs":       func(r *ReviewRequest) { r.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md"} },
 	}
 	for name, mutate := range changes {
 		t.Run(name, func(t *testing.T) {

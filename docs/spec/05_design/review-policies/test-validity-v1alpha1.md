@@ -9,7 +9,7 @@
 ## Applicability and binding
 
 - Review Requestの`kind`が`test_validity`の場合にだけ適用する。
-- Controllerは`docs/review-policies/test-validity-v1alpha1.md`を`policyRefs`へ含める。
+- Controllerは`docs/spec/05_design/review-policies/test-validity-v1alpha1.md`を`policyRefs`へ含める。
 - repository固有policyを追加してよいが、このpolicyを省略または別policyから推測してはならない。
 - required policy refが欠落し、または未対応のpath/versionを指すRequestはproviderへ渡さず、quality verdictではない入力不備として扱う。policy取得時のnetwork等の失敗はexecution failureとして分離する。
 - 複数policyのauthorityが衝突し、人間の仕様判断なしに解消できない場合は`needs_human`とする。

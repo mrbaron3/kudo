@@ -8,7 +8,7 @@ import (
 // ProtocolCode は Worker Operation protocol と Implementation–Review protocol の
 // validation 失敗の機械可読な分類である。
 //
-// 分類は docs/contracts/operation-protocol-v1alpha1.md の Validation 節が列挙する
+// 分類は docs/spec/05_design/contracts/operation-protocol-v1alpha1.md の Validation 節が列挙する
 // 拒否理由に対応する。値は安定した識別子であり、変更は versioned protocol の変更として扱う。
 //
 // Issue Contract parser の Code とは別の値空間である。parser の error は Issue body の

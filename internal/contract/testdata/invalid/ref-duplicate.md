@@ -11,8 +11,8 @@ dependsOn:
 acceptanceCriteriaIds:
   - AC-1
 authorityRefs:
-  - docs/architecture.md
-  - docs/architecture.md
+  - docs/spec/05_design/01_architecture.md
+  - docs/spec/05_design/01_architecture.md
   - github://mrbaron3/kudo/issues/7
   - github://mrbaron3/kudo/issues/7
 ```

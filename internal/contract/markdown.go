@@ -3,7 +3,7 @@ package contract
 import "strings"
 
 // 本 file は Issue Contract の検証に必要な最小限の Markdown 走査だけを実装する。
-// 一般的な Markdown parser を実装範囲へ広げない（docs/contracts/issue-contract-v1alpha1.md、
+// 一般的な Markdown parser を実装範囲へ広げない（docs/spec/05_design/contracts/issue-contract-v1alpha1.md、
 // Issue #9 Constraints）。認識するのは行頭の H2/H3 heading、code fence、
 // 行頭で始まる HTML comment のみである。
 //

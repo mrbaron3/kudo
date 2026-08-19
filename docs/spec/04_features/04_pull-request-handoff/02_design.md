@@ -53,7 +53,7 @@ workflow completion を巻き戻さない。
 
 ## 参照
 
-- [End-to-end workflow](../../../workflow.md) §7
-- [Architecture](../../../architecture.md) — Issue Worker、Mutation authority
-- [GitHub routing policy](../../../github-routing.md) — Review waiting
-- [Worker Operation Protocol](../../../contracts/operation-protocol-v1alpha1.md)
+- [End-to-end workflow](../../05_design/02_workflow.md) §7
+- [Architecture](../../05_design/01_architecture.md) — Issue Worker、Mutation authority
+- [GitHub routing policy](../../05_design/04_github-routing.md) — Review waiting
+- [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)

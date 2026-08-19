@@ -3,8 +3,8 @@
 Kudo における品質は、最終的な code diff が動くことだけではない。何を入力として、どの test と
 review を通り、どの commit を人間へ渡したかを後から検証できることまでを品質に含める。
 
-本書はそのための設計戦略をまとめる。個別 field は [contracts/](../../contracts/)、規範的な順序は
-[End-to-end workflow](../../workflow.md)、責務と権限は [Architecture](../../architecture.md) を正とする。
+本書はそのための設計戦略をまとめる。個別 field は [contracts/](../05_design/contracts/)、規範的な順序は
+[End-to-end workflow](../05_design/02_workflow.md)、責務と権限は [Architecture](../05_design/01_architecture.md) を正とする。
 
 ## 1. Explicit contract
 

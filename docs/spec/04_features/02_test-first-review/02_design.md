@@ -36,7 +36,7 @@ durable に記録された後にだけ Review Request を発行する。
 
 Review Request は exact head、Context Manifest、Execution Policy、Artifact Manifest、policy ref へ bind する。
 Review Worker は live Issue / PR freshness を決定論的に照合した後、disposable read-only checkout と fresh
-provider session で [Test Validity Review Policy](../../../review-policies/test-validity-v1alpha1.md) を適用する。
+provider session で [Test Validity Review Policy](../../05_design/review-policies/test-validity-v1alpha1.md) を適用する。
 
 ## Verdict routing
 
@@ -63,6 +63,6 @@ provider session で [Test Validity Review Policy](../../../review-policies/test
 
 ## 参照
 
-- [End-to-end workflow](../../../workflow.md) §3〜§4
-- [Architecture](../../../architecture.md) — Issue Worker、Review Worker、Context and session isolation
-- [Implementation–Review Protocol](../../../contracts/review-protocol-v1alpha1.md)
+- [End-to-end workflow](../../05_design/02_workflow.md) §3〜§4
+- [Architecture](../../05_design/01_architecture.md) — Issue Worker、Review Worker、Context and session isolation
+- [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)

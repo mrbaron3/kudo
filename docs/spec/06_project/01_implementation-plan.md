@@ -2,7 +2,8 @@
 
 ## Target
 
-本計画は bootstrap demo ではなく、[Product vision](vision.md) の completion criteria を満たす Compose-deployed issue-to-PR runtime を完成させるための delivery order を定義する。
+本計画は bootstrap demo ではなく、[プロダクト設計](../01_product-design/README.md) の完成条件を満たす
+Compose-deployed issue-to-PR runtime を完成させるための delivery order を定義する。
 
 各 milestone は外部 adapter を後回しにするだけの layer 実装ではなく、可能な範囲で一つの recovery/idempotency behavior を end-to-end に証明する。fast deterministic test を先に実行し、live GitHub/provider test は opt-in として最後に重ねる。
 
@@ -193,7 +194,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 
 ## Milestone 7 — Production Compose deployment and operations
 
-Milestone 0のCompose基盤を、完成したController/Worker use caseを実行するproduction topologyへ拡張し、[Runtime platform](runtime-platform.md)の全serviceと運用contractを満たす。
+Milestone 0のCompose基盤を、完成したController/Worker use caseを実行するproduction topologyへ拡張し、[Runtime platform](../05_design/03_runtime-platform.md)の全serviceと運用contractを満たす。
 
 ### Milestone 7 deliverables
 
@@ -244,9 +245,9 @@ headless test で同等の confidence が得られる部分は先に headless �
 
 全 milestone 完了に加え、次が成立して初めて Kudo runtime を完成扱いにする。
 
-- [Product vision](vision.md) の completion criteria を自動 evidence へ対応付けられる。
-- [End-to-end workflow](workflow.md) の全 transition、retry、escalation が実装されている。
-- [Runtime platform](runtime-platform.md) の deployment、security、backup/recovery contract が検証されている。
+- [プロダクト設計](../01_product-design/README.md) の完成条件を自動 evidence へ対応付けられる。
+- [End-to-end workflow](../05_design/02_workflow.md) の全 transition、retry、escalation が実装されている。
+- [Runtime platform](../05_design/03_runtime-platform.md) の deployment、security、backup/recovery contract が検証されている。
 - versioned contract と migration に backward/forward compatibility policy がある。
 - operator が Run/Operation/attempt/outbox を診断し、安全に retry できる runbook がある。
 - live integration が opt-in でも、core correctness は deterministic tests だけで再現できる。

@@ -171,7 +171,7 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 
 ## 参照する正本
 
-- [End-to-end workflow](../../../workflow.md) — Durable states、Escalation and resumption、Recovery
-- [Architecture](../../../architecture.md) — Queue、lease、recovery
-- [Worker Operation Protocol](../../../contracts/operation-protocol-v1alpha1.md)
-- [ADR-0003](../../../decisions/0003-review-round-limit.md)
+- [End-to-end workflow](../../05_design/02_workflow.md) — Durable states、Escalation and resumption、Recovery
+- [Architecture](../../05_design/01_architecture.md) — Queue、lease、recovery
+- [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)
+- [ADR-0003](../../05_design/decisions/0003-review-round-limit.md)

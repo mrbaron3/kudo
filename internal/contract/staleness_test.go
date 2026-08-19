@@ -261,8 +261,8 @@ func operationIdentityCases() []identityCase[WorkerOperation, LatestOperationInp
 			mutate: func(o *WorkerOperation) { o.InputArtifacts = []Digest{SHA256([]byte("別 input"))} },
 			latest: func(l *LatestOperationInput) { l.InputArtifacts = []Digest{SHA256([]byte("別 input"))} }},
 		{field: "PolicyRefs", role: roleSemanticInput, compared: fieldPolicyRefs,
-			mutate: func(o *WorkerOperation) { o.PolicyRefs = []string{"docs/workflow.md"} },
-			latest: func(l *LatestOperationInput) { l.PolicyRefs = []string{"docs/workflow.md"} }},
+			mutate: func(o *WorkerOperation) { o.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md"} },
+			latest: func(l *LatestOperationInput) { l.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md"} }},
 		{field: "Observation", role: roleAuditLineage,
 			mutate: func(o *WorkerOperation) {
 				ref := IssueObservationRef{Schema: o.Observation.Schema, Digest: SHA256([]byte("別 raw body"))}
@@ -360,10 +360,10 @@ func reviewIdentityCases(t *testing.T) []identityCase[ReviewRequest, LatestRevie
 		// 標準 policy は kind の必須 ref なので、追加 policy の差分で比較する。
 		{field: "PolicyRefs", role: roleSemanticInput, compared: fieldPolicyRefs,
 			mutate: func(r *ReviewRequest) {
-				r.PolicyRefs = []string{"docs/review-policies/test-validity-v1alpha1.md", "docs/workflow.md"}
+				r.PolicyRefs = []string{"docs/spec/05_design/review-policies/test-validity-v1alpha1.md", "docs/spec/05_design/02_workflow.md"}
 			},
 			latest: func(l *LatestReviewInput) {
-				l.PolicyRefs = []string{"docs/review-policies/test-validity-v1alpha1.md", "docs/workflow.md"}
+				l.PolicyRefs = []string{"docs/spec/05_design/review-policies/test-validity-v1alpha1.md", "docs/spec/05_design/02_workflow.md"}
 			}},
 		{field: "Observation", role: roleAuditLineage,
 			mutate: func(r *ReviewRequest) { r.Observation.Digest = SHA256([]byte("別 raw body")) },
@@ -377,7 +377,7 @@ func reviewIdentityCases(t *testing.T) []identityCase[ReviewRequest, LatestRevie
 		// 落ち、identity の検証にならない。
 		{field: "Kind", role: roleIdentityOnly, mutate: func(r *ReviewRequest) {
 			r.Kind = ReviewFinalImplementation
-			r.PolicyRefs = append(r.PolicyRefs, "docs/review-policies/final-implementation-v1alpha1.md")
+			r.PolicyRefs = append(r.PolicyRefs, "docs/spec/05_design/review-policies/final-implementation-v1alpha1.md")
 		}},
 		{field: "Issue", role: roleIdentityOnly, mutate: func(r *ReviewRequest) { r.Issue.Number = 11 }},
 		{field: "RequestID", role: roleNonIdentity, mutate: func(r *ReviewRequest) { r.RequestID = "01KUDOOTHER" }},
@@ -461,7 +461,7 @@ func TestOperationSemanticDifferenceMatrix(t *testing.T) {
 			[]string{"inputArtifacts"},
 		},
 		"policy refs": {
-			func(l *LatestOperationInput) { l.PolicyRefs = []string{"docs/workflow.md"} },
+			func(l *LatestOperationInput) { l.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md"} },
 			[]string{"policyRefs"},
 		},
 		"複数": {
@@ -501,7 +501,7 @@ func TestOperationSemanticDifferenceMatrix(t *testing.T) {
 		reordered.InputArtifacts = []Digest{SHA256([]byte("a")), SHA256([]byte("b"))}
 		latest := latestFromOperation(reordered)
 		latest.InputArtifacts = []Digest{SHA256([]byte("b")), SHA256([]byte("a"))}
-		latest.PolicyRefs = []string{"docs/github-routing.md"}
+		latest.PolicyRefs = []string{"docs/spec/05_design/04_github-routing.md"}
 		if got := requireOperationComparison(t, reordered, latest); got.Comparison != SameSemanticInput {
 			t.Fatalf("集合の並び替えを差分と判定した: %+v", got)
 		}
@@ -539,7 +539,7 @@ func TestReviewSemanticDifferenceMatrix(t *testing.T) {
 			[]string{"artifactManifest"},
 		},
 		"policy refs": {
-			func(l *LatestReviewInput) { l.PolicyRefs = []string{"docs/workflow.md"} },
+			func(l *LatestReviewInput) { l.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md"} },
 			[]string{"policyRefs"},
 		},
 	}

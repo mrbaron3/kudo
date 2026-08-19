@@ -65,7 +65,7 @@ func TestAuthorityPathRejectsNonCanonicalText(t *testing.T) {
 			t.Errorf("authority path %q を受理した", p)
 		}
 	}
-	for _, p := range []string{"docs/workflow.md", "AGENTS.md", "docs/contracts/issue-contract-v1alpha1.md"} {
+	for _, p := range []string{"docs/spec/05_design/02_workflow.md", "AGENTS.md", "docs/spec/05_design/contracts/issue-contract-v1alpha1.md"} {
 		if !validAuthorityPath(p) {
 			t.Errorf("正当な authority path %q を拒否した", p)
 		}

@@ -33,7 +33,7 @@ Servo の`docs/requirements/lightweight-tdd-issue-to-pr-run/`にあった draft 
 - Webhookをprimary通知、60秒pollingを必須fallbackとするunified reconciliation
 - `ai-ready`、`ai-in-progress`、`ai-review-waiting`、`ai-needs-human`のstatus projection
 - model-bearing Operation ごとのfresh Codex/Claude sessionと、Orca handoffに似た明示artifact handoff
-- test reviewに加えたfinal implementation review gate。当初はPR作成をfinal approve後に置いたが、[ADR-0002](decisions/0002-pr-anchored-review.md)でsupersedeし、RED固定後にdraft PRをpublishして全review roundをPRへ繋留し、ready化だけをfinal approveのgateにした
+- test reviewに加えたfinal implementation review gate。当初はPR作成をfinal approve後に置いたが、[ADR-0002](../05_design/decisions/0002-pr-anchored-review.md)でsupersedeし、RED固定後にdraft PRをpublishして全review roundをPRへ繋留し、ready化だけをfinal approveのgateにした
 - PostgreSQLをRun state、Operation queue、lease、inbox/outboxの正本にする構成
 - 一つのGo binaryをrole別containerとして起動するDocker Compose deployment
 - content-addressed artifact volumeとIssue Worker専用workspace volume
@@ -49,7 +49,7 @@ Servoで使われていたfunctionality、code quality、test quality、UX、acc
 - UX、accessibility、type designはTaskと変更面が該当する場合だけfinal reviewへ追加する。
 - performanceはServoの固定perspectiveを流用せず、要件が明示された場合と、frontendやbatch/jobのような性能が問題になりやすい実行surfaceを変更する場合に評価する。
 
-Kudoの正本は[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)と[Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md)である。一つのfresh sessionが複数観点を評価でき、全観点一律panel、観点ごとのsession、score、重み、provider/effort routing、合議を要求しない。
+Kudoの正本は[Test Validity Review Policy](../05_design/review-policies/test-validity-v1alpha1.md)と[Final Implementation Review Policy](../05_design/review-policies/final-implementation-v1alpha1.md)である。一つのfresh sessionが複数観点を評価でき、全観点一律panel、観点ごとのsession、score、重み、provider/effort routing、合議を要求しない。
 
 ## Deliberately not migrated
 

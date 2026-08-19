@@ -3,7 +3,7 @@
 - Status: accepted（2026-08-18）
 - 関連Issue: [#25](https://github.com/mrbaron3/kudo/issues/25)、[#28](https://github.com/mrbaron3/kudo/issues/28)、[#29](https://github.com/mrbaron3/kudo/issues/29)、[#43](https://github.com/mrbaron3/kudo/issues/43)、[#44](https://github.com/mrbaron3/kudo/issues/44)、[#47](https://github.com/mrbaron3/kudo/issues/47)
 - 実装Task: [#49](https://github.com/mrbaron3/kudo/issues/49)（本ADRの確定とprotocol/workflow改訂）
-- Supersede対象: [migration-from-servo.md](../migration-from-servo.md)「New Kudo decisions」の「PR作成前のfinal implementation review gate」、および[workflow.md](../workflow.md) §6–7のPR作成順序
+- Supersede対象: [migration-from-servo.md](../../06_project/03_migration-from-servo.md)「New Kudo decisions」の「PR作成前のfinal implementation review gate」、および[workflow.md](../02_workflow.md) §6–7のPR作成順序
 
 ## Context
 

@@ -39,7 +39,7 @@ durable record が final review の前提になる。
 Controller は final head、approved test result、implementation patch、GREEN / refactor / check evidence、
 required policy ref を Review Request へ bind する。Review Worker は live freshness を検証し、独立した
 read-only checkout と fresh session で
-[Final Implementation Review Policy](../../../review-policies/final-implementation-v1alpha1.md) を適用する。
+[Final Implementation Review Policy](../../05_design/review-policies/final-implementation-v1alpha1.md) を適用する。
 
 条件付き観点を含む applicability 宣言が欠けた Result は binding 境界で拒否する。Controller は verdict の
 schema と freshness を検証するが、reviewer の品質判断を上書きしない。
@@ -59,7 +59,7 @@ schema と freshness を検証するが、reviewer の品質判断を上書き�
 
 ## 参照
 
-- [End-to-end workflow](../../../workflow.md) §5〜§6
-- [Architecture](../../../architecture.md) — Mutation authority、Context and session isolation
-- [Worker Operation Protocol](../../../contracts/operation-protocol-v1alpha1.md)
-- [Implementation–Review Protocol](../../../contracts/review-protocol-v1alpha1.md)
+- [End-to-end workflow](../../05_design/02_workflow.md) §5〜§6
+- [Architecture](../../05_design/01_architecture.md) — Mutation authority、Context and session isolation
+- [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)
+- [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)

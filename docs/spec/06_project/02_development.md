@@ -2,7 +2,7 @@
 
 Milestone 0 の Compose 開発基盤の手順を説明する。host へ Go、PostgreSQL、Kudo daemon を直接 install せず、同じ Docker Compose application で image build・check・PostgreSQL integration test を実行できる。
 
-deployment contract の正本は [Runtime platform](runtime-platform.md) と [ADR-0001](decisions/0001-compose-runtime.md) である。本書は開発手順だけを扱い、仕様を再定義しない。
+deployment contract の正本は [Runtime platform](../05_design/03_runtime-platform.md) と [ADR-0001](../05_design/decisions/0001-compose-runtime.md) である。本書は開発手順だけを扱い、仕様を再定義しない。
 
 ## 前提
 
@@ -11,7 +11,7 @@ deployment contract の正本は [Runtime platform](runtime-platform.md) と [AD
   - Linux: Docker Engine と Compose plugin
 - Docker socket の mount と Docker-in-Docker は使用しない
 
-host で直接開発する場合だけ、Go 1.26.5 と mise が必要になる（[README](../README.md) の Development を参照）。
+host で直接開発する場合だけ、Go 1.26.5 と mise が必要になる（[README](../../../README.md) の Development を参照）。
 
 ## 初期設定
 
@@ -96,7 +96,7 @@ test は internal network 経由で `postgres:5432` へ接続し、server versio
 | --- | --- | --- |
 | `golang:1.26.5-trixie` | `infra/Dockerfile` の `GO_IMAGE` | `docker buildx imagetools inspect golang:<tag>` で digest を取得し、tag と digest を同時更新する |
 | `gcr.io/distroless/static-debian12:nonroot` | `infra/Dockerfile` の `RUNTIME_IMAGE` | 同上 |
-| `postgres:18.4` | `compose.yaml` の `postgres.image` | 同上。あわせて [Runtime platform](runtime-platform.md) の version 記述、本書の 18.4 記述、`test/integration/postgres_test.go` の server_version assertion を整合させる |
+| `postgres:18.4` | `compose.yaml` の `postgres.image` | 同上。あわせて [Runtime platform](../05_design/03_runtime-platform.md) の version 記述、本書の 18.4 記述、`test/integration/postgres_test.go` の server_version assertion を整合させる |
 | mise | `infra/Dockerfile` の `MISE_VERSION` / `MISE_SHA256_LINUX_*` | release の `SHASUMS256.txt` から linux-x64 / linux-arm64 の sha256 を取得して同時更新する |
 | Go toolchain（host） | `mise.toml` の `[tools]` | `infra/Dockerfile` の `GO_IMAGE` と同じ version に保つ |
 

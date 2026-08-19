@@ -113,7 +113,7 @@ dependencies:
   - issue: "github://owner/repository/issues/101"
     completionDigest: "sha256:<digest>"
 authorityRefs:
-  - ref: "docs/architecture.md"
+  - ref: "docs/spec/05_design/01_architecture.md"
     contentDigest: "sha256:<digest>"
 ```
 

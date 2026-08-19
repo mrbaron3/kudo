@@ -10,7 +10,7 @@ Issue WorkerはTask開始時にGitHubからIssueを直接取得する。pureなI
 
 ## Executability
 
-Kudoがclaimできるのは、[GitHub routing policy](../github-routing.md)のcandidate条件を満たしたうえで、Contract blockが`schema: kudo.issue/v1alpha1`、`kind: task`、`readiness: ready`を満たし、依存関係とcontext referenceをすべて解決できるIssueだけである。Issue番号とrepositoryはGitHub APIまたは検証済みevent envelopeのidentityを正とし、body内に自己申告させない。
+Kudoがclaimできるのは、[GitHub routing policy](../04_github-routing.md)のcandidate条件を満たしたうえで、Contract blockが`schema: kudo.issue/v1alpha1`、`kind: task`、`readiness: ready`を満たし、依存関係とcontext referenceをすべて解決できるIssueだけである。Issue番号とrepositoryはGitHub APIまたは検証済みevent envelopeのidentityを正とし、body内に自己申告させない。
 
 次のH2 sectionを、この順序でそれぞれ1回だけ含める。
 
@@ -50,7 +50,7 @@ dependsOn:
 acceptanceCriteriaIds:
   - AC-1
 authorityRefs:
-  - docs/architecture.md
+  - docs/spec/05_design/01_architecture.md
 ```
 
 親を持たないtaskは、`parent: null`を明示する。
@@ -185,7 +185,7 @@ dependencies:
   - issue: "github://owner/repository/issues/101"
     completionDigest: "sha256:<digest>"
 authorityRefs:
-  - ref: "docs/architecture.md"
+  - ref: "docs/spec/05_design/01_architecture.md"
     contentDigest: "sha256:<digest>"
 ```
 

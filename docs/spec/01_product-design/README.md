@@ -1,8 +1,8 @@
 # 01. プロダクト設計
 
-Kudo が誰のどの問題を解き、どこまでを製品責任として引き受けるかを定義する。
-厳密な完成条件は [Product vision](../../vision.md)、システム全体の要求は
-[03. システム仕様](../03_system-spec/) を参照する。
+Kudo が誰のどの問題を解き、どこまでを製品責任として引き受け、何をもって完成とするかを定義する。
+本書をプロダクトの目的、境界、完成条件の正本とし、システム全体の要求は
+[03. システム仕様](../03_system-spec/) で具体化する。
 
 ## 1. 解決する課題
 
@@ -29,7 +29,7 @@ workflow を一つの issue-to-PR runtime として提供することで解決�
 5. 最終 head を独立 review し、承認された同じ head の Pull Request を人間へ渡す。
 
 正常な完了点は、Pull Request が review 可能な状態になり、Issue が
-`ai-review-waiting`へ投影された時点である。merge、release、最終的な製品判断は人間が所有する。
+`ai-review-waiting` へ投影された時点である。merge、release、最終的な製品判断は人間が所有する。
 
 ## 3. 利用者と責任
 
@@ -74,10 +74,41 @@ Kudo が担当する範囲は、実行依頼の検出から、人間がレビュ
 - 人間の Pull Request review comment に対する自動修正 loop
 - pass@k、best-of-N、複数 candidate の競争実行や scoring dashboard
 - 複数 host を前提とした distributed scheduler
+- Kubernetes を必須とする deployment
 - Servo の API、database schema、artifact layout との互換性
 
-## 6. 成功条件
+評価 harness は runtime telemetry と分離し、別の design decision まで保留する。
 
-一度 happy path が動くことだけを完成とはしない。重複・遅延 event、webhook 欠落、process restart、
-stale input、複数 Issue の同時実行を含む条件で、正しい Run と Pull Request に収束する必要がある。
-検証対象の完全な一覧は [Product vision — Definition of product completion](../../vision.md) を正とする。
+## 6. 必須成果物と Lineage
+
+対象 Issue から作られた Pull Request には、少なくとも次の lineage が存在しなければならない。
+
+- GitHub から直接取得した exact body を固定する Issue Observation
+- strict parse 済み Issue を固定表現にした canonical Task Context
+- base commit、dependency completion、authority content を固定した Context Manifest
+- Issue の Acceptance Criteria に対応する test plan と test patch
+- 対象機能が未実装であることを示す RED command evidence
+- 実装と隔離された Review Worker による test validity approval
+- 承認済み test を通す実装、refactor、GREEN command evidence
+- 最終 head に対する独立した final implementation approval
+- 実行した必須 check、その結果、残存 risk を含む Pull Request
+
+artifact、Review Request、Review Result は immutable identity を持つ。Context Manifest、Execution Policy、
+head SHA、artifact digest、policy reference のいずれかが変われば、以前の review approval は再利用しない。
+Issue Observation だけの変化は audit lineage への追記であり、approval を stale にしない。
+
+## 7. 完成条件
+
+完成とは happy path の demo が一度動くことではない。少なくとも次を automated test または明示した
+live verification で証明する。
+
+- webhook を失っても polling が同じ候補を発見する。
+- duplicate、遅延、順不同 event が二重 Run または二重 Pull Request を作らない。
+- Controller または Worker の再起動後に、lease と durable state から処理を回復できる。
+- test review の `request_changes` が fresh session に handoff され、approve まで実装へ進まない。
+- RED、GREEN、refactor 後 checks、二つの review approval が対象 digest と一致する。
+- dependency のない複数 Issue は同時実行でき、同じ Issue は二重実行されない。
+- Review Worker は implementation worktree と write credential を持たない。
+- Task Context に影響する Issue 変更、または head 変更が以前の approval を stale にする。
+- Pull Request と `ai-review-waiting` projection が crash / retry 下でも一度だけ成立する。
+- Compose stack の health、migration、backup / restore、graceful shutdown 手順が検証されている。

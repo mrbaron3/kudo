@@ -43,7 +43,7 @@ func sampleWorkerOperation(t *testing.T) WorkerOperation {
 		ExecutionPolicy: policyRef,
 		HeadSHA:         sampleHeadSHA,
 		InputArtifacts:  []Digest{SHA256([]byte("implementation-brief"))},
-		PolicyRefs:      []string{"docs/github-routing.md"},
+		PolicyRefs:      []string{"docs/spec/05_design/04_github-routing.md"},
 		CausationID:     "transition-01",
 		CreatedAt:       sampleCreatedAt,
 	}
@@ -134,11 +134,11 @@ func TestOperationDigestCanonicalizesIssueReferenceCase(t *testing.T) {
 func TestOperationDigestCanonicalizesSetOrder(t *testing.T) {
 	ordered := sampleWorkerOperation(t)
 	ordered.InputArtifacts = []Digest{SHA256([]byte("a")), SHA256([]byte("b"))}
-	ordered.PolicyRefs = []string{"docs/github-routing.md", "docs/workflow.md"}
+	ordered.PolicyRefs = []string{"docs/spec/05_design/04_github-routing.md", "docs/spec/05_design/02_workflow.md"}
 
 	reversed := sampleWorkerOperation(t)
 	reversed.InputArtifacts = []Digest{SHA256([]byte("b")), SHA256([]byte("a"))}
-	reversed.PolicyRefs = []string{"docs/workflow.md", "docs/github-routing.md"}
+	reversed.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md", "docs/spec/05_design/04_github-routing.md"}
 
 	if requireOperationDigest(t, ordered) != requireOperationDigest(t, reversed) {
 		t.Fatal("集合の並び替えで Operation digest が変化")
@@ -176,7 +176,7 @@ func TestWorkerOperationValidation(t *testing.T) {
 		"policy ref path":    func(o *WorkerOperation) { o.PolicyRefs = []string{"/etc/passwd"} },
 		"policy ref escape":  func(o *WorkerOperation) { o.PolicyRefs = []string{"../secrets.md"} },
 		"duplicate policy ref": func(o *WorkerOperation) {
-			o.PolicyRefs = []string{"docs/workflow.md", "docs/workflow.md"}
+			o.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md", "docs/spec/05_design/02_workflow.md"}
 		},
 	}
 	for name, mutate := range tests {
@@ -274,7 +274,7 @@ func TestBindOperationResult(t *testing.T) {
 		"execution policy": func(o *WorkerOperation) { o.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) },
 		"head":             func(o *WorkerOperation) { o.HeadSHA = sampleNextSHA },
 		"input artifact":   func(o *WorkerOperation) { o.InputArtifacts = []Digest{SHA256([]byte("別 input"))} },
-		"policy ref":       func(o *WorkerOperation) { o.PolicyRefs = []string{"docs/workflow.md"} },
+		"policy ref":       func(o *WorkerOperation) { o.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md"} },
 	}
 	for name, mutate := range changes {
 		t.Run(name, func(t *testing.T) {

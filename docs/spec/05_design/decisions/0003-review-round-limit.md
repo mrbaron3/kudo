@@ -8,9 +8,9 @@
 
 `request_changes`は自動修正loopへroutingされるが、loopを止める上限がどこにも定義されていない。
 
-- [architecture.md](../architecture.md)のretry policyは、`bounded retry`をtimeout、rate limit、network failure、invalid provider outputというtransport/execution failureに対してだけ定義する。
+- [architecture.md](../01_architecture.md)のretry policyは、`bounded retry`をtimeout、rate limit、network failure、invalid provider outputというtransport/execution failureに対してだけ定義する。
 - [operation-protocol-v1alpha1.md](../contracts/operation-protocol-v1alpha1.md)のattempt failureも同じくexecution failure側の概念である。
-- 一方でreviewのquality verdict `request_changes`には回数の記載が無い。[github-routing.md](../github-routing.md)は「test/final reviewの`request_changes`は自動修正loopなので`ai-in-progress`を保つ」とだけ述べ、[workflow.md](../workflow.md)のstate図は`awaiting_test_review → authoring_tests`と`awaiting_final_review → implementing`を無条件の辺として描く。
+- 一方でreviewのquality verdict `request_changes`には回数の記載が無い。[github-routing.md](../04_github-routing.md)は「test/final reviewの`request_changes`は自動修正loopなので`ai-in-progress`を保つ」とだけ述べ、[workflow.md](../02_workflow.md)のstate図は`awaiting_test_review → authoring_tests`と`awaiting_final_review → implementing`を無条件の辺として描く。
 
 したがってreviewerが「まだ直せる」と判断し続ける限り、Runは`authoring_tests ⇄ awaiting_test_review`または`implementing ⇄ awaiting_final_review`を無限に往復しうる。現行設計で自動loopを止められるのは、reviewer自身がauthorityまたは安全判断が必要だと判断して`needs_human`を返した場合だけである。
 
@@ -26,7 +26,7 @@
 - reviewerへround数、上限、過去roundの結果を渡さない。reviewerに「上限だから`needs_human`を返せ」と判断させない。上限はreviewの品質基準ではなく、Controllerが自動継続をやめる条件である。
 - Run phase、Operation outcome、Review verdictの3つの値空間を混ぜない。上限到達は`Decide`がRun phaseを`needs_human`へ送ることで表現し、Review ResultにもOperation Resultにも新しい値を追加しない。
 
-Controllerが行うのは「reviewerが返した`request_changes`に対して修正Operationを発行するか、人間へ渡すか」の選択だけであり、`request_changes`という判断自体は上書きしない（[architecture.md](../architecture.md)「Controllerはreviewerの品質verdictをapproveに変更しない」を維持する）。
+Controllerが行うのは「reviewerが返した`request_changes`に対して修正Operationを発行するか、人間へ渡すか」の選択だけであり、`request_changes`という判断自体は上書きしない（[architecture.md](../01_architecture.md)「Controllerはreviewerの品質verdictをapproveに変更しない」を維持する）。
 
 ### D2. counterはgateごとに独立、Run scope、単調増加
 
@@ -111,9 +111,9 @@ Run aggregateはfinding本文もfingerprintも保持しない。findingはimmuta
 
 ### D7. escalation reason codeを語彙として固定する
 
-[github-routing.md](../github-routing.md)は`ai-needs-human` commentに「理由code」を含めることを要求しているが、語彙が定義されていなかった。round上限のescalationを識別可能にするため、ここで語彙を確定する。
+[github-routing.md](../04_github-routing.md)は`ai-needs-human` commentに「理由code」を含めることを要求しているが、語彙が定義されていなかった。round上限のescalationを識別可能にするため、ここで語彙を確定する。
 
-`review_round_limit_exceeded`を含む語彙は[github-routing.md](../github-routing.md)の Human escalation 節を正本とする。state machineが自ら導出するcode（`review_needs_human`、`review_round_limit_exceeded`、`retry_budget_exhausted`）は、外部からの明示的escalation eventでは指定できない。指定できると、counterが上限に達していないRunを「上限到達」として停止させられ、lineageとcodeが食い違う。
+`review_round_limit_exceeded`を含む語彙は[github-routing.md](../04_github-routing.md)の Human escalation 節を正本とする。state machineが自ら導出するcode（`review_needs_human`、`review_round_limit_exceeded`、`retry_budget_exhausted`）は、外部からの明示的escalation eventでは指定できない。指定できると、counterが上限に達していないRunを「上限到達」として停止させられ、lineageとcodeが食い違う。
 
 ## 設計詳細
 

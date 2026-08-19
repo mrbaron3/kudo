@@ -161,7 +161,7 @@ finalize gate、Pull Request mutation、status projection の実現方法は [�
 
 ## 参照する正本
 
-- [End-to-end workflow](../../../workflow.md) §7
-- [GitHub routing policy](../../../github-routing.md) — Review waiting
-- [Architecture](../../../architecture.md) — Mutation authority
-- [Implementation–Review Protocol](../../../contracts/review-protocol-v1alpha1.md)
+- [End-to-end workflow](../../05_design/02_workflow.md) §7
+- [GitHub routing policy](../../05_design/04_github-routing.md) — Review waiting
+- [Architecture](../../05_design/01_architecture.md) — Mutation authority
+- [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)

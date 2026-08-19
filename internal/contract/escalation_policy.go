@@ -31,7 +31,7 @@ type ReviewRoundLimits struct {
 // Execution Policy と分けているのは、Execution Policy ref が Run の semantic input identity
 // の一部であり、変化が既存 review を stale にするためである。round 上限は reviewer が
 // 読まない値なので review 判断の入力ではなく、値を変えただけで進行中 Run を supersede
-// させてはならない。詳細は docs/decisions/0003-review-round-limit.md を参照する。
+// させてはならない。詳細は docs/spec/05_design/decisions/0003-review-round-limit.md を参照する。
 type EscalationPolicy struct {
 	Schema       string
 	ReviewRounds ReviewRoundLimits

@@ -176,7 +176,7 @@ dependency graph、constraint、lease、stable identity の実現方法は [詳�
 
 ## 参照する正本
 
-- [End-to-end workflow](../../../workflow.md) — Idempotency and recovery
-- [Architecture](../../../architecture.md) — Scheduling and concurrency
-- [GitHub routing policy](../../../github-routing.md)
-- [Worker Operation Protocol](../../../contracts/operation-protocol-v1alpha1.md)
+- [End-to-end workflow](../../05_design/02_workflow.md) — Idempotency and recovery
+- [Architecture](../../05_design/01_architecture.md) — Scheduling and concurrency
+- [GitHub routing policy](../../05_design/04_github-routing.md)
+- [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)

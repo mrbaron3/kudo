@@ -37,7 +37,7 @@ artifactManifest:
   schema: kudo.artifact-manifest/v1alpha1
   digest: sha256:<digest>
 policyRefs:
-  - docs/review-policies/test-validity-v1alpha1.md
+  - docs/spec/05_design/review-policies/test-validity-v1alpha1.md
 createdAt: 2026-08-11T00:00:00Z
 ```
 
@@ -64,8 +64,8 @@ kindごとに、対応するversioned review policyの現行pathを`policyRefs`�
 
 | Review kind | 必須policy ref |
 | --- | --- |
-| `test_validity` | `docs/review-policies/test-validity-v1alpha1.md` |
-| `final_implementation` | `docs/review-policies/final-implementation-v1alpha1.md` |
+| `test_validity` | `docs/spec/05_design/review-policies/test-validity-v1alpha1.md` |
+| `final_implementation` | `docs/spec/05_design/review-policies/final-implementation-v1alpha1.md` |
 
 repository固有policyの追加は妨げない。欠落はrequestをrejectし、欠落したpathをすべてerrorへ載せて`protocol_kind_constraint`として分類する。policyの意味を変えるときは新しいversioned pathを追加し、この表を同じchangeで差し替える。
 

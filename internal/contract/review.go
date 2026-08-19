@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// 正本は docs/contracts/review-protocol-v1alpha1.md である。
+// 正本は docs/spec/05_design/contracts/review-protocol-v1alpha1.md である。
 
 const (
 	// ReviewRequestSchemaV1Alpha1 は Review Worker への品質評価依頼の schema である。
@@ -188,8 +188,8 @@ func encodeReviewRequestIdentity(req ReviewRequest) []byte {
 // provider へ渡ってしまう。語彙は artifact logical name と同じ理由で pure core に置く。
 // policy の意味を変えるときは新しい versioned path を追加し、ここも同じ change で差し替える。
 var requiredReviewPolicyRefs = map[ReviewKind][]string{
-	ReviewTestValidity:        {"docs/review-policies/test-validity-v1alpha1.md"},
-	ReviewFinalImplementation: {"docs/review-policies/final-implementation-v1alpha1.md"},
+	ReviewTestValidity:        {"docs/spec/05_design/review-policies/test-validity-v1alpha1.md"},
+	ReviewFinalImplementation: {"docs/spec/05_design/review-policies/final-implementation-v1alpha1.md"},
 }
 
 // RequiredReviewPolicyRefs は kind の Request が含めるべき標準 policy path を返す。
@@ -251,7 +251,7 @@ var findingSeverities = map[FindingSeverity]bool{
 //
 // 適用可否は review session が policy の適用条件から判断する。語彙を pure core に置くのは
 // 「全観点への態度表明」という宣言の完全性を binding 境界で機械検証するためであり、
-// 適用条件そのものは docs/review-policies/final-implementation-v1alpha1.md が正本である。
+// 適用条件そのものは docs/spec/05_design/review-policies/final-implementation-v1alpha1.md が正本である。
 type ConditionalPerspective string
 
 const (

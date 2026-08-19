@@ -1,7 +1,7 @@
 // Package workflow は Run の durable phase と、分類済み event から次 state と
 // 必要 action を決める pure な transition function を提供する。
 //
-// 正本は docs/workflow.md の Durable states と docs/architecture.md である。
+// 正本は docs/spec/05_design/02_workflow.md の Durable states と docs/spec/05_design/01_architecture.md である。
 // 本 package は network、clock、filesystem、Issue parser、canonical YAML reader を
 // 呼ばない。Run と event は解決済みの opaque な identity だけを運ぶ。
 package workflow
@@ -39,7 +39,7 @@ const (
 	PhaseNeedsHuman Phase = "needs_human"
 	// PhaseSuperseded は semantic input が変わって打ち切られた Run である。
 	//
-	// docs/workflow.md の state 図には現れないが、同書の Escalation and resumption が
+	// docs/spec/05_design/02_workflow.md の state 図には現れないが、同書の Escalation and resumption が
 	// 「入力が変わった場合は古い Run を superseded とし、新しい Run と review lineage を
 	// 作る」と定めている。stale を needs_human へ潰すと、人の判断を待つ停止と、
 	// 入力が変わったので作り直す停止が同じ phase になり、再 claim が gate される。

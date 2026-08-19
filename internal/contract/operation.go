@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// 正本は docs/contracts/operation-protocol-v1alpha1.md である。
+// 正本は docs/spec/05_design/contracts/operation-protocol-v1alpha1.md である。
 
 const (
 	// WorkerOperationSchemaV1Alpha1 は Controller が Issue Worker へ渡す

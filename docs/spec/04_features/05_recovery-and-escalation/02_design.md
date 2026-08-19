@@ -50,7 +50,7 @@ resume / supersede の選択と writer 排他は一つの transaction で決定�
 
 ## 参照
 
-- [End-to-end workflow](../../../workflow.md) — Durable states、Escalation and resumption
-- [Architecture](../../../architecture.md) — Durable model、Queue / lease / recovery
-- [Task Context Protocol](../../../contracts/task-context-v1alpha1.md) — Escalation Policy
-- [ADR-0003](../../../decisions/0003-review-round-limit.md)
+- [End-to-end workflow](../../05_design/02_workflow.md) — Durable states、Escalation and resumption
+- [Architecture](../../05_design/01_architecture.md) — Durable model、Queue / lease / recovery
+- [Task Context Protocol](../../05_design/contracts/task-context-v1alpha1.md) — Escalation Policy
+- [ADR-0003](../../05_design/decisions/0003-review-round-limit.md)

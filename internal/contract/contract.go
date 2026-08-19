@@ -3,10 +3,10 @@
 // 構築する pure core である。identity の比較だけで staleness を判定できるよう、
 // exact Issue 観測（audit lineage）と semantic input を分けて扱う。
 //
-// 正本は docs/contracts/issue-contract-v1alpha1.md、
-// docs/contracts/task-context-v1alpha1.md、
-// docs/contracts/operation-protocol-v1alpha1.md、
-// docs/contracts/review-protocol-v1alpha1.md、.github/ISSUE_TEMPLATE/kudo-task.md である。
+// 正本は docs/spec/05_design/contracts/issue-contract-v1alpha1.md、
+// docs/spec/05_design/contracts/task-context-v1alpha1.md、
+// docs/spec/05_design/contracts/operation-protocol-v1alpha1.md、
+// docs/spec/05_design/contracts/review-protocol-v1alpha1.md、.github/ISSUE_TEMPLATE/kudo-task.md である。
 // 本 package は GitHub API、filesystem、clock 等の外部境界へ接続しない。
 package contract
 

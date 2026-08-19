@@ -390,7 +390,7 @@ func TestClaimRequirementsIsStableProjection(t *testing.T) {
 		},
 		AuthorityRefs: []AuthorityRef{
 			{Path: "AGENTS.md"},
-			{Path: "docs/contracts/issue-contract-v1alpha1.md"},
+			{Path: "docs/spec/05_design/contracts/issue-contract-v1alpha1.md"},
 			{Path: ".github/ISSUE_TEMPLATE/kudo-task.md"},
 			{Issue: &IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 1}},
 		},

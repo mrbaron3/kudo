@@ -7,12 +7,12 @@ Kudo の完成形を、プロダクト全体の視点から示す中央仕様で
 本書は system-wide なアクター、要求、構成、不変条件を所有する。厳密な field や遷移を本書へ
 複製せず、次の正本へ委譲する。
 
-- protocol field と canonical identity: [contracts/](../../contracts/)
-- workflow の順序と state transition: [End-to-end workflow](../../workflow.md)
-- component の責務と権限: [Architecture](../../architecture.md)
-- deployment / operations contract: [Runtime platform](../../runtime-platform.md)
-- GitHub 上の candidate と status: [GitHub routing policy](../../github-routing.md)
-- 実装状況と delivery order: [Implementation plan](../../implementation-plan.md)
+- protocol field と canonical identity: [contracts/](../05_design/contracts/)
+- workflow の順序と state transition: [End-to-end workflow](../05_design/02_workflow.md)
+- component の責務と権限: [Architecture](../05_design/01_architecture.md)
+- deployment / operations contract: [Runtime platform](../05_design/03_runtime-platform.md)
+- GitHub 上の candidate と status: [GitHub routing policy](../05_design/04_github-routing.md)
+- 実装状況と delivery order: [Implementation plan](../06_project/01_implementation-plan.md)
 
 ## 1. プロジェクト概要
 
@@ -74,7 +74,7 @@ flowchart LR
 | Telemetry | structured log、metric、trace | 診断と改善に使うが workflow state の正本にはしない |
 
 採用理由と container / volume / secret の厳密な境界は
-[ADR-0001](../../decisions/0001-compose-runtime.md) と [Runtime platform](../../runtime-platform.md) を正とする。
+[ADR-0001](../05_design/decisions/0001-compose-runtime.md) と [Runtime platform](../05_design/03_runtime-platform.md) を正とする。
 
 ### 3.2. 権限境界
 
@@ -172,7 +172,7 @@ Issue ready
 
 review の `request_changes`は該当 gate 内で fresh correction session と再 review を繰り返す。
 retry、stale、transport failure は review verdict と別に扱う。規範的な分岐と durable state は
-[End-to-end workflow](../../workflow.md) を正とする。
+[End-to-end workflow](../05_design/02_workflow.md) を正とする。
 
 ## 6. 主要な情報と証跡
 
@@ -187,7 +187,7 @@ retry、stale、transport failure は review verdict と別に扱う。規範的
 | Review Request / Result | review input identity と versioned verdict / finding の binding |
 | Pull Request Observation | live PR の head、base、open / draft state の監査 lineage |
 
-schema と staleness rule は [contracts/](../../contracts/) を正とする。
+schema と staleness rule は [contracts/](../05_design/contracts/) を正とする。
 
 ## 7. 非機能要件
 
@@ -245,4 +245,4 @@ PostgreSQL migration、health / readiness、backup / restore、graceful shutdown
 
 製品境界は [01. プロダクト設計](../01_product-design/) §5 を参照する。本書は完成形の仕様であり、
 現在の repository status を表さない。実装済みの milestone と未実装 component は
-[Implementation plan — Current status](../../implementation-plan.md) を正とする。
+[Implementation plan — Current status](../06_project/01_implementation-plan.md) を正とする。

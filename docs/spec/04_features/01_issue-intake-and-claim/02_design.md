@@ -2,7 +2,7 @@
 
 [機能仕様](01_spec.md)を、reconciliation、claim、durable transition の三つの境界で実現する。
 protocol field の厳密な定義は versioned contract、component の権限は
-[Architecture](../../../architecture.md) を正本とする。
+[Architecture](../../05_design/01_architecture.md) を正本とする。
 
 ## 責務分担
 
@@ -26,9 +26,9 @@ Webhook と polling は同じ application operation を呼び、candidate rule �
 
 ## Contract compilation と Claim
 
-Issue Worker は Issue body を [Issue Contract](../../../contracts/issue-contract-v1alpha1.md) に従って
+Issue Worker は Issue body を [Issue Contract](../../05_design/contracts/issue-contract-v1alpha1.md) に従って
 deterministic に parse する。relationship、dependency、authority reference は live API から解決し、
-[Task Context Protocol](../../../contracts/task-context-v1alpha1.md) に従って次を生成する。
+[Task Context Protocol](../../05_design/contracts/task-context-v1alpha1.md) に従って次を生成する。
 
 - audit lineage 用の Issue Observation
 - model-bearing Operation の入力になる canonical Task Context
@@ -63,6 +63,6 @@ webhook / polling が別々の Run を作らないようにする。
 
 ## 参照
 
-- [End-to-end workflow](../../../workflow.md) §1〜§2
-- [Architecture](../../../architecture.md) — GitHub adapters、Durable model、Queue / lease
-- [Worker Operation Protocol](../../../contracts/operation-protocol-v1alpha1.md)
+- [End-to-end workflow](../../05_design/02_workflow.md) §1〜§2
+- [Architecture](../../05_design/01_architecture.md) — GitHub adapters、Durable model、Queue / lease
+- [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)

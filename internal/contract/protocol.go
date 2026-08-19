@@ -8,8 +8,8 @@ import (
 )
 
 // 本 file は Worker Operation protocol と Implementation–Review protocol が共有する
-// identity 素材を扱う。正本は docs/contracts/operation-protocol-v1alpha1.md と
-// docs/contracts/review-protocol-v1alpha1.md である。
+// identity 素材を扱う。正本は docs/spec/05_design/contracts/operation-protocol-v1alpha1.md と
+// docs/spec/05_design/contracts/review-protocol-v1alpha1.md である。
 
 // versioned ref の schema namespace。ref は schema と digest の組で比較し、
 // digest だけから schema を推測しない。

@@ -1,97 +1,95 @@
 # Kudo 仕様書
 
-Kudo の確定したプロダクト仕様を、目的から実装設計まで順に読める形で格納する。
-本ディレクトリは完成形に対する **What / Why** と、確定後の **How** を扱う。
-現在どこまで実装済みか、次に何を実装するかは
-[Implementation plan](../implementation-plan.md) を正とし、仕様と進捗を混在させない。
+Kudo のプロダクト仕様、機能別 Acceptance Criteria、詳細設計、versioned contract、実装計画を格納する、
+リポジトリ内で唯一の文書体系である。文書への入口は本ファイルに集約し、`docs/spec/` の外に別の正本や
+補足文書を作らない。
 
-プロダクト全体の中央仕様は [03_system-spec/](03_system-spec/) である。ただし、versioned
-protocol の field、厳密な状態遷移、deployment contract、採用理由は、それぞれ既存の正本へ
-委譲する。中央仕様はそれらを複製せず、システム全体の要求と対応関係を示す。
+完成形の **Why / What / How** と、現在地を示す project 文書を同じ体系内で分離する。
+同じ field、state、権限、判断理由を複数文書で再定義せず、概要文書から一つの正本へリンクする。
 
 ## 読む順番
 
 1. [01_product-design/](01_product-design/)
-   — 解決する課題、利用者、提供価値、担当範囲
+   — 解決する課題、利用者、提供価値、製品境界、完成条件
 2. [02_reliability-strategy/](02_reliability-strategy/)
    — TDD、独立 review、immutable evidence、復旧可能性を組み合わせる理由
 3. [03_system-spec/](03_system-spec/)
    — アクター、機能要件、構成、workflow、非機能要件をまとめた中央仕様
 4. [04_features/](04_features/)
-   — 機能単位の仕様と、その機能に閉じた詳細設計
+   — 機能単位の Acceptance Criteria と機能固有の詳細設計
 5. [05_design/](05_design/)
-   — data model、artifact、adapter、runtime など機能横断の共通詳細設計への入口
+   — architecture、workflow、runtime、protocol、review policy、ADR の正本
+6. [06_project/](06_project/)
+   — 実装状況、delivery order、開発手順、移行記録、保留事項
 
 ## ファイル構成
 
 ```text
-docs/spec/
-├── README.md
-├── 01_product-design/
-│   └── README.md
-├── 02_reliability-strategy/
-│   └── README.md
-├── 03_system-spec/
-│   └── README.md
-├── 04_features/
-│   ├── README.md
-│   ├── 01_issue-intake-and-claim/
-│   │   ├── 01_spec.md
-│   │   └── 02_design.md
-│   ├── 02_test-first-review/
-│   │   ├── 01_spec.md
-│   │   └── 02_design.md
-│   ├── 03_implementation-review/
-│   │   ├── 01_spec.md
-│   │   └── 02_design.md
-│   ├── 04_pull-request-handoff/
-│   │   ├── 01_spec.md
-│   │   └── 02_design.md
-│   ├── 05_recovery-and-escalation/
-│   │   ├── 01_spec.md
-│   │   └── 02_design.md
-│   └── 06_concurrency-and-idempotency/
-│       ├── 01_spec.md
-│       └── 02_design.md
-└── 05_design/
-    └── README.md
+docs/
+└── spec/
+    ├── README.md
+    ├── 01_product-design/
+    │   └── README.md
+    ├── 02_reliability-strategy/
+    │   └── README.md
+    ├── 03_system-spec/
+    │   └── README.md
+    ├── 04_features/
+    │   ├── README.md
+    │   └── NN_feature-name/
+    │       ├── 01_spec.md
+    │       └── 02_design.md
+    ├── 05_design/
+    │   ├── README.md
+    │   ├── 01_architecture.md
+    │   ├── 02_workflow.md
+    │   ├── 03_runtime-platform.md
+    │   ├── 04_github-routing.md
+    │   ├── contracts/
+    │   ├── review-policies/
+    │   └── decisions/
+    └── 06_project/
+        ├── README.md
+        ├── 01_implementation-plan.md
+        ├── 02_development.md
+        ├── 03_migration-from-servo.md
+        └── 04_evaluation-harness.md
 ```
 
 トップレベルの章と機能を番号付きディレクトリにすることで、directory-first の表示でも読む順番を保つ。
 機能ディレクトリでは `01_spec.md` と `02_design.md` を固定の入口とし、サブ機能は文書内の見出しで表す。
-見出し番号だけを理由にファイルを分割せず、独立した schema、fixture、図などの実体が必要になった時点で
-補助資料を追加する。
+見出し番号や将来の可能性だけを理由にファイルを分割しない。
 
 ## 正本の分担
 
 | 関心事 | 正本 |
 | --- | --- |
-| プロダクトの目的、対象範囲、完成条件 | [Product vision](../vision.md) と本ディレクトリの `01` / `03` |
-| Issue から PR handoff までの規範的な順序 | [End-to-end workflow](../workflow.md) |
-| Controller / Worker の責務と権限 | [Architecture](../architecture.md) |
-| Compose、PostgreSQL、volume、secret、復旧運用 | [Runtime platform](../runtime-platform.md) |
-| GitHub candidate、webhook / polling、label | [GitHub routing policy](../github-routing.md) |
-| machine-readable な外部 protocol | [contracts/](../contracts/) |
-| Review Worker の品質判断基準 | [review-policies/](../review-policies/) |
-| 機能固有の振る舞いと実現方法 | [04_features/](04_features/) の各 `01_spec.md` / `02_design.md` |
-| 複数機能が共有する詳細設計 | [05_design/](05_design/) |
-| 技術選択と変更理由 | [decisions/](../decisions/) |
-| 実装状況、実装順序、milestone | [Implementation plan](../implementation-plan.md) |
+| プロダクトの目的、対象範囲、完成条件 | [01. プロダクト設計](01_product-design/) |
+| system-wide な機能・非機能要件 | [03. システム仕様](03_system-spec/) |
+| 機能ごとの振る舞いと実現方法 | [04. 機能仕様と詳細設計](04_features/) |
+| Issue から PR handoff までの規範的な順序 | [End-to-end workflow](05_design/02_workflow.md) |
+| Controller / Worker の責務と権限 | [Architecture](05_design/01_architecture.md) |
+| Compose、PostgreSQL、volume、secret、復旧運用 | [Runtime platform](05_design/03_runtime-platform.md) |
+| GitHub candidate、webhook / polling、label | [GitHub routing policy](05_design/04_github-routing.md) |
+| machine-readable protocol | [contracts/](05_design/contracts/) |
+| Review Worker の品質判断基準 | [review-policies/](05_design/review-policies/) |
+| 技術選択と変更理由 | [decisions/](05_design/decisions/) |
+| 実装状況、実装順序、milestone | [Implementation plan](06_project/01_implementation-plan.md) |
+| 開発・検証手順 | [Development environment](06_project/02_development.md) |
 
 ## SSOT 原則
 
-- 同じ field、state、権限、採用理由を複数文書で再定義しない。概要から該当する正本へリンクする。
-- `docs/contracts/` の意味を変える場合は、文書、parser、fixture、test を同じ変更で更新する。
-- accepted ADR を置き換える場合は、既存 ADR を黙って書き換えず、新しい ADR で supersede する。
-- 仕様書には完成形を書く。実装済み / 未実装、優先順位、残作業は Implementation plan で管理する。
-- 未確定の設計は確定仕様として推測せず、個別文書を追加する時点で判断根拠と一緒に確定する。
+- `docs/spec/` だけを repository-facing documentation の root とする。
+- 同じ要求は一つの文書だけが定義し、他文書は要約せず正本へリンクする。
+- `05_design/contracts/` の意味または path を変える場合は、文書、parser、fixture、test を同じ変更で更新する。
+- review policy の意味を変える場合は新しい versioned path を追加し、進行中 Request の基準を上書きしない。
+- accepted ADR を置き換える場合は既存 ADR を黙って書き換えず、新しい ADR で supersede する。
+- 完成形と現在地を混在させず、進捗と残作業は [06_project/](06_project/) で管理する。
 
-## 個別仕様への展開ルール
+## 更新順序
 
-新しい機能または設計を追加するときは、次の順に整合させる。
-
-1. `03_system-spec/` のシステム要求に含まれるか確認する。
-2. `04_features/<feature>/01_spec.md` に利用者から観測できる保証を書く。
-3. 同じ機能の `02_design.md` に実現方法を書き、複数機能で共有する設計だけを `05_design/` に反映する。
-4. 実装時期と作業分解を `implementation-plan.md` または Task Issue で管理する。
-5. 実装、決定論的 test、文書の traceability を同じ変更で確認する。
+1. 変更対象が product、system-wide requirement、特定機能、共通設計、project state のどれかを判定する。
+2. 観測可能な保証を変える場合は `04_features/<feature>/01_spec.md` を先に更新する。
+3. 実現方法を変える場合は同じ機能の `02_design.md` または `05_design/` の正本を更新する。
+4. protocol を変える場合は対応する contract、parser、fixture、test を同じ変更で更新する。
+5. 実装時期と作業分解は `06_project/01_implementation-plan.md` または Task Issue で管理する。

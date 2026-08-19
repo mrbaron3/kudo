@@ -2,7 +2,7 @@ package workflow
 
 // EscalationReason は Run を `needs_human` phase で停止させた理由の機械可読な分類である。
 //
-// 正本は docs/github-routing.md の Human escalation 節であり、Controller はこの code を
+// 正本は docs/spec/05_design/04_github-routing.md の Human escalation 節であり、Controller はこの code を
 // 日本語 status comment へ載せる。error 文字列や自由記述で分岐しないのは、message 表現を
 // 変えただけで Controller の分岐が壊れるためである。
 //
