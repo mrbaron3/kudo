@@ -53,6 +53,11 @@ type EscalationPolicyRef struct {
 	Digest Digest
 }
 
+// Valid は未知 version を許容しつつ、Escalation Policy の schema family と digest 形式を検証する。
+func (r EscalationPolicyRef) Valid() bool {
+	return validSchemaIdentity(r.Schema, escalationPolicySchemaPrefix) && r.Digest.Valid()
+}
+
 // EncodeEscalationPolicy は policy を検証し、canonical payload と ref を返す。
 func EncodeEscalationPolicy(policy EscalationPolicy) (EscalationPolicyRef, ArtifactPayload, error) {
 	if err := validateEscalationPolicy(policy); err != nil {

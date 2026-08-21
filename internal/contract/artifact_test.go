@@ -416,6 +416,50 @@ func TestArtifactPayloadValidationRejectsAmbiguousMetadata(t *testing.T) {
 	}
 }
 
+func TestTypedArtifactRefsValidateTheirSchemaFamily(t *testing.T) {
+	digest := SHA256([]byte("typed-ref"))
+	tests := map[string]struct {
+		valid         interface{ Valid() bool }
+		invalidSchema interface{ Valid() bool }
+		invalidDigest interface{ Valid() bool }
+	}{
+		"Issue Observation": {
+			valid:         IssueObservationRef{Schema: "kudo.issue-observation/v2", Digest: digest},
+			invalidSchema: IssueObservationRef{Schema: ContextManifestSchemaV1Alpha1, Digest: digest},
+			invalidDigest: IssueObservationRef{Schema: IssueObservationSchemaV1Alpha1, Digest: "sha256:short"},
+		},
+		"Context Manifest": {
+			valid:         ContextManifestRef{Schema: "kudo.context-manifest/v2", Digest: digest},
+			invalidSchema: ContextManifestRef{Schema: ExecutionPolicySchemaV1Alpha1, Digest: digest},
+			invalidDigest: ContextManifestRef{Schema: ContextManifestSchemaV1Alpha1, Digest: "sha256:short"},
+		},
+		"Execution Policy": {
+			valid:         ExecutionPolicyRef{Schema: "kudo.execution-policy/v2", Digest: digest},
+			invalidSchema: ExecutionPolicyRef{Schema: EscalationPolicySchemaV1Alpha1, Digest: digest},
+			invalidDigest: ExecutionPolicyRef{Schema: ExecutionPolicySchemaV1Alpha1, Digest: "sha256:short"},
+		},
+		"Escalation Policy": {
+			valid:         EscalationPolicyRef{Schema: "kudo.escalation-policy/v2", Digest: digest},
+			invalidSchema: EscalationPolicyRef{Schema: IssueObservationSchemaV1Alpha1, Digest: digest},
+			invalidDigest: EscalationPolicyRef{Schema: EscalationPolicySchemaV1Alpha1, Digest: "sha256:short"},
+		},
+	}
+
+	for name, refs := range tests {
+		t.Run(name, func(t *testing.T) {
+			if !refs.valid.Valid() {
+				t.Fatal("未知versionの正しいschema familyを拒否した")
+			}
+			if refs.invalidSchema.Valid() {
+				t.Fatal("別artifact種別のschemaを受理した")
+			}
+			if refs.invalidDigest.Valid() {
+				t.Fatal("不正なdigestを受理した")
+			}
+		})
+	}
+}
+
 func TestClaimRequirementsIsStableProjection(t *testing.T) {
 	compiled := requireCompiled(t, readFixture(t, "valid/full.md"))
 	want := ClaimRequirements{

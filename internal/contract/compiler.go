@@ -30,6 +30,11 @@ type IssueObservationRef struct {
 	Digest Digest
 }
 
+// Valid は未知 version を許容しつつ、Issue Observation の schema family と digest 形式を検証する。
+func (r IssueObservationRef) Valid() bool {
+	return validSchemaIdentity(r.Schema, issueObservationSchemaPrefix) && r.Digest.Valid()
+}
+
 // TaskCriterion は compiler が解釈済みの Acceptance Criterion である。
 type TaskCriterion struct {
 	ID   string

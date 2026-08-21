@@ -123,6 +123,40 @@ func TestMigrateUpIsVersionedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestValidateSchemaVersionUsesTheSameSearchPathResolutionAsItsRead(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var migratedSchema string
+	if err := pool.QueryRow(ctx, "SELECT current_schema()").Scan(&migratedSchema); err != nil {
+		t.Fatalf("migration schema を取得できない: %v", err)
+	}
+	emptySchema := fmt.Sprintf("kudo_empty_%d_%d", os.Getpid(), testSchemaSequence.Add(1))
+	emptyIdentifier := pgx.Identifier{emptySchema}.Sanitize()
+	if _, err := pool.Exec(ctx, "CREATE SCHEMA "+emptyIdentifier); err != nil {
+		t.Fatalf("先頭の空 schema を作成できない: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, "DROP SCHEMA "+emptyIdentifier+" CASCADE")
+	})
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("search_path 検証 transaction を開始できない: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	searchPath := emptyIdentifier + ", " + pgx.Identifier{migratedSchema}.Sanitize()
+	if _, err := tx.Exec(ctx, "SET LOCAL search_path TO "+searchPath); err != nil {
+		t.Fatalf("search_path を設定できない: %v", err)
+	}
+	if err := postgresadapter.ValidateSchemaVersion(ctx, tx); err != nil {
+		t.Fatalf("search_path の後続 schema にある履歴 table を検証できない: %v", err)
+	}
+}
+
 func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 	pool := migrateTestDatabase(t)
 	store := postgresadapter.NewRunStore(pool)
@@ -157,6 +191,7 @@ func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 		Verdict:       contract.VerdictApprove,
 		Head:          testHead,
 		RequestDigest: contract.SHA256([]byte("test-review-request")),
+		ResultDigest:  contract.SHA256([]byte("test-review-result")),
 	}, nil)
 	stored = persistEvent(t, ctx, store, stored, workflow.ImplementationFixed{
 		Head:         implementationHead,
@@ -171,6 +206,7 @@ func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 		Verdict:       contract.VerdictApprove,
 		Head:          implementationHead,
 		RequestDigest: contract.SHA256([]byte("final-review-request")),
+		ResultDigest:  contract.SHA256([]byte("final-review-result")),
 	}, nil)
 
 	secondObservation := contract.IssueObservationRef{
@@ -217,6 +253,33 @@ func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 	if !reflect.DeepEqual(lineage, wantLineage) {
 		t.Fatalf("Observation lineage = %#v, want %#v", lineage, wantLineage)
 	}
+	reviewLineage, err := store.ReviewLineage(ctx, stored.ID)
+	if err != nil {
+		t.Fatalf("Review binding lineage を取得できない: %v", err)
+	}
+	wantReviewLineage := []postgresadapter.ReviewRecord{
+		{
+			RunVersion:    5,
+			Round:         1,
+			Kind:          contract.ReviewTestValidity,
+			Head:          testHead,
+			RequestDigest: contract.SHA256([]byte("test-review-request")),
+			ResultDigest:  contract.SHA256([]byte("test-review-result")),
+			Verdict:       contract.VerdictApprove,
+		},
+		{
+			RunVersion:    8,
+			Round:         1,
+			Kind:          contract.ReviewFinalImplementation,
+			Head:          implementationHead,
+			RequestDigest: contract.SHA256([]byte("final-review-request")),
+			ResultDigest:  contract.SHA256([]byte("final-review-result")),
+			Verdict:       contract.VerdictApprove,
+		},
+	}
+	if !reflect.DeepEqual(reviewLineage, wantReviewLineage) {
+		t.Fatalf("Review binding lineage = %#v, want %#v", reviewLineage, wantReviewLineage)
+	}
 
 	history, err := store.TransitionHistory(ctx, stored.ID)
 	if err != nil {
@@ -254,6 +317,343 @@ func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 	}
 }
 
+func TestRunStoreStoresAnAbsentPullRequestAsNull(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	observation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("absent-pull-request")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-absent-pull-request", 1306, observation.Digest), observation)
+	if err != nil {
+		t.Fatalf("Run を作成できない: %v", err)
+	}
+
+	var absent bool
+	if err := pool.QueryRow(ctx,
+		"SELECT pull_request_ref IS NULL FROM runs WHERE id = $1", created.ID,
+	).Scan(&absent); err != nil {
+		t.Fatalf("Pull Request binding を確認できない: %v", err)
+	}
+	if !absent {
+		t.Fatal("未 binding の Pull Request が NULL で保存されていない")
+	}
+}
+
+func TestRunStoreRejectsCrossKindArtifactReferences(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tests := []struct {
+		name   string
+		mutate func(*workflow.Run, *contract.IssueObservationRef)
+	}{
+		{
+			name: "Issue Observation",
+			mutate: func(_ *workflow.Run, observation *contract.IssueObservationRef) {
+				observation.Schema = contract.ContextManifestSchemaV1Alpha1
+			},
+		},
+		{
+			name: "Context Manifest",
+			mutate: func(run *workflow.Run, _ *contract.IssueObservationRef) {
+				run.Input.ContextManifest.Schema = contract.ExecutionPolicySchemaV1Alpha1
+			},
+		},
+		{
+			name: "Execution Policy",
+			mutate: func(run *workflow.Run, _ *contract.IssueObservationRef) {
+				run.Input.ExecutionPolicy.Schema = contract.EscalationPolicySchemaV1Alpha1
+			},
+		},
+		{
+			name: "Escalation Policy",
+			mutate: func(run *workflow.Run, _ *contract.IssueObservationRef) {
+				run.EscalationPolicy.Schema = contract.IssueObservationSchemaV1Alpha1
+			},
+		},
+	}
+
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation := contract.IssueObservationRef{
+				Schema: contract.IssueObservationSchemaV1Alpha1,
+				Digest: contract.SHA256([]byte(fmt.Sprintf("cross-kind-%d", i))),
+			}
+			run := claimedRun(fmt.Sprintf("run-cross-kind-%d", i), 1310+i, observation.Digest)
+			test.mutate(&run, &observation)
+
+			if _, err := store.Create(ctx, run, observation); !errors.Is(err, postgresadapter.ErrInvalidRun) {
+				t.Fatalf("別schema familyの%s refのerror = %v, want ErrInvalidRun", test.name, err)
+			}
+		})
+	}
+}
+
+func TestRunStoreRejectsGitHubReferencesOutsideTheContractGrammar(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for i, issue := range []contract.IssueRef{
+		{Owner: "bad_owner", Repository: "kudo", Number: 1},
+		{Owner: "-owner", Repository: "kudo", Number: 1},
+		{Owner: "owner:8080", Repository: "kudo", Number: 1},
+		{Owner: "owner", Repository: ".", Number: 1},
+	} {
+		observation := contract.IssueObservationRef{
+			Schema: contract.IssueObservationSchemaV1Alpha1,
+			Digest: contract.SHA256([]byte(fmt.Sprintf("invalid-issue-ref-%d", i))),
+		}
+		run := claimedRun(fmt.Sprintf("run-invalid-issue-ref-%d", i), 1340+i, observation.Digest)
+		run.Issue = issue
+		if _, err := store.Create(ctx, run, observation); !errors.Is(err, postgresadapter.ErrInvalidRun) {
+			t.Fatalf("Issue reference %q の error = %v, want ErrInvalidRun", issue.String(), err)
+		}
+	}
+
+	observation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("invalid-pull-request-ref")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-invalid-pull-request-ref", 1344, observation.Digest), observation)
+	if err != nil {
+		t.Fatalf("Run を作成できない: %v", err)
+	}
+	next := created
+	next.Phase = workflow.PhaseAuthoringTests
+	next.PullRequest = contract.PullRequestRef{Owner: "bad_owner", Repository: "kudo", Number: 1}
+	_, err = store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: created.Version,
+		Event:           workflow.KindOperationStarted,
+		Run:             next,
+	})
+	if !errors.Is(err, postgresadapter.ErrInvalidRun) {
+		t.Fatalf("Pull Request reference %q の error = %v, want ErrInvalidRun", next.PullRequest.String(), err)
+	}
+}
+
+func TestRunStoreRejectsCrossKindObservationTransition(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	initial := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("initial-observation")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-cross-kind-transition", 1320, initial.Digest), initial)
+	if err != nil {
+		t.Fatalf("Runを作成できない: %v", err)
+	}
+
+	next := created
+	badObservation := contract.IssueObservationRef{
+		Schema: contract.ContextManifestSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("cross-kind-observation")),
+	}
+	next.Observation = badObservation.Digest
+	_, err = store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: created.Version,
+		Event:           workflow.KindObservationRecorded,
+		Run:             next,
+		Observation:     &badObservation,
+	})
+	if !errors.Is(err, postgresadapter.ErrInvalidRun) {
+		t.Fatalf("別schema familyのObservation transition error = %v, want ErrInvalidRun", err)
+	}
+}
+
+func TestRunStoreRejectsCorruptStoredSchemaFamily(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	observation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("corrupt-schema-observation")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-corrupt-schema", 1321, observation.Digest), observation)
+	if err != nil {
+		t.Fatalf("Runを作成できない: %v", err)
+	}
+
+	badDigest := contract.SHA256([]byte("cross-kind-escalation-policy"))
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO artifact_refs (schema, digest)
+		VALUES ($1, $2)
+	`, contract.ContextManifestSchemaV1Alpha1, badDigest); err != nil {
+		t.Fatalf("不正保存値のartifact refを準備できない: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"ALTER TABLE runs DISABLE TRIGGER runs_reject_gate_budget_update",
+	); err != nil {
+		t.Fatalf("corruption fixture 用に gate-budget trigger を無効化できない: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE runs
+		SET escalation_policy_schema = $2, escalation_policy_digest = $3
+		WHERE id = $1
+	`, created.ID, contract.ContextManifestSchemaV1Alpha1, badDigest); err != nil {
+		t.Fatalf("不正保存値を準備できない: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"ALTER TABLE runs ENABLE TRIGGER runs_reject_gate_budget_update",
+	); err != nil {
+		t.Fatalf("gate-budget trigger を再有効化できない: %v", err)
+	}
+
+	if _, err := store.Load(ctx, created.ID); !errors.Is(err, postgresadapter.ErrCorruptRun) {
+		t.Fatalf("別schema familyを持つ保存Runのerror = %v, want ErrCorruptRun", err)
+	}
+
+	observation = contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("corrupt-observation-schema-initial")),
+	}
+	created, err = store.Create(ctx, claimedRun("run-corrupt-observation-schema", 1322, observation.Digest), observation)
+	if err != nil {
+		t.Fatalf("Runを作成できない: %v", err)
+	}
+	badDigest = contract.SHA256([]byte("cross-kind-observation"))
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO artifact_refs (schema, digest)
+		VALUES ($1, $2)
+	`, contract.ContextManifestSchemaV1Alpha1, badDigest); err != nil {
+		t.Fatalf("不正な Issue Observation ref を準備できない: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO run_transitions (run_id, version, event_kind, from_phase, to_phase)
+		VALUES ($1, 2, $2, $3, $3)
+	`, created.ID, workflow.KindObservationRecorded, workflow.PhaseClaimed); err != nil {
+		t.Fatalf("不正な Issue Observation の transition を準備できない: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO run_issue_observations (run_id, run_version, schema, digest)
+		VALUES ($1, 2, $2, $3)
+	`, created.ID, contract.ContextManifestSchemaV1Alpha1, badDigest); err != nil {
+		t.Fatalf("不正な Issue Observation lineage を準備できない: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE runs SET version = 2 WHERE id = $1", created.ID); err != nil {
+		t.Fatalf("不正な保存 Run を準備できない: %v", err)
+	}
+
+	if _, err := store.Load(ctx, created.ID); !errors.Is(err, postgresadapter.ErrCorruptRun) {
+		t.Fatalf("別 schema family の Observation を持つ保存 Run の error = %v, want ErrCorruptRun", err)
+	}
+	if _, err := store.ObservationLineage(ctx, created.ID); !errors.Is(err, postgresadapter.ErrCorruptRun) {
+		t.Fatalf("別 schema family を持つ Observation lineage の error = %v, want ErrCorruptRun", err)
+	}
+}
+
+func TestRunStoreRejectsPinnedReviewBudgetChanges(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tests := []struct {
+		name   string
+		mutate func(*workflow.Run)
+	}{
+		{
+			name: "Escalation Policy",
+			mutate: func(run *workflow.Run) {
+				run.EscalationPolicy.Digest = contract.SHA256([]byte("other-escalation-policy"))
+			},
+		},
+		{
+			name: "RoundLimits",
+			mutate: func(run *workflow.Run) {
+				run.RoundLimits.TestValidity++
+			},
+		},
+	}
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation := contract.IssueObservationRef{
+				Schema: contract.IssueObservationSchemaV1Alpha1,
+				Digest: contract.SHA256([]byte(fmt.Sprintf("pinned-budget-observation-%d", i))),
+			}
+			created, err := store.Create(ctx,
+				claimedRun(fmt.Sprintf("run-pinned-budget-%d", i), 1322+i, observation.Digest),
+				observation,
+			)
+			if err != nil {
+				t.Fatalf("Runを作成できない: %v", err)
+			}
+
+			next := created
+			next.Phase = workflow.PhaseAuthoringTests
+			test.mutate(&next)
+			if _, err = store.Transition(ctx, postgresadapter.Transition{
+				ExpectedVersion: created.Version,
+				Event:           workflow.KindOperationStarted,
+				Run:             next,
+			}); !errors.Is(err, postgresadapter.ErrInvalidRun) {
+				t.Fatalf("固定済み%sの変更 error = %v, want ErrInvalidRun", test.name, err)
+			}
+		})
+	}
+}
+
+func TestRunStoreRejectsTotalRoundRollback(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	observation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("total-round-rollback-observation")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-total-round-rollback", 1323, observation.Digest), observation)
+	if err != nil {
+		t.Fatalf("Runを作成できない: %v", err)
+	}
+
+	next := created
+	next.Phase = workflow.PhaseAuthoringTests
+	next.PublishedHead = "1111111111111111111111111111111111111111"
+	next.Rounds.TestValidity = 1
+	next.TotalRounds.TestValidity = 1
+	review := workflow.ReviewCompleted{
+		Kind:          contract.ReviewTestValidity,
+		Verdict:       contract.VerdictRequestChanges,
+		Head:          next.PublishedHead,
+		RequestDigest: contract.SHA256([]byte("rollback-request")),
+		ResultDigest:  contract.SHA256([]byte("rollback-result")),
+	}
+	stored, err := store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: created.Version,
+		Event:           workflow.KindReviewCompleted,
+		Run:             next,
+		Review:          &review,
+	})
+	if err != nil {
+		t.Fatalf("生涯round counterを進められない: %v", err)
+	}
+
+	rolledBack := stored
+	rolledBack.TotalRounds.TestValidity = 0
+	_, err = store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: stored.Version,
+		Event:           workflow.KindAttemptFailed,
+		Run:             rolledBack,
+	})
+	if !errors.Is(err, postgresadapter.ErrInvalidRun) {
+		t.Fatalf("生涯round counter巻き戻し error = %v, want ErrInvalidRun", err)
+	}
+}
+
 // TestRunStoreRestoresReviewRoundBudget は round counter が process をまたいで残ることを検証する。
 //
 // 上限が縛るのは「人間が次に見るまでに何 round 回すか」であり、counter が揮発すると
@@ -275,16 +675,50 @@ func TestRunStoreRestoresReviewRoundBudget(t *testing.T) {
 	}
 
 	next := created
-	next.Phase = workflow.PhaseAuthoringTests
-	next.Rounds = workflow.ReviewRounds{TestValidity: 2}
-	next.TotalRounds = workflow.ReviewRounds{TestValidity: 5, FinalImplementation: 1}
-	if _, err := store.Transition(ctx, postgresadapter.Transition{
-		ExpectedVersion: created.Version,
+	for round := 1; round <= 2; round++ {
+		next.Phase = workflow.PhaseAuthoringTests
+		next.Rounds.TestValidity++
+		next.TotalRounds.TestValidity++
+		review := workflow.ReviewCompleted{
+			Kind:          contract.ReviewTestValidity,
+			Verdict:       contract.VerdictRequestChanges,
+			Head:          fmt.Sprintf("%040d", round),
+			RequestDigest: contract.SHA256([]byte(fmt.Sprintf("test-request-%d", round))),
+			ResultDigest:  contract.SHA256([]byte(fmt.Sprintf("test-result-%d", round))),
+		}
+		next.PublishedHead = review.Head
+		next.PublishedTestHead = review.Head
+		stored, transitionErr := store.Transition(ctx, postgresadapter.Transition{
+			ExpectedVersion: next.Version,
+			Event:           workflow.KindReviewCompleted,
+			Run:             next,
+			Review:          &review,
+		})
+		if transitionErr != nil {
+			t.Fatalf("test review round %d を保存できない: %v", round, transitionErr)
+		}
+		next = stored
+	}
+	next.Rounds.FinalImplementation++
+	next.TotalRounds.FinalImplementation++
+	finalReview := workflow.ReviewCompleted{
+		Kind:          contract.ReviewFinalImplementation,
+		Verdict:       contract.VerdictRequestChanges,
+		Head:          "3333333333333333333333333333333333333333",
+		RequestDigest: contract.SHA256([]byte("final-request")),
+		ResultDigest:  contract.SHA256([]byte("final-result")),
+	}
+	next.PublishedHead = finalReview.Head
+	stored, err := store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: next.Version,
 		Event:           workflow.KindReviewCompleted,
 		Run:             next,
-	}); err != nil {
-		t.Fatalf("round counter を進められない: %v", err)
+		Review:          &finalReview,
+	})
+	if err != nil {
+		t.Fatalf("final review round を保存できない: %v", err)
 	}
+	next = stored
 
 	// 別 store instance から読み直し、process-local memory ではなく DB から復元されることを示す。
 	restored, err := postgresadapter.NewRunStore(pool).Load(ctx, created.ID)
@@ -305,8 +739,8 @@ func TestRunStoreRestoresReviewRoundBudget(t *testing.T) {
 	}
 }
 
-// TestRunStoreRejectsRoundsAboveTotal は無人区間 counter が生涯 counter を超える保存を
-// database が拒むことを検証する。reset 忘れと総数の取りこぼしはどちらもこの形で現れる。
+// TestRunStoreRejectsRoundsAboveTotal は無人区間 counter が生涯 counter を超える入力を
+// Store が SQL 実行前に拒むことを検証する。schema 側の同じ不変条件は guard test で固定する。
 func TestRunStoreRejectsRoundsAboveTotal(t *testing.T) {
 	pool := migrateTestDatabase(t)
 	store := postgresadapter.NewRunStore(pool)
@@ -331,11 +765,8 @@ func TestRunStoreRejectsRoundsAboveTotal(t *testing.T) {
 		Event:           workflow.KindReviewCompleted,
 		Run:             next,
 	})
-	if err == nil {
-		t.Fatal("rounds > total_rounds が保存できてしまった")
-	}
-	if !strings.Contains(err.Error(), "runs_rounds_within_total") {
-		t.Fatalf("error = %v, want runs_rounds_within_total 違反", err)
+	if !errors.Is(err, postgresadapter.ErrInvalidRun) {
+		t.Fatalf("rounds > total_rounds の error = %v, want ErrInvalidRun", err)
 	}
 }
 
@@ -406,6 +837,45 @@ func TestRunStoreCompareAndSwap(t *testing.T) {
 	}
 }
 
+func TestRunStoreRollsBackSavepointAfterRequestCancellation(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	outer, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("外側 transaction を開始できない: %v", err)
+	}
+	defer func() { _ = outer.Rollback(ctx) }()
+
+	requestCtx, cancelRequest := context.WithCancel(ctx)
+	store := postgresadapter.NewRunStore(cancelAfterObservationDB{
+		Tx:     outer,
+		cancel: cancelRequest,
+	})
+	observation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("cancelled-savepoint-observation")),
+	}
+	run := claimedRun("run-cancelled-savepoint", 1390, observation.Digest)
+	_, err = store.Create(requestCtx, run, observation)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel 後の Create error = %v, want context.Canceled", err)
+	}
+
+	// Store が失敗を返した操作だけを rollback し、呼び出し側の transaction は継続できる。
+	if err := outer.Commit(ctx); err != nil {
+		t.Fatalf("Store 失敗後の外側 transaction を commit できない: %v", err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM runs WHERE id = $1", run.ID).Scan(&count); err != nil {
+		t.Fatalf("cancel 後の Run 件数を取得できない: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("失敗した Create の部分書き込み件数 = %d, want 0", count)
+	}
+}
+
 func TestRunStoreAllowsOnlyOneWriterPerIssue(t *testing.T) {
 	pool := migrateTestDatabase(t)
 	store := postgresadapter.NewRunStore(pool)
@@ -437,6 +907,163 @@ func TestRunStoreAllowsOnlyOneWriterPerIssue(t *testing.T) {
 	}
 }
 
+func TestRunStoreRequiresNeedsHumanRunToBeSupersededBeforeAReplacementClaim(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	firstObservation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("needs-human-first")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-needs-human-first", 1350, firstObservation.Digest), firstObservation)
+	if err != nil {
+		t.Fatalf("最初の Run を作成できない: %v", err)
+	}
+	paused := created
+	paused.Phase = workflow.PhaseNeedsHuman
+	paused, err = store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: created.Version,
+		Event:           workflow.KindHumanEscalated,
+		Run:             paused,
+	})
+	if err != nil {
+		t.Fatalf("Run を needs_human にできない: %v", err)
+	}
+
+	secondObservation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("needs-human-second")),
+	}
+	_, err = store.Create(ctx, claimedRun("run-needs-human-second", 1350, secondObservation.Digest), secondObservation)
+	if !errors.Is(err, postgresadapter.ErrActiveRun) {
+		t.Fatalf("needs_human Run が残る Issue の再 claim error = %v, want ErrActiveRun", err)
+	}
+
+	superseded := paused
+	superseded.Phase = workflow.PhaseSuperseded
+	if _, err := store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: paused.Version,
+		Event:           workflow.KindSemanticInputChanged,
+		Run:             superseded,
+	}); err != nil {
+		t.Fatalf("paused Run を supersede できない: %v", err)
+	}
+	if _, err := store.Create(ctx,
+		claimedRun("run-needs-human-replacement", 1350, secondObservation.Digest), secondObservation,
+	); err != nil {
+		t.Fatalf("supersede 後の置換 Run を claim できない: %v", err)
+	}
+}
+
+func TestRunStoreDetectsCorruptTransitionHistory(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate string
+	}{
+		{
+			name:   "missing version",
+			mutate: "DELETE FROM run_transitions WHERE run_id = $1 AND version = 2",
+		},
+		{
+			name:   "broken phase chain",
+			mutate: "UPDATE run_transitions SET from_phase = 'implementing' WHERE run_id = $1 AND version = 2",
+		},
+	}
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pool := migrateTestDatabase(t)
+			store := postgresadapter.NewRunStore(pool)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			observation := contract.IssueObservationRef{
+				Schema: contract.IssueObservationSchemaV1Alpha1,
+				Digest: contract.SHA256([]byte(fmt.Sprintf("transition-corruption-%d", i))),
+			}
+			created, err := store.Create(ctx,
+				claimedRun(fmt.Sprintf("run-transition-corruption-%d", i), 1360+i, observation.Digest),
+				observation,
+			)
+			if err != nil {
+				t.Fatalf("Run を作成できない: %v", err)
+			}
+			authoring := created
+			authoring.Phase = workflow.PhaseAuthoringTests
+			authoring, err = store.Transition(ctx, postgresadapter.Transition{
+				ExpectedVersion: created.Version,
+				Event:           workflow.KindOperationStarted,
+				Run:             authoring,
+			})
+			if err != nil {
+				t.Fatalf("version 2 を保存できない: %v", err)
+			}
+			publishing := authoring
+			publishing.Phase = workflow.PhasePublishingTestHead
+			publishing.FixedHead = "1111111111111111111111111111111111111111"
+			if _, err := store.Transition(ctx, postgresadapter.Transition{
+				ExpectedVersion: authoring.Version,
+				Event:           workflow.KindTestsAuthored,
+				Run:             publishing,
+			}); err != nil {
+				t.Fatalf("version 3 を保存できない: %v", err)
+			}
+
+			if _, err := pool.Exec(ctx,
+				"ALTER TABLE run_transitions DISABLE TRIGGER run_transitions_append_only",
+			); err != nil {
+				t.Fatalf("corruption fixture 用に append-only trigger を無効化できない: %v", err)
+			}
+			if _, err := pool.Exec(ctx, test.mutate, created.ID); err != nil {
+				t.Fatalf("corruption fixture を作成できない: %v", err)
+			}
+			if _, err := pool.Exec(ctx,
+				"ALTER TABLE run_transitions ENABLE TRIGGER run_transitions_append_only",
+			); err != nil {
+				t.Fatalf("append-only trigger を再有効化できない: %v", err)
+			}
+
+			if _, err := store.TransitionHistory(ctx, created.ID); !errors.Is(err, postgresadapter.ErrCorruptRun) {
+				t.Fatalf("壊れた transition history の error = %v, want ErrCorruptRun", err)
+			}
+		})
+	}
+}
+
+func TestRunTransitionSchemaRejectsAmbiguousMissingFromPhase(t *testing.T) {
+	for name, test := range map[string]struct {
+		from any
+		want string
+	}{
+		"empty":            {from: "", want: "run_transitions_from_phase_valid"},
+		"null after claim": {from: nil, want: "run_transitions_initial_shape"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pool := migrateTestDatabase(t)
+			store := postgresadapter.NewRunStore(pool)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			observation := contract.IssueObservationRef{
+				Schema: contract.IssueObservationSchemaV1Alpha1,
+				Digest: contract.SHA256([]byte("ambiguous-from-phase-" + name)),
+			}
+			created, err := store.Create(ctx,
+				claimedRun("run-ambiguous-from-phase-"+name, 1370, observation.Digest), observation,
+			)
+			if err != nil {
+				t.Fatalf("Run を作成できない: %v", err)
+			}
+			_, err = pool.Exec(ctx, `
+				INSERT INTO run_transitions (run_id, version, event_kind, from_phase, to_phase)
+				VALUES ($1, 2, $2, $3, $4)
+			`, created.ID, workflow.KindAttemptFailed, test.from, workflow.PhaseClaimed)
+			assertConstraintViolation(t, err, test.want)
+		})
+	}
+}
+
 // TestRunStoreSchemaGuardsNameTheirConstraints は、schema 側の書き込み禁止 guard が
 // error へ載せる constraint 名を固定する。trigger が RAISE EXCEPTION の CONSTRAINT で名乗る
 // 名前は DDL object として実在せず、migration 適用時にも Go の compile 時にも検証されない。
@@ -455,6 +1082,26 @@ func TestRunStoreSchemaGuardsNameTheirConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run を作成できない: %v", err)
 	}
+	next := created
+	next.Phase = workflow.PhaseAuthoringTests
+	next.PublishedHead = "1111111111111111111111111111111111111111"
+	next.Rounds.TestValidity = 1
+	next.TotalRounds.TestValidity = 1
+	review := workflow.ReviewCompleted{
+		Kind:          contract.ReviewTestValidity,
+		Verdict:       contract.VerdictRequestChanges,
+		Head:          next.PublishedHead,
+		RequestDigest: contract.SHA256([]byte("schema-guard-request")),
+		ResultDigest:  contract.SHA256([]byte("schema-guard-result")),
+	}
+	if _, err := store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: created.Version,
+		Event:           workflow.KindReviewCompleted,
+		Run:             next,
+		Review:          &review,
+	}); err != nil {
+		t.Fatalf("Review binding fixture を保存できない: %v", err)
+	}
 
 	// Store の事前判定を迂回し、schema 自身の guard へ到達させる。
 	_, err = pool.Exec(ctx, `
@@ -464,8 +1111,105 @@ func TestRunStoreSchemaGuardsNameTheirConstraints(t *testing.T) {
 	`, created.ID, contract.SHA256([]byte("rewritten-context")))
 	assertConstraintViolation(t, err, "runs_input_immutable")
 
+	for name, test := range map[string]struct {
+		query string
+		args  []any
+		want  string
+	}{
+		"Issue identity": {
+			query: "UPDATE runs SET issue_ref = $2 WHERE id = $1",
+			args:  []any{created.ID, "github://mrbaron3/kudo/issues/9999"},
+			want:  "runs_identity_immutable",
+		},
+		"gate budget limit": {
+			query: "UPDATE runs SET round_limit_test_validity = 4 WHERE id = $1",
+			args:  []any{created.ID},
+			want:  "runs_gate_budget_immutable",
+		},
+		"escalation policy": {
+			query: "UPDATE runs SET escalation_policy_digest = $2 WHERE id = $1",
+			args:  []any{created.ID, contract.SHA256([]byte("rewritten-escalation-policy"))},
+			want:  "runs_gate_budget_immutable",
+		},
+		"empty Pull Request": {
+			query: "UPDATE runs SET pull_request_ref = '' WHERE id = $1",
+			args:  []any{created.ID},
+			want:  "runs_pull_request_ref_non_empty",
+		},
+		"rounds within total": {
+			query: "UPDATE runs SET rounds_test_validity = 2 WHERE id = $1",
+			args:  []any{created.ID},
+			want:  "runs_rounds_within_total",
+		},
+		"approval result pair": {
+			query: "UPDATE runs SET test_approval_head = $2, test_approval_request_digest = $3 WHERE id = $1",
+			args: []any{
+				created.ID,
+				"1111111111111111111111111111111111111111",
+				contract.SHA256([]byte("missing-approval-result")),
+			},
+			want: "runs_test_approval_pair",
+		},
+		"transition update": {
+			query: "UPDATE run_transitions SET event_kind = $2 WHERE run_id = $1 AND version = 1",
+			args:  []any{created.ID, workflow.KindAttemptFailed},
+			want:  "run_transitions_append_only",
+		},
+		"transition delete": {
+			query: "DELETE FROM run_transitions WHERE run_id = $1 AND version = 1",
+			args:  []any{created.ID},
+			want:  "run_transitions_append_only",
+		},
+		"review binding update": {
+			query: "UPDATE run_review_bindings SET verdict = 'needs_human' WHERE run_id = $1",
+			args:  []any{created.ID},
+			want:  "run_review_bindings_append_only",
+		},
+		"review binding delete": {
+			query: "DELETE FROM run_review_bindings WHERE run_id = $1",
+			args:  []any{created.ID},
+			want:  "run_review_bindings_append_only",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := execAndRollback(ctx, t, pool, test.query, test.args...)
+			assertConstraintViolation(t, err, test.want)
+		})
+	}
+
 	_, err = pool.Exec(ctx, "DELETE FROM run_issue_observations WHERE run_id = $1", created.ID)
 	assertConstraintViolation(t, err, "run_issue_observations_append_only")
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE runs
+		SET total_rounds_test_validity = 2
+		WHERE id = $1
+	`, created.ID); err != nil {
+		t.Fatalf("生涯round counterを進められない: %v", err)
+	}
+	_, err = pool.Exec(ctx, `
+		UPDATE runs
+		SET total_rounds_test_validity = 1
+		WHERE id = $1
+	`, created.ID)
+	assertConstraintViolation(t, err, "runs_total_rounds_monotonic")
+}
+
+func execAndRollback(
+	ctx context.Context,
+	t *testing.T,
+	pool *pgxpool.Pool,
+	query string,
+	args ...any,
+) error {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("schema guard 検証 transaction を開始できない: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, query, args...)
+	return err
 }
 
 func assertConstraintViolation(t *testing.T, err error, want string) {
@@ -518,14 +1262,49 @@ func persistEvent(
 	if err != nil {
 		t.Fatalf("workflow transition %s を決定できない: %v", event.EventKind(), err)
 	}
+	var review *workflow.ReviewCompleted
+	if completed, ok := event.(workflow.ReviewCompleted); ok {
+		review = &completed
+	}
 	stored, err := store.Transition(ctx, postgresadapter.Transition{
 		ExpectedVersion: run.Version,
 		Event:           event.EventKind(),
 		Run:             decision.Run,
 		Observation:     observation,
+		Review:          review,
 	})
 	if err != nil {
 		t.Fatalf("workflow transition %s を保存できない: %v", event.EventKind(), err)
 	}
 	return stored
+}
+
+type cancelAfterObservationDB struct {
+	pgx.Tx
+	cancel context.CancelFunc
+}
+
+func (db cancelAfterObservationDB) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := db.Tx.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &cancelAfterObservationTx{Tx: tx, cancel: db.cancel}, nil
+}
+
+type cancelAfterObservationTx struct {
+	pgx.Tx
+	cancel context.CancelFunc
+}
+
+func (tx *cancelAfterObservationTx) Exec(
+	ctx context.Context,
+	sql string,
+	arguments ...any,
+) (pgconn.CommandTag, error) {
+	tag, err := tx.Tx.Exec(ctx, sql, arguments...)
+	if err == nil && strings.Contains(sql, "INSERT INTO run_issue_observations") {
+		tx.cancel()
+	}
+	return tag, err
 }

@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"io/fs"
+	"maps"
+	"regexp"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mrbaron3/kudo/internal/workflow"
 )
 
 // migrationDigests は適用済み migration の内容を build 時に固定する。
@@ -20,7 +23,7 @@ import (
 // 新しい migration を足すときだけ entry を追加する。既存 entry の値を書き換えることは
 // 「適用済みの migration を改変した」ことを意味し、その database は再現できなくなる。
 var migrationDigests = map[string]string{
-	"0001_run_store.sql": "sha256:e634b8fb5a13b9edf994ddeb522f1c5ab88b46be42e259a2fbd57eed77532c5b",
+	"0001_run_store.sql": "sha256:12bbe89805e0631e2d222d99dc8617ef6e8751fafdee07a384aeb706b7f62932",
 }
 
 func TestMigrationFileContentsAreFixed(t *testing.T) {
@@ -69,6 +72,66 @@ func TestMigrationCountMatchesCurrentSchemaVersion(t *testing.T) {
 	if len(migrationDigests) != CurrentSchemaVersion {
 		t.Fatalf("migration 数 = %d, CurrentSchemaVersion = %d", len(migrationDigests), CurrentSchemaVersion)
 	}
+}
+
+func TestMigrationVocabularyMatchesWorkflow(t *testing.T) {
+	data, err := migrationsFS.ReadFile(migrationsDir + "/0001_run_store.sql")
+	if err != nil {
+		t.Fatalf("migration を読めない: %v", err)
+	}
+
+	phases := make(map[string]bool)
+	activePhases := make(map[string]bool)
+	for _, phase := range workflow.Phases() {
+		phases[string(phase)] = true
+		if phase.Active() {
+			activePhases[string(phase)] = true
+		}
+	}
+	events := make(map[string]bool)
+	for _, event := range workflow.EventKinds() {
+		events[string(event)] = true
+	}
+
+	for _, test := range []struct {
+		name    string
+		pattern string
+		want    map[string]bool
+	}{
+		{"Run phase", `(?s)\n    phase text NOT NULL CHECK \(phase IN \((.*?)\n    \)\),`, phases},
+		{"writer-capable phase", `(?s)writer_capable boolean GENERATED ALWAYS AS \(phase IN \((.*?)\n    \)\) STORED`, activePhases},
+		{"transition event", `(?s)event_kind text NOT NULL CHECK \(event_kind IN \((.*?)\n    \)\),`, events},
+		{"transition to phase", `(?s)to_phase text NOT NULL CHECK \(to_phase IN \((.*?)\n    \)\),`, phases},
+		{"transition from phase", `(?s)from_phase IS NULL OR from_phase IN \((.*?)\n        \)`, phases},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := migrationLiteralSet(t, data, test.pattern)
+			if !maps.Equal(got, test.want) {
+				t.Fatalf("migration vocabulary = %v, workflow vocabulary = %v", got, test.want)
+			}
+		})
+	}
+
+	if matched, err := regexp.Match(
+		`(?s)CREATE UNIQUE INDEX runs_one_writer_per_issue.*WHERE writer_capable OR phase = 'needs_human';`,
+		data,
+	); err != nil || !matched {
+		t.Fatalf("writer-capable index が non-terminal phase を塞ぐ形でない: matched=%t err=%v", matched, err)
+	}
+}
+
+func migrationLiteralSet(t *testing.T, data []byte, pattern string) map[string]bool {
+	t.Helper()
+	match := regexp.MustCompile(pattern).FindSubmatch(data)
+	if len(match) != 2 {
+		t.Fatalf("migration の語彙 list を抽出できない: %s", pattern)
+	}
+	literals := regexp.MustCompile(`'([^']+)'`).FindAllSubmatch(match[1], -1)
+	values := make(map[string]bool, len(literals))
+	for _, literal := range literals {
+		values[string(literal[1])] = true
+	}
+	return values
 }
 
 func TestValidateSchemaVersionRejectsUninitializedSchema(t *testing.T) {

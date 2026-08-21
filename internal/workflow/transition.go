@@ -281,7 +281,11 @@ func onTestReviewCompleted(run Run, event Event) (Decision, error) {
 	switch completed.Verdict {
 	case contract.VerdictApprove:
 		run.Phase = PhaseImplementing
-		run.TestApproval = &Approval{Head: completed.Head, RequestDigest: completed.RequestDigest}
+		run.TestApproval = &Approval{
+			Head:          completed.Head,
+			RequestDigest: completed.RequestDigest,
+			ResultDigest:  completed.ResultDigest,
+		}
 		return decide(run, DispatchOperation{Kind: contract.OperationImplement})
 	case contract.VerdictRequestChanges:
 		if roundLimitReached(run.Rounds.TestValidity, run.RoundLimits.TestValidity) {
@@ -323,7 +327,11 @@ func onFinalReviewCompleted(run Run, event Event) (Decision, error) {
 				run.ChecksHead, run.PublishedHead)
 		}
 		run.Phase = PhaseFinalizingPullRequest
-		run.FinalApproval = &Approval{Head: completed.Head, RequestDigest: completed.RequestDigest}
+		run.FinalApproval = &Approval{
+			Head:          completed.Head,
+			RequestDigest: completed.RequestDigest,
+			ResultDigest:  completed.ResultDigest,
+		}
 		return decide(run, DispatchOperation{Kind: contract.OperationFinalizePullRequest})
 	case contract.VerdictRequestChanges:
 		if roundLimitReached(run.Rounds.FinalImplementation, run.RoundLimits.FinalImplementation) {
@@ -352,6 +360,14 @@ func checkReviewBinding(run Run, completed ReviewCompleted, expected contract.Re
 	if completed.Head != run.PublishedHead {
 		_, err := gate(run, completed.EventKind(), "publish 済み head への verdict でない: got %s, want %s",
 			completed.Head, run.PublishedHead)
+		return err
+	}
+	if !completed.RequestDigest.Valid() {
+		_, err := gate(run, completed.EventKind(), "Review Request digest が不正: %q", completed.RequestDigest)
+		return err
+	}
+	if !completed.ResultDigest.Valid() {
+		_, err := gate(run, completed.EventKind(), "Review Result digest が不正: %q", completed.ResultDigest)
 		return err
 	}
 	return nil

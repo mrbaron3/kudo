@@ -111,8 +111,9 @@ func newProvider(pool *pgxpool.Pool) (*goose.Provider, func(), error) {
 func versionTableExists(ctx context.Context, db schemaQuerier) (bool, error) {
 	var exists bool
 	if err := db.QueryRow(ctx,
-		// format() は variadic "any" なので、cast しないと parameter の型を推論できない。
-		"SELECT to_regclass(format('%I.%I', current_schema(), $1::text)) IS NOT NULL",
+		// 実際の version 読み出しと同じ search_path 解決を使う。current_schema() へ
+		// 固定すると、履歴 table が後続 schema にある構成だけ存在確認と読取先がずれる。
+		"SELECT to_regclass($1::text) IS NOT NULL",
 		versionTable,
 	).Scan(&exists); err != nil {
 		return false, fmt.Errorf("migration 履歴 table を確認する: %w", err)

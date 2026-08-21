@@ -23,8 +23,9 @@ const IssueContractSchemaV1Alpha1 = "kudo.issue/v1alpha1"
 
 const schemaV1Alpha1 = IssueContractSchemaV1Alpha1
 
-// parseIssueRef は github://owner/repository/issues/number 形式の reference を解釈する。
-func parseIssueRef(s string) (IssueRef, bool) {
+// ParseIssueRef は github://owner/repository/issues/number 形式の reference を解釈する。
+// 返す ref は owner / repository を小文字へ正規化済みである。
+func ParseIssueRef(s string) (IssueRef, bool) {
 	owner, repo, number, ok := parseGitHubRef(s, "issues")
 	if !ok {
 		return IssueRef{}, false
@@ -217,7 +218,7 @@ func buildContract(entries []yamlEntry, blockLine int, self repositoryRef) (pars
 	if e, ok := scalarField("parent"); ok {
 		if e.scalar == "null" {
 			c.Parent = nil
-		} else if ref, ok := parseIssueRef(e.scalar); ok {
+		} else if ref, ok := ParseIssueRef(e.scalar); ok {
 			if !sameRepository(ref, self) {
 				addErr(CodeRefCrossRepository, e.line, "parent", "parent は Task と同じ repository の Issue に限定する")
 			} else {
@@ -232,7 +233,7 @@ func buildContract(entries []yamlEntry, blockLine int, self repositoryRef) (pars
 		seen := map[string]bool{}
 		c.DependsOn = []IssueRef{}
 		for _, item := range e.items {
-			ref, okRef := parseIssueRef(item.value)
+			ref, okRef := ParseIssueRef(item.value)
 			if !okRef {
 				addErr(CodeRefInvalid, item.line, "dependsOn", "dependsOn の要素は `github://owner/repository/issues/<number>` で書く")
 				continue
@@ -273,7 +274,7 @@ func buildContract(entries []yamlEntry, blockLine int, self repositoryRef) (pars
 		c.AuthorityRefs = []AuthorityRef{}
 		for _, item := range e.items {
 			if strings.HasPrefix(item.value, "github://") {
-				ref, okRef := parseIssueRef(item.value)
+				ref, okRef := ParseIssueRef(item.value)
 				if !okRef {
 					addErr(CodeRefInvalid, item.line, "authorityRefs", "GitHub Issue reference は `github://owner/repository/issues/<number>` で書く")
 					continue

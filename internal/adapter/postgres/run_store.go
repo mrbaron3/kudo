@@ -5,9 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
-	"strconv"
-	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -16,6 +14,8 @@ import (
 )
 
 const activeRunConstraint = "runs_one_writer_per_issue"
+
+const storeTransactionCleanupTimeout = 5 * time.Second
 
 // runDB は pool と既存 transaction の共通境界である。pgx.Tx を渡した場合、各操作の
 // transaction は savepoint となり、呼び出し側の transaction に参加する。
@@ -37,6 +37,7 @@ type Transition struct {
 	Event           workflow.EventKind
 	Run             workflow.Run
 	Observation     *contract.IssueObservationRef
+	Review          *workflow.ReviewCompleted
 }
 
 // ObservationRecord は observation ref が current になった Run version を表す。
@@ -51,6 +52,17 @@ type TransitionRecord struct {
 	Event   workflow.EventKind
 	From    workflow.Phase
 	To      workflow.Phase
+}
+
+// ReviewRecord は Review Result と、その判断を採用した Run version の binding である。
+type ReviewRecord struct {
+	RunVersion    int64
+	Round         int
+	Kind          contract.ReviewKind
+	Head          string
+	RequestDigest contract.Digest
+	ResultDigest  contract.Digest
+	Verdict       contract.ReviewVerdict
 }
 
 // NewRunStore は pool または pgx.Tx を使う store を返す。pgx.Tx を渡した操作は
@@ -76,7 +88,7 @@ func (s *RunStore) Create(ctx context.Context, run workflow.Run, observation con
 	if err != nil {
 		return workflow.Run{}, fmt.Errorf("Run 作成 transaction を開始する: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer rollbackStoreTransaction(ctx, tx)
 
 	refs := []versionedRef{
 		{Schema: run.Input.ContextManifest.Schema, Digest: run.Input.ContextManifest.Digest},
@@ -103,7 +115,7 @@ func (s *RunStore) Create(ctx context.Context, run workflow.Run, observation con
 	if err := insertObservation(ctx, tx, run.ID, run.Version, observation); err != nil {
 		return workflow.Run{}, fmt.Errorf("初期 Issue Observation を保存する: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := commitStoreTransaction(ctx, tx); err != nil {
 		return workflow.Run{}, classifyWriteError("Run 作成 transaction を確定する", err)
 	}
 	return run, nil
@@ -133,7 +145,7 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 	if err != nil {
 		return workflow.Run{}, fmt.Errorf("transition transaction を開始する: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer rollbackStoreTransaction(ctx, tx)
 
 	current, err := loadRun(ctx, tx, transition.Run.ID, true)
 	if err != nil {
@@ -145,6 +157,20 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 	if current.Issue.String() != transition.Run.Issue.String() || current.Input != transition.Run.Input {
 		return workflow.Run{}, ErrImmutableRunInput
 	}
+	if current.EscalationPolicy != transition.Run.EscalationPolicy ||
+		current.RoundLimits != transition.Run.RoundLimits {
+		return workflow.Run{}, invalidRun("claim 時に固定した Escalation Policy と review round 上限は変更できない")
+	}
+	if transition.Run.TotalRounds.TestValidity < current.TotalRounds.TestValidity ||
+		transition.Run.TotalRounds.FinalImplementation < current.TotalRounds.FinalImplementation {
+		return workflow.Run{}, invalidRun(
+			"生涯 review round counter は巻き戻せない: got %+v, current %+v",
+			transition.Run.TotalRounds, current.TotalRounds,
+		)
+	}
+	if transition.Review == nil && transition.Run.TotalRounds != current.TotalRounds {
+		return workflow.Run{}, invalidRun("Review event 以外は生涯 review round counter を変更できない")
+	}
 
 	observationRecorded := transition.Event == workflow.KindObservationRecorded
 	appendObservation := false
@@ -152,7 +178,12 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 		if transition.Observation == nil {
 			return workflow.Run{}, invalidRun("Observation event には IssueObservationRef が必要")
 		}
-		if err := validateVersionedRef("Issue Observation", transition.Observation.Schema, transition.Observation.Digest); err != nil {
+		if err := validateVersionedRef(
+			"Issue Observation",
+			transition.Observation.Schema,
+			transition.Observation.Digest,
+			transition.Observation.Valid(),
+		); err != nil {
 			return workflow.Run{}, err
 		}
 		if transition.Observation.Digest != transition.Run.Observation {
@@ -182,6 +213,13 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 		}
 		next.PullRequest = normalized
 	}
+	reviewRound := 0
+	if transition.Review != nil {
+		reviewRound, err = validateReviewProgress(current, next, *transition.Review)
+		if err != nil {
+			return workflow.Run{}, err
+		}
+	}
 
 	if appendObservation {
 		ref := versionedRef{Schema: transition.Observation.Schema, Digest: transition.Observation.Digest}
@@ -201,17 +239,21 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 			checks_head = $8,
 			test_approval_head = $9,
 			test_approval_request_digest = $10,
-			final_approval_head = $11,
-			final_approval_request_digest = $12,
-			rounds_test_validity = $13,
-			rounds_final_implementation = $14,
-			total_rounds_test_validity = $15,
-			total_rounds_final_implementation = $16
-		WHERE id = $1 AND version = $17
+			test_approval_result_digest = $11,
+			final_approval_head = $12,
+			final_approval_request_digest = $13,
+			final_approval_result_digest = $14,
+			rounds_test_validity = $15,
+			rounds_final_implementation = $16,
+			total_rounds_test_validity = $17,
+			total_rounds_final_implementation = $18
+		WHERE id = $1 AND version = $19
 	`, next.ID, next.Version, next.Phase, nullablePullRequest(next.PullRequest),
 		next.FixedHead, next.PublishedHead, next.PublishedTestHead, next.ChecksHead,
-		nullableApprovalHead(next.TestApproval), nullableApprovalDigest(next.TestApproval),
-		nullableApprovalHead(next.FinalApproval), nullableApprovalDigest(next.FinalApproval),
+		nullableApprovalHead(next.TestApproval), nullableApprovalRequestDigest(next.TestApproval),
+		nullableApprovalResultDigest(next.TestApproval),
+		nullableApprovalHead(next.FinalApproval), nullableApprovalRequestDigest(next.FinalApproval),
+		nullableApprovalResultDigest(next.FinalApproval),
 		next.Rounds.TestValidity, next.Rounds.FinalImplementation,
 		next.TotalRounds.TestValidity, next.TotalRounds.FinalImplementation,
 		transition.ExpectedVersion)
@@ -228,12 +270,17 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 	`, next.ID, next.Version, transition.Event, current.Phase, next.Phase); err != nil {
 		return workflow.Run{}, fmt.Errorf("transition 履歴を保存する: %w", err)
 	}
+	if transition.Review != nil {
+		if err := insertReviewBinding(ctx, tx, next.ID, next.Version, reviewRound, *transition.Review); err != nil {
+			return workflow.Run{}, fmt.Errorf("Review binding を保存する: %w", err)
+		}
+	}
 	if appendObservation {
 		if err := insertObservation(ctx, tx, next.ID, next.Version, *transition.Observation); err != nil {
 			return workflow.Run{}, fmt.Errorf("Issue Observation lineage を保存する: %w", err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := commitStoreTransaction(ctx, tx); err != nil {
 		return workflow.Run{}, classifyWriteError("transition transaction を確定する", err)
 	}
 	return next, nil
@@ -261,7 +308,9 @@ func (s *RunStore) ObservationLineage(ctx context.Context, id string) ([]Observa
 		if record.RunVersion < 1 {
 			return nil, corruptRun("Issue Observation run version が不正: %d", record.RunVersion)
 		}
-		if err := validateStoredVersionedRef("Issue Observation", record.Ref.Schema, record.Ref.Digest); err != nil {
+		if err := validateStoredVersionedRef(
+			"Issue Observation", record.Ref.Schema, record.Ref.Digest, record.Ref.Valid(),
+		); err != nil {
 			return nil, err
 		}
 		records = append(records, record)
@@ -279,13 +328,90 @@ func (s *RunStore) ObservationLineage(ctx context.Context, id string) ([]Observa
 	return records, nil
 }
 
+// ReviewLineage は確定した Review Result binding を Run version 昇順で返す。
+func (s *RunStore) ReviewLineage(ctx context.Context, id string) ([]ReviewRecord, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT binding.run_version, binding.review_round, binding.review_kind, binding.head,
+			binding.request_digest, binding.result_digest, binding.verdict, transition.event_kind
+		FROM run_review_bindings AS binding
+		JOIN run_transitions AS transition
+			ON transition.run_id = binding.run_id AND transition.version = binding.run_version
+		WHERE binding.run_id = $1
+		ORDER BY binding.run_version
+	`, id)
+	if err != nil {
+		return nil, fmt.Errorf("Review binding lineage を取得する: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]ReviewRecord, 0)
+	seenRounds := map[contract.ReviewKind]int{
+		contract.ReviewTestValidity:        0,
+		contract.ReviewFinalImplementation: 0,
+	}
+	var lastVersion int64
+	for rows.Next() {
+		var record ReviewRecord
+		var event workflow.EventKind
+		if err := rows.Scan(
+			&record.RunVersion,
+			&record.Round,
+			&record.Kind,
+			&record.Head,
+			&record.RequestDigest,
+			&record.ResultDigest,
+			&record.Verdict,
+			&event,
+		); err != nil {
+			return nil, fmt.Errorf("Review binding lineage を読む: %w", err)
+		}
+		if err := validateStoredReviewRecord(record); err != nil {
+			return nil, err
+		}
+		if event != workflow.KindReviewCompleted || record.RunVersion <= lastVersion {
+			return nil, corruptRun(
+				"Review binding が review transition へ接続しない: version=%d event=%q",
+				record.RunVersion, event,
+			)
+		}
+		lastVersion = record.RunVersion
+		seenRounds[record.Kind]++
+		if record.Round != seenRounds[record.Kind] {
+			return nil, corruptRun(
+				"Review binding round が連続していない: kind=%q got=%d want=%d",
+				record.Kind, record.Round, seenRounds[record.Kind],
+			)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("Review binding lineage を読む: %w", err)
+	}
+	rows.Close()
+
+	run, err := loadRun(ctx, s.db, id, false)
+	if err != nil {
+		return nil, err
+	}
+	if seenRounds[contract.ReviewTestValidity] != run.TotalRounds.TestValidity ||
+		seenRounds[contract.ReviewFinalImplementation] != run.TotalRounds.FinalImplementation {
+		return nil, corruptRun(
+			"Review binding lineage が生涯 counter と一致しない: binding=%+v total=%+v",
+			seenRounds, run.TotalRounds,
+		)
+	}
+	return records, nil
+}
+
 // TransitionHistory は初期 claim を含む全 transition を version 昇順で返す。
 func (s *RunStore) TransitionHistory(ctx context.Context, id string) ([]TransitionRecord, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT version, event_kind, from_phase, to_phase
-		FROM run_transitions
-		WHERE run_id = $1
-		ORDER BY version
+		SELECT transition.version, transition.event_kind, transition.from_phase, transition.to_phase,
+			run.version, run.phase
+		FROM run_transitions AS transition
+		JOIN runs AS run ON run.id = transition.run_id
+		WHERE transition.run_id = $1
+		ORDER BY transition.version
 	`, id)
 	if err != nil {
 		return nil, fmt.Errorf("transition 履歴を取得する: %w", err)
@@ -293,10 +419,14 @@ func (s *RunStore) TransitionHistory(ctx context.Context, id string) ([]Transiti
 	defer rows.Close()
 
 	records := make([]TransitionRecord, 0)
+	var runVersion int64
+	var runPhase workflow.Phase
 	for rows.Next() {
 		var record TransitionRecord
 		var from sql.NullString
-		if err := rows.Scan(&record.Version, &record.Event, &from, &record.To); err != nil {
+		if err := rows.Scan(
+			&record.Version, &record.Event, &from, &record.To, &runVersion, &runPhase,
+		); err != nil {
 			return nil, fmt.Errorf("transition 履歴を読む: %w", err)
 		}
 		if from.Valid {
@@ -318,7 +448,37 @@ func (s *RunStore) TransitionHistory(ctx context.Context, id string) ([]Transiti
 		}
 		return nil, corruptRun("Run %q に初期 transition が無い", id)
 	}
+	if err := validateTransitionHistory(records, runVersion, runPhase); err != nil {
+		return nil, err
+	}
 	return records, nil
+}
+
+func validateTransitionHistory(records []TransitionRecord, runVersion int64, runPhase workflow.Phase) error {
+	for i, record := range records {
+		wantVersion := int64(i + 1)
+		if record.Version != wantVersion {
+			return corruptRun("transition version が連続していない: got %d, want %d", record.Version, wantVersion)
+		}
+		if i == 0 {
+			if record.Event != workflow.KindClaimSucceeded || record.From != workflow.PhaseNew ||
+				record.To != workflow.PhaseClaimed {
+				return corruptRun("初期 transition が claim を表さない: %#v", record)
+			}
+			continue
+		}
+		if record.Event == workflow.KindClaimSucceeded || record.From != records[i-1].To {
+			return corruptRun("transition phase が直前の履歴へ接続しない: %#v", record)
+		}
+	}
+	last := records[len(records)-1]
+	if last.Version != runVersion || last.To != runPhase {
+		return corruptRun(
+			"transition history が current Run と一致しない: history version=%d phase=%q, Run version=%d phase=%q",
+			last.Version, last.To, runVersion, runPhase,
+		)
+	}
+	return nil
 }
 
 func (s *RunStore) requireRun(ctx context.Context, id string) error {
@@ -347,16 +507,16 @@ func loadRun(ctx context.Context, db runQuerier, id string, forUpdate bool) (wor
 			run.context_manifest_schema, run.context_manifest_digest,
 			run.execution_policy_schema, run.execution_policy_digest,
 			run.escalation_policy_schema, run.escalation_policy_digest,
-			observation.digest, run.pull_request_ref,
+			observation.schema, observation.digest, run.pull_request_ref,
 			run.fixed_head, run.published_head, run.published_test_head, run.checks_head,
-			run.test_approval_head, run.test_approval_request_digest,
-			run.final_approval_head, run.final_approval_request_digest,
+			run.test_approval_head, run.test_approval_request_digest, run.test_approval_result_digest,
+			run.final_approval_head, run.final_approval_request_digest, run.final_approval_result_digest,
 			run.round_limit_test_validity, run.round_limit_final_implementation,
 			run.rounds_test_validity, run.rounds_final_implementation,
 			run.total_rounds_test_validity, run.total_rounds_final_implementation
 		FROM runs AS run
 		LEFT JOIN LATERAL (
-			SELECT digest
+			SELECT schema, digest
 			FROM run_issue_observations
 			WHERE run_id = run.id
 			ORDER BY run_version DESC
@@ -391,7 +551,7 @@ func loadLatestObservation(ctx context.Context, db runQuerier, id string) (contr
 	if err != nil {
 		return contract.IssueObservationRef{}, fmt.Errorf("最新 Issue Observation を読む: %w", err)
 	}
-	if err := validateStoredVersionedRef("Issue Observation", ref.Schema, ref.Digest); err != nil {
+	if err := validateStoredVersionedRef("Issue Observation", ref.Schema, ref.Digest, ref.Valid()); err != nil {
 		return contract.IssueObservationRef{}, err
 	}
 	return ref, nil
@@ -399,18 +559,19 @@ func loadLatestObservation(ctx context.Context, db runQuerier, id string) (contr
 
 func scanRun(row rowScanner) (workflow.Run, error) {
 	var (
-		run                                          workflow.Run
-		issueRef, observationDigest, pullRequestRef  sql.NullString
-		testHead, testDigest, finalHead, finalDigest sql.NullString
+		run                                                            workflow.Run
+		issueRef, observationSchema, observationDigest, pullRequestRef sql.NullString
+		testHead, testRequest, testResult                              sql.NullString
+		finalHead, finalRequest, finalResult                           sql.NullString
 	)
 	err := row.Scan(
 		&run.ID, &issueRef, &run.Version, &run.Phase,
 		&run.Input.ContextManifest.Schema, &run.Input.ContextManifest.Digest,
 		&run.Input.ExecutionPolicy.Schema, &run.Input.ExecutionPolicy.Digest,
 		&run.EscalationPolicy.Schema, &run.EscalationPolicy.Digest,
-		&observationDigest, &pullRequestRef,
+		&observationSchema, &observationDigest, &pullRequestRef,
 		&run.FixedHead, &run.PublishedHead, &run.PublishedTestHead, &run.ChecksHead,
-		&testHead, &testDigest, &finalHead, &finalDigest,
+		&testHead, &testRequest, &testResult, &finalHead, &finalRequest, &finalResult,
 		&run.RoundLimits.TestValidity, &run.RoundLimits.FinalImplementation,
 		&run.Rounds.TestValidity, &run.Rounds.FinalImplementation,
 		&run.TotalRounds.TestValidity, &run.TotalRounds.FinalImplementation,
@@ -421,27 +582,41 @@ func scanRun(row rowScanner) (workflow.Run, error) {
 	if !issueRef.Valid {
 		return workflow.Run{}, corruptRun("Issue reference が NULL")
 	}
-	if !observationDigest.Valid {
+	if observationSchema.Valid != observationDigest.Valid {
+		return workflow.Run{}, corruptRun("Issue Observation ref の NULL が不整合")
+	}
+	if !observationSchema.Valid {
 		return workflow.Run{}, corruptRun("Issue Observation lineage が無い")
 	}
-	run.Observation = contract.Digest(observationDigest.String)
+	observation := contract.IssueObservationRef{
+		Schema: observationSchema.String,
+		Digest: contract.Digest(observationDigest.String),
+	}
+	if !observation.Valid() {
+		return workflow.Run{}, corruptRun(
+			"Issue Observation ref が不正: schema=%q digest=%q",
+			observation.Schema, observation.Digest,
+		)
+	}
+	run.Observation = observation.Digest
 	run.Issue, err = parseIssueRef(issueRef.String)
 	if err != nil {
 		return workflow.Run{}, corruptRun("Issue reference が不正: %v", err)
 	}
 	if pullRequestRef.Valid {
-		if pullRequestRef.String != "" {
-			run.PullRequest, err = parsePullRequestRef(pullRequestRef.String)
-			if err != nil {
-				return workflow.Run{}, corruptRun("Pull Request reference が不正: %v", err)
-			}
+		if pullRequestRef.String == "" {
+			return workflow.Run{}, corruptRun("Pull Request reference が空文字")
+		}
+		run.PullRequest, err = parsePullRequestRef(pullRequestRef.String)
+		if err != nil {
+			return workflow.Run{}, corruptRun("Pull Request reference が不正: %v", err)
 		}
 	}
-	run.TestApproval, err = scanApproval("test", testHead, testDigest)
+	run.TestApproval, err = scanApproval("test", testHead, testRequest, testResult)
 	if err != nil {
 		return workflow.Run{}, err
 	}
-	run.FinalApproval, err = scanApproval("final", finalHead, finalDigest)
+	run.FinalApproval, err = scanApproval("final", finalHead, finalRequest, finalResult)
 	if err != nil {
 		return workflow.Run{}, err
 	}
@@ -460,15 +635,16 @@ func insertRun(ctx context.Context, tx pgx.Tx, run workflow.Run) error {
 			escalation_policy_schema, escalation_policy_digest,
 			pull_request_ref,
 			fixed_head, published_head, published_test_head, checks_head,
-			test_approval_head, test_approval_request_digest,
-			final_approval_head, final_approval_request_digest,
+			test_approval_head, test_approval_request_digest, test_approval_result_digest,
+			final_approval_head, final_approval_request_digest, final_approval_result_digest,
 			round_limit_test_validity, round_limit_final_implementation,
 			rounds_test_validity, rounds_final_implementation,
 			total_rounds_test_validity, total_rounds_final_implementation
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8,
 			$9, $10, $11, $12, $13, $14, $15, $16, $17,
-			$18, $19, $20, $21, $22, $23, $24, $25
+			$18, $19, $20, $21, $22, $23, $24, $25,
+			$26, $27
 		)
 	`, run.ID, run.Issue.String(), run.Version, run.Phase,
 		run.Input.ContextManifest.Schema, run.Input.ContextManifest.Digest,
@@ -476,8 +652,10 @@ func insertRun(ctx context.Context, tx pgx.Tx, run workflow.Run) error {
 		run.EscalationPolicy.Schema, run.EscalationPolicy.Digest,
 		nullablePullRequest(run.PullRequest),
 		run.FixedHead, run.PublishedHead, run.PublishedTestHead, run.ChecksHead,
-		nullableApprovalHead(run.TestApproval), nullableApprovalDigest(run.TestApproval),
-		nullableApprovalHead(run.FinalApproval), nullableApprovalDigest(run.FinalApproval),
+		nullableApprovalHead(run.TestApproval), nullableApprovalRequestDigest(run.TestApproval),
+		nullableApprovalResultDigest(run.TestApproval),
+		nullableApprovalHead(run.FinalApproval), nullableApprovalRequestDigest(run.FinalApproval),
+		nullableApprovalResultDigest(run.FinalApproval),
 		run.RoundLimits.TestValidity, run.RoundLimits.FinalImplementation,
 		run.Rounds.TestValidity, run.Rounds.FinalImplementation,
 		run.TotalRounds.TestValidity, run.TotalRounds.FinalImplementation,
@@ -507,6 +685,24 @@ func insertObservation(ctx context.Context, tx pgx.Tx, runID string, version int
 	return err
 }
 
+func insertReviewBinding(
+	ctx context.Context,
+	tx pgx.Tx,
+	runID string,
+	version int64,
+	round int,
+	review workflow.ReviewCompleted,
+) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO run_review_bindings (
+			run_id, run_version, review_round, review_kind, head,
+			request_digest, result_digest, verdict
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, runID, version, round, review.Kind, review.Head,
+		review.RequestDigest, review.ResultDigest, review.Verdict)
+	return err
+}
+
 func validateCreate(run workflow.Run, observation contract.IssueObservationRef) error {
 	if run.Version != 0 {
 		return invalidRun("Create 前の Version は 0 でなければならない: %d", run.Version)
@@ -514,31 +710,19 @@ func validateCreate(run workflow.Run, observation contract.IssueObservationRef) 
 	if run.Phase != workflow.PhaseClaimed {
 		return invalidRun("Create できる phase は claimed だけである: %q", run.Phase)
 	}
-	if err := validateRunIdentity(run); err != nil {
+	if run.Rounds != (workflow.ReviewRounds{}) || run.TotalRounds != (workflow.ReviewRounds{}) {
+		return invalidRun("Create 時の review round counter は 0 でなければならない")
+	}
+	if err := validateRun(run); err != nil {
 		return err
 	}
-	if err := validateVersionedRef("Issue Observation", observation.Schema, observation.Digest); err != nil {
+	if err := validateVersionedRef(
+		"Issue Observation", observation.Schema, observation.Digest, observation.Valid(),
+	); err != nil {
 		return err
 	}
 	if run.Observation != observation.Digest {
 		return invalidRun("初期 IssueObservationRef digest が Run の Observation と一致しない")
-	}
-	if err := validateVersionedRef("Escalation Policy", run.EscalationPolicy.Schema, run.EscalationPolicy.Digest); err != nil {
-		return err
-	}
-	// round 上限は claim の時点で解決済みでなければならない。0 を許すと最初の
-	// request_changes で必ず escalate する Run が gate を持つ顔で保存される。
-	for _, limit := range []struct {
-		name  string
-		value int
-	}{
-		{"testValidity", run.RoundLimits.TestValidity},
-		{"finalImplementation", run.RoundLimits.FinalImplementation},
-	} {
-		if limit.value < contract.MinReviewRounds || limit.value > contract.MaxReviewRounds {
-			return invalidRun("review round 上限 %s は %d 以上 %d 以下でなければならない: %d",
-				limit.name, contract.MinReviewRounds, contract.MaxReviewRounds, limit.value)
-		}
 	}
 	return nil
 }
@@ -554,10 +738,104 @@ func validateTransition(transition Transition) error {
 	if !knownEvent(transition.Event) {
 		return invalidRun("event kind が不正: %q", transition.Event)
 	}
-	return validateRunIdentity(transition.Run)
+	if transition.Event == workflow.KindClaimSucceeded {
+		return invalidRun("claim_succeeded は Create の初期履歴にだけ使える")
+	}
+	if (transition.Event == workflow.KindReviewCompleted) != (transition.Review != nil) {
+		return invalidRun("review_completed event と Review binding の有無が一致しない")
+	}
+	if transition.Review != nil {
+		if err := validateReview(*transition.Review); err != nil {
+			return err
+		}
+	}
+	return validateRun(transition.Run)
 }
 
-func validateRunIdentity(run workflow.Run) error {
+func validateReview(review workflow.ReviewCompleted) error {
+	if !knownReviewKind(review.Kind) {
+		return invalidRun("review kind が不正: %q", review.Kind)
+	}
+	if !knownReviewVerdict(review.Verdict) {
+		return invalidRun("review verdict が不正: %q", review.Verdict)
+	}
+	if review.Head == "" {
+		return invalidRun("review head が空")
+	}
+	if !review.RequestDigest.Valid() {
+		return invalidRun("Review Request digest が不正: %q", review.RequestDigest)
+	}
+	if !review.ResultDigest.Valid() {
+		return invalidRun("Review Result digest が不正: %q", review.ResultDigest)
+	}
+	return nil
+}
+
+func validateReviewProgress(
+	current workflow.Run,
+	next workflow.Run,
+	review workflow.ReviewCompleted,
+) (int, error) {
+	if review.Head != next.PublishedHead {
+		return 0, invalidRun(
+			"Review binding head が publish 済み head と一致しない: got %s, want %s",
+			review.Head, next.PublishedHead,
+		)
+	}
+
+	var round int
+	switch review.Kind {
+	case contract.ReviewTestValidity:
+		if next.TotalRounds.TestValidity != current.TotalRounds.TestValidity+1 ||
+			next.TotalRounds.FinalImplementation != current.TotalRounds.FinalImplementation {
+			return 0, invalidRun("test validity review counter が1だけ進んでいない")
+		}
+		round = next.TotalRounds.TestValidity
+	case contract.ReviewFinalImplementation:
+		if next.TotalRounds.FinalImplementation != current.TotalRounds.FinalImplementation+1 ||
+			next.TotalRounds.TestValidity != current.TotalRounds.TestValidity {
+			return 0, invalidRun("final implementation review counter が1だけ進んでいない")
+		}
+		round = next.TotalRounds.FinalImplementation
+	}
+	if next.Phase == workflow.PhaseNeedsHuman {
+		if next.Rounds != (workflow.ReviewRounds{}) {
+			return 0, invalidRun("needs_human へ進んだ review は無人区間 counter を reset しなければならない")
+		}
+	} else if review.Kind == contract.ReviewTestValidity {
+		if next.Rounds.TestValidity != current.Rounds.TestValidity+1 ||
+			next.Rounds.FinalImplementation != current.Rounds.FinalImplementation {
+			return 0, invalidRun("test validity の無人区間 counter が1だけ進んでいない")
+		}
+	} else if next.Rounds.FinalImplementation != current.Rounds.FinalImplementation+1 ||
+		next.Rounds.TestValidity != current.Rounds.TestValidity {
+		return 0, invalidRun("final implementation の無人区間 counter が1だけ進んでいない")
+	}
+
+	if review.Verdict != contract.VerdictApprove {
+		return round, nil
+	}
+	approval := next.TestApproval
+	if review.Kind == contract.ReviewFinalImplementation {
+		approval = next.FinalApproval
+	}
+	if approval == nil || approval.Head != review.Head ||
+		approval.RequestDigest != review.RequestDigest || approval.ResultDigest != review.ResultDigest {
+		return 0, invalidRun("approve の Run binding が Review Result と一致しない")
+	}
+	return round, nil
+}
+
+func validateStoredReviewRecord(record ReviewRecord) error {
+	if record.RunVersion < 2 || record.Round < 1 || !knownReviewKind(record.Kind) ||
+		record.Head == "" || !record.RequestDigest.Valid() || !record.ResultDigest.Valid() ||
+		!knownReviewVerdict(record.Verdict) {
+		return corruptRun("不正な Review binding: %#v", record)
+	}
+	return nil
+}
+
+func validateRun(run workflow.Run) error {
 	if run.ID == "" {
 		return invalidRun("Run ID が空")
 	}
@@ -567,10 +845,34 @@ func validateRunIdentity(run workflow.Run) error {
 	if !knownPhase(run.Phase) {
 		return invalidRun("phase が不正: %q", run.Phase)
 	}
-	if err := validateVersionedRef("Context Manifest", run.Input.ContextManifest.Schema, run.Input.ContextManifest.Digest); err != nil {
+	if err := validateVersionedRef(
+		"Context Manifest",
+		run.Input.ContextManifest.Schema,
+		run.Input.ContextManifest.Digest,
+		run.Input.ContextManifest.Valid(),
+	); err != nil {
 		return err
 	}
-	if err := validateVersionedRef("Execution Policy", run.Input.ExecutionPolicy.Schema, run.Input.ExecutionPolicy.Digest); err != nil {
+	if err := validateVersionedRef(
+		"Execution Policy",
+		run.Input.ExecutionPolicy.Schema,
+		run.Input.ExecutionPolicy.Digest,
+		run.Input.ExecutionPolicy.Valid(),
+	); err != nil {
+		return err
+	}
+	if err := validateVersionedRef(
+		"Escalation Policy",
+		run.EscalationPolicy.Schema,
+		run.EscalationPolicy.Digest,
+		run.EscalationPolicy.Valid(),
+	); err != nil {
+		return err
+	}
+	if err := validateRoundLimits(run.RoundLimits); err != nil {
+		return err
+	}
+	if err := validateRoundCounters(run.Rounds, run.TotalRounds); err != nil {
 		return err
 	}
 	if !run.Observation.Valid() {
@@ -591,25 +893,61 @@ func validateStoredRun(run workflow.Run) error {
 	if run.Version < 1 {
 		return corruptRun("version が不正: %d", run.Version)
 	}
-	if err := validateRunIdentity(run); err != nil {
+	if err := validateRun(run); err != nil {
 		return fmt.Errorf("%w: %v", ErrCorruptRun, err)
 	}
 	return nil
 }
 
-func validateVersionedRef(name, schema string, digest contract.Digest) error {
-	if schema == "" {
-		return invalidRun("%s schema が空", name)
-	}
-	if !digest.Valid() {
-		return invalidRun("%s digest が不正: %q", name, digest)
+func validateVersionedRef(name, schema string, digest contract.Digest, valid bool) error {
+	if !valid {
+		return invalidRun("%s ref が不正: schema=%q digest=%q", name, schema, digest)
 	}
 	return nil
 }
 
-func validateStoredVersionedRef(name, schema string, digest contract.Digest) error {
-	if schema == "" || !digest.Valid() {
+func validateStoredVersionedRef(name, schema string, digest contract.Digest, valid bool) error {
+	if !valid {
 		return corruptRun("%s ref が不正: schema=%q digest=%q", name, schema, digest)
+	}
+	return nil
+}
+
+func validateRoundLimits(limits contract.ReviewRoundLimits) error {
+	// round 上限は claim の時点で解決済みでなければならない。0 を許すと最初の
+	// request_changes で必ず escalate する Run が gate を持つ顔で保存される。
+	for _, limit := range []struct {
+		name  string
+		value int
+	}{
+		{"testValidity", limits.TestValidity},
+		{"finalImplementation", limits.FinalImplementation},
+	} {
+		if limit.value < contract.MinReviewRounds || limit.value > contract.MaxReviewRounds {
+			return invalidRun("review round 上限 %s は %d 以上 %d 以下でなければならない: %d",
+				limit.name, contract.MinReviewRounds, contract.MaxReviewRounds, limit.value)
+		}
+	}
+	return nil
+}
+
+func validateRoundCounters(rounds, total workflow.ReviewRounds) error {
+	for _, counter := range []struct {
+		name  string
+		value int
+		total int
+	}{
+		{"testValidity", rounds.TestValidity, total.TestValidity},
+		{"finalImplementation", rounds.FinalImplementation, total.FinalImplementation},
+	} {
+		if counter.value < 0 || counter.total < 0 {
+			return invalidRun("review round counter %s は負にできない: rounds=%d total=%d",
+				counter.name, counter.value, counter.total)
+		}
+		if counter.value > counter.total {
+			return invalidRun("review round counter %s は生涯 counter 以下でなければならない: rounds=%d total=%d",
+				counter.name, counter.value, counter.total)
+		}
 	}
 	return nil
 }
@@ -624,26 +962,34 @@ func validateApproval(name string, approval *workflow.Approval) error {
 	if !approval.RequestDigest.Valid() {
 		return invalidRun("%s approval request digest が不正: %q", name, approval.RequestDigest)
 	}
+	if !approval.ResultDigest.Valid() {
+		return invalidRun("%s approval result digest が不正: %q", name, approval.ResultDigest)
+	}
 	return nil
 }
 
-func scanApproval(name string, head, digest sql.NullString) (*workflow.Approval, error) {
-	if head.Valid != digest.Valid {
+func scanApproval(name string, head, request, result sql.NullString) (*workflow.Approval, error) {
+	if head.Valid != request.Valid || head.Valid != result.Valid {
 		return nil, corruptRun("%s approval binding の NULL が不整合", name)
 	}
 	if !head.Valid {
 		return nil, nil
 	}
-	requestDigest := contract.Digest(digest.String)
-	if head.String == "" || !requestDigest.Valid() {
+	requestDigest := contract.Digest(request.String)
+	resultDigest := contract.Digest(result.String)
+	if head.String == "" || !requestDigest.Valid() || !resultDigest.Valid() {
 		return nil, corruptRun("%s approval binding が不正", name)
 	}
-	return &workflow.Approval{Head: head.String, RequestDigest: requestDigest}, nil
+	return &workflow.Approval{
+		Head:          head.String,
+		RequestDigest: requestDigest,
+		ResultDigest:  resultDigest,
+	}, nil
 }
 
 func nullablePullRequest(ref contract.PullRequestRef) any {
 	if ref == (contract.PullRequestRef{}) {
-		return ""
+		return nil
 	}
 	return ref.String()
 }
@@ -655,59 +1001,34 @@ func nullableApprovalHead(approval *workflow.Approval) any {
 	return approval.Head
 }
 
-func nullableApprovalDigest(approval *workflow.Approval) any {
+func nullableApprovalRequestDigest(approval *workflow.Approval) any {
 	if approval == nil {
 		return nil
 	}
 	return approval.RequestDigest
 }
 
-func parseIssueRef(raw string) (contract.IssueRef, error) {
-	owner, repository, number, err := parseGitHubRef(raw, "issues")
-	if err != nil {
-		return contract.IssueRef{}, err
+func nullableApprovalResultDigest(approval *workflow.Approval) any {
+	if approval == nil {
+		return nil
 	}
-	ref := contract.IssueRef{Owner: owner, Repository: repository, Number: number}
-	if ref.String() != raw {
+	return approval.ResultDigest
+}
+
+func parseIssueRef(raw string) (contract.IssueRef, error) {
+	ref, ok := contract.ParseIssueRef(raw)
+	if !ok || ref.String() != raw {
 		return contract.IssueRef{}, fmt.Errorf("canonical Issue reference でない: %q", raw)
 	}
 	return ref, nil
 }
 
 func parsePullRequestRef(raw string) (contract.PullRequestRef, error) {
-	owner, repository, number, err := parseGitHubRef(raw, "pull")
-	if err != nil {
-		return contract.PullRequestRef{}, err
-	}
-	ref := contract.PullRequestRef{Owner: owner, Repository: repository, Number: number}
-	if ref.String() != raw {
+	ref, ok := contract.ParsePullRequestRef(raw)
+	if !ok || ref.String() != raw {
 		return contract.PullRequestRef{}, fmt.Errorf("canonical Pull Request reference でない: %q", raw)
 	}
 	return ref, nil
-}
-
-func parseGitHubRef(raw, resource string) (string, string, int, error) {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", "", 0, err
-	}
-	if parsed.Scheme != "github" || parsed.Host == "" || parsed.User != nil ||
-		parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", "", 0, fmt.Errorf("形式が不正: %q", raw)
-	}
-	parts := strings.Split(strings.TrimPrefix(parsed.EscapedPath(), "/"), "/")
-	if len(parts) != 3 || parts[0] == "" || parts[1] != resource || parts[2] == "" {
-		return "", "", 0, fmt.Errorf("path が不正: %q", raw)
-	}
-	repository, err := url.PathUnescape(parts[0])
-	if err != nil || repository != parts[0] {
-		return "", "", 0, fmt.Errorf("repository が不正: %q", parts[0])
-	}
-	number, err := strconv.Atoi(parts[2])
-	if err != nil || number <= 0 {
-		return "", "", 0, fmt.Errorf("number が不正: %q", parts[2])
-	}
-	return parsed.Host, repository, number, nil
 }
 
 func knownPhase(phase workflow.Phase) bool {
@@ -726,6 +1047,33 @@ func knownEvent(event workflow.EventKind) bool {
 		}
 	}
 	return false
+}
+
+func knownReviewKind(kind contract.ReviewKind) bool {
+	return kind == contract.ReviewTestValidity || kind == contract.ReviewFinalImplementation
+}
+
+func knownReviewVerdict(verdict contract.ReviewVerdict) bool {
+	return verdict == contract.VerdictApprove || verdict == contract.VerdictRequestChanges ||
+		verdict == contract.VerdictNeedsHuman
+}
+
+func rollbackStoreTransaction(parent context.Context, tx pgx.Tx) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), storeTransactionCleanupTimeout)
+	defer cancel()
+	_ = tx.Rollback(ctx)
+}
+
+func commitStoreTransaction(parent context.Context, tx pgx.Tx) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
+	// pgx の nested transaction は RELEASE SAVEPOINT が失敗しても closed になる。
+	// request cancellation と同時に部分書き込みを外側 transaction へ残さないよう、
+	// 全 statement 成功後の確定処理だけは短い独立 context で完了させる。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), storeTransactionCleanupTimeout)
+	defer cancel()
+	return tx.Commit(ctx)
 }
 
 func classifyWriteError(operation string, err error) error {

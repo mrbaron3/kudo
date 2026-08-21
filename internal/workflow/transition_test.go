@@ -133,6 +133,7 @@ func awaitingFinalReview(t *testing.T) Run {
 			Verdict:       contract.VerdictApprove,
 			Head:          testHead,
 			RequestDigest: contract.SHA256([]byte("test-request")),
+			ResultDigest:  contract.SHA256([]byte("test-result")),
 		},
 		ImplementationFixed{Head: finalHead, ChecksPassed: true},
 		HeadPublished{Head: finalHead, PullRequest: samplePullRequest()},
@@ -184,14 +185,14 @@ func TestNormalFlowReachesHumanHandoff(t *testing.T) {
 		{HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
 			PhaseAwaitingTestReview, []string{"request_review"}},
 		{ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
-			Head: testHead, RequestDigest: contract.SHA256([]byte("r1"))},
+			Head: testHead, RequestDigest: contract.SHA256([]byte("r1")), ResultDigest: contract.SHA256([]byte("result-r1"))},
 			PhaseImplementing, []string{"dispatch_operation"}},
 		{ImplementationFixed{Head: finalHead, ChecksPassed: true},
 			PhasePublishingFinalHead, []string{"dispatch_operation"}},
 		{HeadPublished{Head: finalHead, PullRequest: samplePullRequest()},
 			PhaseAwaitingFinalReview, []string{"request_review"}},
 		{ReviewCompleted{Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictApprove,
-			Head: finalHead, RequestDigest: contract.SHA256([]byte("r2"))},
+			Head: finalHead, RequestDigest: contract.SHA256([]byte("r2")), ResultDigest: contract.SHA256([]byte("result-r2"))},
 			PhaseFinalizingPullRequest, []string{"dispatch_operation"}},
 		{PullRequestFinalized{Head: finalHead}, PhaseMergingPullRequest, []string{"dispatch_operation"}},
 		{PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit}, PhaseMerged, []string{"project_status"}},
@@ -217,7 +218,7 @@ func TestDecideIsPureAndDoesNotMutateArguments(t *testing.T) {
 	run := awaitingTestReview(t)
 	before := run
 	event := ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
-		Head: testHead, RequestDigest: contract.SHA256([]byte("r1"))}
+		Head: testHead, RequestDigest: contract.SHA256([]byte("r1")), ResultDigest: contract.SHA256([]byte("result-r1"))}
 
 	first := requireDecision(t, run, event)
 	second := requireDecision(t, run, event)
@@ -236,10 +237,12 @@ func TestPointerEventsHaveTheSameSemanticsAsValues(t *testing.T) {
 	implementing := advance(t, awaitingTestReview(t), ReviewCompleted{
 		Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
 		Head: testHead, RequestDigest: contract.SHA256([]byte("test-request")),
+		ResultDigest: contract.SHA256([]byte("test-result")),
 	})
 	finalizing := advance(t, awaitingFinalReview(t), ReviewCompleted{
 		Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictApprove,
 		Head: finalHead, RequestDigest: contract.SHA256([]byte("final-request")),
+		ResultDigest: contract.SHA256([]byte("final-result")),
 	})
 	merging := advance(t, finalizing, PullRequestFinalized{Head: finalHead})
 	changed := sampleInput()
@@ -256,7 +259,15 @@ func TestPointerEventsHaveTheSameSemanticsAsValues(t *testing.T) {
 		{"operation started", claimedRun(t), OperationStarted{Kind: contract.OperationAuthorTests}, &OperationStarted{Kind: contract.OperationAuthorTests}},
 		{"tests authored", authoring, TestsAuthored{Head: testHead}, &TestsAuthored{Head: testHead}},
 		{"head published", publishingTest, HeadPublished{Head: testHead, PullRequest: samplePullRequest()}, &HeadPublished{Head: testHead, PullRequest: samplePullRequest()}},
-		{"review completed", awaitingTestReview(t), ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead}, &ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead}},
+		{"review completed", awaitingTestReview(t),
+			ReviewCompleted{
+				Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead,
+				RequestDigest: contract.SHA256([]byte("request")), ResultDigest: contract.SHA256([]byte("result")),
+			},
+			&ReviewCompleted{
+				Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead,
+				RequestDigest: contract.SHA256([]byte("request")), ResultDigest: contract.SHA256([]byte("result")),
+			}},
 		{"implementation fixed", implementing, ImplementationFixed{Head: finalHead, ChecksPassed: true}, &ImplementationFixed{Head: finalHead, ChecksPassed: true}},
 		{"pull request finalized", finalizing, PullRequestFinalized{Head: finalHead}, &PullRequestFinalized{Head: finalHead}},
 		{"pull request merged", merging, PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit}, &PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit}},
@@ -296,11 +307,14 @@ func TestTypedNilPointerEventIsRejectedWithoutPanic(t *testing.T) {
 // 実装と test が同じ組を見落として通り抜けることを防ぐ。
 func TestUndeclaredTransitionsAreRejected(t *testing.T) {
 	events := map[EventKind]Event{
-		KindClaimSucceeded:       sampleClaimSucceeded(),
-		KindOperationStarted:     OperationStarted{Kind: contract.OperationAuthorTests},
-		KindTestsAuthored:        TestsAuthored{Head: testHead},
-		KindHeadPublished:        HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
-		KindReviewCompleted:      ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead, RequestDigest: contract.SHA256([]byte("r"))},
+		KindClaimSucceeded:   sampleClaimSucceeded(),
+		KindOperationStarted: OperationStarted{Kind: contract.OperationAuthorTests},
+		KindTestsAuthored:    TestsAuthored{Head: testHead},
+		KindHeadPublished:    HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
+		KindReviewCompleted: ReviewCompleted{
+			Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead,
+			RequestDigest: contract.SHA256([]byte("r")), ResultDigest: contract.SHA256([]byte("result-r")),
+		},
 		KindImplementationFixed:  ImplementationFixed{Head: finalHead, ChecksPassed: true},
 		KindTestRevisionRequired: TestRevisionRequired{Head: testHead},
 		KindPullRequestFinalized: PullRequestFinalized{Head: finalHead},
@@ -354,6 +368,7 @@ func TestImplementationRequiresTestValidityApproval(t *testing.T) {
 		Verdict:       contract.VerdictApprove,
 		Head:          finalHead,
 		RequestDigest: contract.SHA256([]byte("r1")),
+		ResultDigest:  contract.SHA256([]byte("result-r1")),
 	}, TransitionGateUnsatisfied)
 	if !strings.Contains(err.Error(), testHead) {
 		t.Fatalf("bind されるべき head が error に現れない: %v", err)
@@ -365,6 +380,7 @@ func TestImplementationRequiresTestValidityApproval(t *testing.T) {
 		Verdict:       contract.VerdictApprove,
 		Head:          testHead,
 		RequestDigest: contract.SHA256([]byte("r1")),
+		ResultDigest:  contract.SHA256([]byte("result-r1")),
 	}, TransitionGateUnsatisfied)
 }
 
@@ -376,6 +392,7 @@ func TestRepublishRequiresOriginalPullRequest(t *testing.T) {
 		ReviewCompleted{
 			Kind: contract.ReviewTestValidity, Verdict: contract.VerdictRequestChanges,
 			Head: testHead, RequestDigest: contract.SHA256([]byte("revise-tests")),
+			ResultDigest: contract.SHA256([]byte("revise-tests-result")),
 		},
 		TestsAuthored{Head: repairedHead},
 	)
@@ -383,6 +400,7 @@ func TestRepublishRequiresOriginalPullRequest(t *testing.T) {
 		ReviewCompleted{
 			Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
 			Head: testHead, RequestDigest: contract.SHA256([]byte("test-approve")),
+			ResultDigest: contract.SHA256([]byte("test-approve-result")),
 		},
 		ImplementationFixed{Head: finalHead, ChecksPassed: true},
 	)
@@ -407,6 +425,7 @@ func TestRepairImplementationRetainsTheApprovedTestBinding(t *testing.T) {
 	run := advance(t, awaitingFinalReview(t), ReviewCompleted{
 		Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictRequestChanges,
 		Head: finalHead, RequestDigest: contract.SHA256([]byte("repair")),
+		ResultDigest: contract.SHA256([]byte("repair-result")),
 	})
 
 	decision := requireDecision(t, run, ImplementationFixed{Head: repairedHead, ChecksPassed: true})
@@ -423,6 +442,7 @@ func TestFinalizeRequiresApprovalAndChecksOnPublishedHead(t *testing.T) {
 			Verdict:       contract.VerdictApprove,
 			Head:          head,
 			RequestDigest: contract.SHA256([]byte("r2")),
+			ResultDigest:  contract.SHA256([]byte("result-r2")),
 		}
 	}
 
@@ -433,6 +453,7 @@ func TestFinalizeRequiresApprovalAndChecksOnPublishedHead(t *testing.T) {
 	noChecks := advance(t, awaitingTestReview(t), ReviewCompleted{
 		Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
 		Head: testHead, RequestDigest: contract.SHA256([]byte("r1")),
+		ResultDigest: contract.SHA256([]byte("result-r1")),
 	})
 	requireRejected(t, noChecks, ImplementationFixed{Head: finalHead, ChecksPassed: false}, TransitionGateUnsatisfied)
 
@@ -488,6 +509,7 @@ func TestTransportFailureAndRequestChangesAreNotNeedsHuman(t *testing.T) {
 			decision := requireDecision(t, tc.run, ReviewCompleted{
 				Kind: tc.kind, Verdict: contract.VerdictRequestChanges,
 				Head: tc.head, RequestDigest: contract.SHA256([]byte("rc")),
+				ResultDigest: contract.SHA256([]byte("rc-result")),
 			})
 			if decision.Run.Phase != tc.want {
 				t.Fatalf("phase = %q, want %q", decision.Run.Phase, tc.want)
@@ -506,6 +528,7 @@ func TestTransportFailureAndRequestChangesAreNotNeedsHuman(t *testing.T) {
 	needsHuman := requireDecision(t, awaitingTestReview(t), ReviewCompleted{
 		Kind: contract.ReviewTestValidity, Verdict: contract.VerdictNeedsHuman,
 		Head: testHead, RequestDigest: contract.SHA256([]byte("nh")),
+		ResultDigest: contract.SHA256([]byte("nh-result")),
 	})
 	if needsHuman.Run.Phase != PhaseNeedsHuman {
 		t.Fatalf("needs_human verdict の phase = %q", needsHuman.Run.Phase)
@@ -625,6 +648,7 @@ func TestGatesRejectInconsistentStoredRun(t *testing.T) {
 		Verdict:       contract.VerdictApprove,
 		Head:          finalHead,
 		RequestDigest: contract.SHA256([]byte("r2")),
+		ResultDigest:  contract.SHA256([]byte("result-r2")),
 	}
 
 	for name, tc := range map[string]struct {
@@ -671,7 +695,10 @@ func TestGatesRejectInconsistentStoredRun(t *testing.T) {
 		"implementation with approval for another test head": {
 			run: Run{ID: "run-01", Phase: PhaseImplementing, Input: sampleInput(),
 				FixedHead: testHead, PublishedHead: testHead, PublishedTestHead: testHead,
-				TestApproval: &Approval{Head: finalHead, RequestDigest: contract.SHA256([]byte("test-approve"))}},
+				TestApproval: &Approval{
+					Head: finalHead, RequestDigest: contract.SHA256([]byte("test-approve")),
+					ResultDigest: contract.SHA256([]byte("test-approve-result")),
+				}},
 			event: ImplementationFixed{Head: finalHead, ChecksPassed: true},
 		},
 	} {
