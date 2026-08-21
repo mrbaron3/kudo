@@ -39,13 +39,155 @@ M0とM1は完了扱いのまま変わらない。M2はRunStoreまで到達して
 
 | milestone | 貫通時点で未達のまま残るもの |
 | --- | --- |
-| M2 | Operation queue、lease、attempt recovery、delivery inbox。**status outbox producer は S1 で決着が要る**（ADR-0007 §1 S1） |
+| M2 | Operation queue、lease、attempt recovery、delivery inbox。**status outbox producer は S1 で決着が要る**（下記「貫通の未決事項」） |
 | M3 | webhook、pagination網羅、4 label lifecycle、rate limit retry、`healthz` / `readyz` |
 | M4 | orphan detection、secret redaction網羅、両provider adapter。**role別credential / filesystem policy は S4 を例外とする**（最初の review verdict 時点で Review Worker は read-only／workspace 非 mount） |
 | M5 | `revise_tests`、`needs_human` escalation / resumption、staleness全経路 |
 | M6 | `repair_implementation`、test mutation detection、required checks統合、PR body validator |
 
-各sliceで「何を作るか」と「何を意図的に雑にするか」、および後から入れられないため貫通でも落としてはならないものは、ADR-0007が定義する。
+各sliceの範囲は次のとおり定義する（この順序を選んだ理由と実測根拠 → [ADR-0007](../../adr/0007-vertical-slice-delivery.md)）。
+
+### 各sliceの範囲
+
+各sliceで「何を作るか」と「何を意図的に雑にするか」の両方を明示する。暗黙の手抜きを作らない。雑にしたものは実装PRの記述と、必要なら[Evaluation harness — deferred](04_evaluation-harness.md)へ記録し、`05_design/01_architecture.md`や`05_design/contracts/`へは書かない。
+
+#### S1: Issue 1件を`claimed` Runにする
+
+**作るもの**
+
+- 認証を持たない薄いread client。対象repositoryはpublicであり、S1〜S2のGitHub readは未認証で行う。write認証（branch push、PR作成が始まるS3の直前）で設計し、S4までにReview Worker側をread-only tokenへdownscopeする。未認証APIは60 req/hour（IP単位）のため、polling間隔は製品既定の15分とする（[github-routing.md](../05_design/04_github-routing.md)）。
+- read client: Issue list、Issue get、repository content、base commit SHA。
+- candidate filter。`GET /repos/{o}/{r}/issues?state=open&assignee=<login>&labels=ai-ready&per_page=100`で3条件をquery parameterで満たし、non-PRは`pull_request` keyの有無で判定する。4条件とも落とさない。
+- `ReconcileIssue(repositoryRef, issueNumber, Trigger)`。pollerはIssueRefを流すだけの薄いproducerにする。
+- claim use case。`contract.Compile(body, IssueRef)`が[Issue Contract](../05_design/contracts/issue-contract-v1alpha1.md)のclaim手順1〜2を完全に埋める。adapter側にparseを書かない。
+- authority referenceの解決。`GET /repos/{o}/{r}/contents/{path}?ref=<baseSha>`でcontentを取り、`contract.SHA256(bytes)`を`contentDigest`にする。
+- `readiness: ready`のgate。`Compile`はdraft / blockedのIssueも成功して返すため、claim use caseが`req.Readiness == contract.ReadinessReady`を明示的に書く。
+
+**意図的に雑にするもの**
+
+- GitHub native sub-issue / dependency relationshipとContract blockの照合をしない（[Issue Contract](../05_design/contracts/issue-contract-v1alpha1.md)は「adapterが取得できる場合」の条件付き要求であり、取得しない構成は契約違反にならない）。
+- dependency completionの証明をしない。省略の仕方は一つだけで、**`dependsOn`が非空ならclaimせず`waiting_dependency`を返す**。`ai-ready`を消費せず`needs_human`にもせず、pollingで再評価させる。
+- claim中の再取得（契約claim手順7）をしない。「1回fetch → 全部そこから解決 → commit直前に再readしてbody digest比較」の形だけ保つ。
+- webhookを作らない。signature検証、payload size limit、delivery inboxはS3以降。
+- Operation queue、lease、heartbeat、reaper（#14）を作らない。claim後の`DispatchOperation`はS2でinline実行し、queueは後から包む。
+- artifact bytesを保存しない（refs-only）。ただし`ArtifactWriter` interfaceの呼び出し口だけS1で確定させる。
+
+#### S2: `author_tests`でRED evidenceを固定する
+
+**作るもの**
+
+- content-addressed Artifact Store。`objects/sha256/aa/bb/<hex>`、同一filesystemの`<root>/tmp`経由でfile fsync → link/rename → 親dir fsync、read時のdigest再検証、missingとcorruptの別error。
+- Run workspace。Run専用clone → `baseSha` checkout → Run専用branch → provider実行 → checkpoint commit → source-bundle化。worktree共有ではなくRunごとの独立cloneにする。
+- child process supervisor。timeout、process group kill、exit / timeout / invalid outputの分類、環境変数allowlist、bounded output capture。
+- provider adapter（codexとclaudeのどちらか一方で足りる）。schema非依存のinterfaceにし、`OutputSchema []byte`を受けて`FinalMessage []byte`と実行evidenceを返す。
+- RED evidence artifact（canonical YAML）。`runs[]`、各runのargv、`workingDir`、`exited|signaled|timed_out`と`exitCode`/`signal`、stdout/stderrの`(inline, truncated, fullDigest, fullLength)`、environment identity、`headSha`、source-bundle digest。観測時刻と実行時間はcanonical contentに入れない。
+
+**意図的に雑にするもの**
+
+- orphan scan、GC、参照カウント、delete / overwrite API、圧縮・pack、artifact metadata table、作成時刻index。
+- secret redactionは`func([]byte) []byte`のseamだけ用意し、初版は環境変数由来の値の走査に留める。
+- `toolPermissions`はroleごとに1組をhard-codeし、それ以外の値をrejectする。
+- provider CLIのJSONL eventを細かくparseしない。structured outputには「計画と主張」だけを載せ、test patchをJSONに埋め込ませない（コード変更はworktreeからgitで取る）。
+- MCP設定、rate limit専用backoff、adapter versionの自動検出（version照合はする）。
+
+#### S3: draft PRを1本publishする
+
+**作るもの**
+
+- `publish_head` Operation。branch pushとPR ensureの冪等な組。
+- `pull-request-observation` artifactの固定。
+- `ai-in-progress`のstatus outbox consumer。
+
+**意図的に雑にするもの**
+
+- PR body生成はTask Issue link、Run ID、phaseだけの最小形。test plan要約の決定論的生成はS4以降。
+- 外部干渉（人間push、close、base変更）のreconciliationは検出だけにし、復旧経路はS4以降。
+- 4 label lifecycleのうちS3で投影するのは`ai-in-progress`だけ。
+
+#### S4 / S5
+
+S3の実測結果を見てから内訳を確定する（[ADR-0007](../../adr/0007-vertical-slice-delivery.md) Revisit conditions）。それまで該当Taskはmilestone Epicに置く。
+
+### 貫通でも落とさないもの
+
+「後から入れられない」ではなく、**後から入れると過去に作ったevidenceの意味が変わる／欠落を後から観測できない**ものを落とさない。
+
+#### provider session isolation
+
+| 項目 | 後から入れると何が壊れるか |
+| --- | --- |
+| project doc auto-discoveryの無効化（codex `-c project_doc_max_bytes=0`、claude `--safe-mode`）。3 flagは効果が別物なので束ねず目的ごとに分けて書く | 対象repository自身の`AGENTS.md` / `CLAUDE.md`等がsessionへ黙って入る（実測: codex +8,897 token、claude cache_creation 3,769→75,263 token）。testでは検出できない。Context Manifestのdigest固定の外から未pin版が二重注入され、Operation digestと「sessionが実際に見た入力」の対応が崩れる |
+| 環境変数のallowlistとmodelのCLI flag明示 | `os.Environ()`をそのまま渡すと、host側の`ANTHROPIC_MODEL`等がExecution Policyの`model`を黙って上書きし、policy digestが実行実態を表さなくなる |
+| operation-scoped state directory（`CODEX_HOME` / `CLAUDE_CONFIG_DIR`をOperationごとのtemp dirへ） | cwdをキーにしたprovider側memoryがOperationをまたぐconversational carryover経路になる。credentialも同じdirectoryにあるため、seedはcredential fileのみをallowlistする |
+| provider interfaceのschema非依存性 | `contract.TaskContext`を引数に取ると、schema versionごとにadapterが分岐し、旧schema併存要求（[Task Context Protocol](../05_design/contracts/task-context-v1alpha1.md)）の下で分岐が爆発する |
+| `adapterVersion`と実CLIの起動時照合 | config定数のまま放置すると、host開発時とworker imageで値が食い違ったままevidenceに載る |
+
+#### content identityとdurability
+
+| 項目 | 後から入れると何が壊れるか |
+| --- | --- |
+| checkpoint commitのidentity固定（author/committer name・emailと`GIT_AUTHOR_DATE` / `GIT_COMMITTER_DATE`） | 既定に任せるとhead SHAがwall clockとhost git configに依存する。head SHAはOperation Result、Review Request binding、PR observationへ焼き込まれるため、規則を後から変えると過去RunのSHAが再現しない |
+| Artifact Store layoutのalgorithm segmentと2段fanout | named volumeはupgradeを跨いで残るdurable formatであり、後から変えると既存objectの移行が要る |
+| durability手順（同一FSのtemp、fileと親dirのfsync、write-onceを保つlink、EEXISTは既存検証で成功収束、read時digest再検証、missing/corruptの別error） | bytes消失・破損上書き・誤bytesでのapproveを後から検出も修復もできない |
+| store APIをstreaming + store測定descriptorにすること | `Data []byte`で型付けすると必須3本がkind未登録で弾かれ、source-bundle（数十MB）が全量on-memoryになる。API形状は最も広く波及するretrofit |
+| RED evidenceに`headSha`を含めること | 含めないと同一bytesのevidenceが別headのArtifact Manifestへ載り、stalenessをdigest比較で検出できない |
+| RED evidenceに未切り詰めstdout/stderrのdigestとlengthを含めること | inlineだけにすると、truncation上限の変更で同一実行のevidence identityが変わり、reviewerが「全部を見たか」を判定できない |
+| RED evidenceの`runs[]`複数化と`exited` / `signaled` / `timed_out`の区別 | 「1 name = 1 command」は複数commandを後から表現できずschema bumpになる。exit codeだけではtimeoutとtest failureを区別できず[test-validity policy](../05_design/review-policies/test-validity-v1alpha1.md) §5を満たせない |
+| source-bundleをgit bundleにすること | tarはcommit objectを含まず`headSha`を再構築・検証できない。違反はReview Workerのhead検証まで表面化しない |
+| GitHub bodyを正規化しないこと | `bodyDigest`は永続化されるaudit lineageであり、正規化方針を後から変えると過去のdigestが再現しない |
+| base commit SHAの固定とauthority pathのそのSHAでの解決 | baseと別時点でrefを解決するとmanifestが「base上のclosure」でなくなり、identityの意味が静かに変わる |
+
+#### 境界の位置
+
+| 項目 | 後から入れると何が壊れるか |
+| --- | --- |
+| role次元のcredential分離（role-scoped clientをconstructor注入。package-levelのsingletonを作らない） | singletonにするとReview Workerのread-only化が全call site変更になる。PATは「dev / test専用のTokenSource実装」としてだけ持つ |
+| transport failureの分類点の1箇所集約 | 403はpermission不足でもsecondary rate limitでも返る。分類点が散ると全call siteの修正になる |
+| `ReconcileIssue`のresult enumを6値（`claimed` / `waiting_dependency` / `waiting_capacity` / `skipped_not_candidate` / `claim_rejected` / `failed_transport`）で最初から閉じること | 6値それぞれでlabelの扱いが違う。部分enumへの投影は、値を足したとき既定分岐が誤ったlabel操作をする |
+| `ReconcileIssue`を唯一の入口にすること | M3のexit criterion「webhookを捨ててもpollingが同じRunを作る」は両者が同じ関数へ収束していないとtestできない。`Trigger`はclosed type（poll / startup / webhook delivery）にし、observabilityとdedupに限る |
+| `ProjectStatus`のoutbox化（Run transitionと同一transaction） | commit後のinline label APIは、label失敗をclaim失敗として返す誘因になる。retrofitはtransaction境界の変更になる |
+| pagination（Link header）を実装するか、黙って打ち切らないこと | 黙ったtruncationは「Issueが永遠にclaimされない」観測不能なfail-openになる |
+| `pull_request` fieldによるPR除外 | issues list endpointはPRも返す。落とすと人間のPRへ`ai-needs-human`を投影する |
+| authority referenceの解決をS1で省略しないこと | routingのresult taxonomyに「未実装」を表す値が無く、唯一の受け皿`claim_rejected`は誤ったlabelを貼る。実装コストはendpoint 1本 |
+| Artifact Store packageをControllerからimportさせないこと | Controllerはartifacts volumeをmountしない（[runtime-platform.md](../05_design/03_runtime-platform.md)）。read APIを呼べる形は「hostでは通るがCompose上は必ず失敗する依存」を作る。interfaceは利用側（issueworker / reviewworker）に置く |
+| storeのkeyをdigestのみにすること | Run scopeやlogical nameで引かせると、content identityの一意性とvolume境界が同時に崩れる |
+| Runごとの独立clone | linked worktreeはobject DBとrefをrepository単位で共有し、複数Run並行時のmutableな共有資源になる。worktree共有はdisk最適化であり、測ってから入れる |
+| claim use caseをController側packageに置かないこと | claimは**Issue WorkerのOperation**である。`ReconcileIssue`の内側へ書くとartifact書き込み口がController側に生え、volume契約に反する。`ReconcileIssue`は薄いrouterに留め、package境界は#14が入る前に確定させる |
+| `ArtifactWriter`（利用側package所有）の呼び出し口をS1で確定させること | retrofitが難しいのは保存先ではなく呼び出し口の位置である。bytesをPostgreSQLへ一時退避する近道は取らない |
+
+### 貫通で必ず踏むcontract空白
+
+contract freeze（[ADR-0007](../../adr/0007-vertical-slice-delivery.md) D2）の例外である。踏んだ実装PRの中で、文書・parser・fixture・testを同時に更新する。
+
+1. **`test-plan` / `red-evidence` / `source-bundle`が`artifactKindRules`に無い。** `requiredOperationOutputs[author_tests]`はこの3本を要求するが、`ArtifactPayload.Validate()`は`protocol_kind_unknown`で弾く。S2の実装前に「opaque kindとして追加する」か「Artifact Storeが`ArtifactPayload`を経由しない別経路を持つ」かを決める。
+2. **checkpoint commitのidentity規則が[contracts/](../05_design/contracts/)に無い。** [Operation Protocol](../05_design/contracts/operation-protocol-v1alpha1.md)の「同じ入力から同じ結果を再生成したattemptは同じcontent identityを持つ」がhead SHA経由で壊れないよう、S2の実装PRと同じchangeで文書化する。
+
+### 後回しにするものと後から足せる根拠
+
+| 後回しにするもの | 後から足せる根拠 |
+| --- | --- |
+| webhook（raw body signature検証、payload size limit、delivery inbox） | `ReconcileIssue`が唯一の入口なら、webhook handlerは同じ関数を呼ぶproducerを1本足すだけ。healthz用HTTP serverを先に建てる場合、bodyを消費するJSON middlewareを挟まない（署名はraw body検証） |
+| native relationship照合 | 契約上「adapterが取得できる場合」の条件付き要求。後入れはread 1本と比較 |
+| dependency completion証明 | `waiting_dependency`で契約準拠のdegradationになっており、証明機構ができたら分岐を置き換えるだけ |
+| claim中の再取得（契約手順7） | model-bearing Operationの直前検査であり、そのOperationがまだ無い |
+| Operation queue、lease、heartbeat、reaper（#14） | envelopeが「GitHubを触る前にpolicyとRun IDが決まっている」順序を強制しており、queueは後から包める |
+| Artifact Storeのorphan scan / GC / 参照カウント | append-onlyな既存objectを読むだけのread-only reportであり、書かれたbytesの意味を変えない |
+| worktree共有によるdisk節約 | 独立cloneが正しい側の選択。共有は測ってから入れる最適化 |
+| remote pushとPR mutation（S3まで） | `author_tests`必須outputにbranch pushもPRも含まれない。`publish_head`は別Operation |
+| secret redactionの網羅性、graceful shutdownのlease drain、MCP設定、rate limit専用backoff | M4 exit criteriaに含まれない。seamがあれば差し替えで足りる |
+| production Compose topology（M7） | S1〜S5はhostとM0のdevelopment Composeで成立する。ただしIssue Worker imageはgit + provider CLI + credential mountを抱える別base imageになり、この差分がM7の実体である |
+| Issue WorkerとReview Workerのprocess分離 | mutable worktree、provider session、conversational memory、application-private stateを共有しなければ、process分離は配備の問題になる |
+
+### 貫通の未決事項
+
+- **S4 / S5の内訳**: S3の実測結果を見てから確定する。
+- **status outbox producerの位置**: S1で「outbox producerだけ先に作る」か「inline実行で穴（commitとlabel投影の間のcrashで自己修復経路が無い）を明示的に受け入れる」かをS1着手前に決める。producerはtransitionと同一transactionのINSERT 1本であり、consumer（S3）やlease / heartbeat（#14）とは分離できる。
+- **operation-scoped state directoryへのcredential供給（S2の実行前提）**: `CODEX_HOME` / `CLAUDE_CONFIG_DIR`を空のtemp dirへ向けると両CLIとも未認証になる。**credential fileのみをallowlistしてseedする**方向で決着させる（global project docの巻き込みは二重注入の復活になる）。
+- **`artifact_refs`の用途**: semantic input refの受け皿に限るか、artifact metadata一般へ広げるかをS2の前に決める。広げる場合にのみschema制約の扱いが論点になる。
+- **artifactのmissing / corruptに対応する`FailureClass`**: 現行6値で閉じており、`AttemptFailure.TerminalOutcome`は`Validate()`を通すため流用もできない。(a) failure recordを作らず`needs_human`へescalate、(b) freeze例外としてclassを1つ足す、の二択をS2の前に決める。
+- **`ArtifactEntry`の長さ0チェック**: 長さ0の`red-evidence`もmanifest validationを通る。protocol層・store側Put・handler検査のどこで弾くかを決めていない。
+- **authority contentをmanifest entryとして載せる場合のlogical name規則**: `validArtifactName`は大文字を許さず、`AGENTS.md`をそのままnameにできない。命名規則を場当たりで決めない。
+- **RED evidenceのversioned schema化**: S3までopaque bytesで実害は無いが、S4へ広げる前にschemaを決める。決めた時点で過去のevidenceは別identityになる。
 
 ### Epic構成
 

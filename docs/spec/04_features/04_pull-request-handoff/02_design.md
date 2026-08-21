@@ -1,8 +1,8 @@
 # 4.4. Pull Request 確定・Merge 詳細設計
 
 [機能仕様](01_spec.md)を、finalize gate、merge gate、Issue Worker の Pull Request mutation、Controller の
-完了 projection に分けて実現する。merge の判断規則は [ADR-0005](../../../adr/0005-auto-merge.md)
-を正とする。
+完了 projection に分けて実現する。merge の判断規則を選んだ理由と代替案は
+[ADR-0005](../../../adr/0005-auto-merge.md) を参照。
 
 ## Finalize gate
 

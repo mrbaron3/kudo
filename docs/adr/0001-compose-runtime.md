@@ -1,7 +1,6 @@
 # ADR-0001: Docker Compose を正式な実行基盤とする
 
-- Status: Accepted
-- Date: 2026-08-11
+- Status: accepted（2026-08-11）
 
 ## Context
 
@@ -13,17 +12,9 @@ Kudo は、常駐する Controller、複数の Issue/Review Worker、durable sta
 
 ## Decision
 
-Docker Compose を Kudo の canonical orchestrator とする。
+Docker Compose を Kudo の canonical orchestrator とする。application は一つの Go module と一つの`kudo` binary に保ち、role（controller / issue worker / review worker / migrate）を Compose service として別 container で起動する。workflow state と queue は PostgreSQL を起点に置き、artifact と workspace は用途を分けた named volume に置く。Docker socket と Docker-in-Docker は使用しない。
 
-- application は一つの Go module と一つの`kudo` binary に保つ。
-- binary を`controller`、`worker issue`、`worker review`、`migrate` mode で起動する。
-- Compose service として role を別 container に分ける。
-- workflow state、Operation queue、lease、inbox/outbox は PostgreSQL 18.4 を起点に置く。
-- artifact と Issue workspace は用途を分けた named volume に置く。
-- provider CLI は Worker container 内の child process として起動する。
-- Docker socket と Docker-in-Docker は使用しない。
-- macOS の reference runtime は Docker Desktop、Linux は Docker Engine と Compose plugin とする。
-- image は OCI-compliant な`linux/arm64` / `linux/amd64`として配布する。
+service 構成、volume/network 契約、supported runtime、image 配布形式の現在形は [Runtime platform](../spec/05_design/03_runtime-platform.md) を正本とする。
 
 ## Rationale
 
@@ -61,6 +52,7 @@ Apple Container の local Kubernetes support は experimental であり、単一
 - Compose は単一 host boundary である。multi-host scale には artifact/workspace と scheduler の新しい判断が必要になる。
 - Apple Container だけが提供する isolation は標準経路では使わない。必要になれば Worker の Sandbox Runner boundary で再評価する。
 - Docker Desktop の組織利用条件は deployment owner が確認する。Kudo の image と Compose contract 自体は OCI/Compose standard に保つ。
+- 更新される文書: [Runtime platform](../spec/05_design/03_runtime-platform.md)（deployment 契約の正本）、[Development environment](../spec/06_project/02_development.md)。
 
 ## Revisit conditions
 

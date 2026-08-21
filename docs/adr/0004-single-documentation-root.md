@@ -1,8 +1,6 @@
 # ADR-0004: `docs/spec/` を唯一の文書ルートにする
 
-- Status: Accepted
-- Date: 2026-08-19
-- 追記（2026-08-21）: ADR だけは `docs/spec/05_design/decisions/` から `docs/adr/` へ移動した。本文末尾の「2026-08-21 追記」を参照。
+- Status: accepted（2026-08-19）。「rootを`docs/spec/`一つに限定する」部分は [ADR-0008](0008-adr-directory-outside-spec.md) がsupersedeし、ADRは`docs/adr/`に置く
 
 ## Context
 
@@ -18,13 +16,18 @@ semantic input に含まれる。単なる file move でも path identity と di
 
 - repository-facing documentation の root を `docs/spec/` 一つに限定する。
 - product と system requirement は `01`〜`03`、機能固有の Spec / Design は `04_features` に置く。
-- 共通 architecture、workflow、runtime、GitHub routing、versioned contract、review policy、ADR は
+- 共通 architecture、workflow、runtime、GitHub routing、versioned contract、review policy は
   `05_design` に置く。
 - implementation status、delivery order、development guide、migration record、deferred work は
   `06_project` に置き、完成形の仕様と分離する。
 - 旧 path の redirect file、duplicate copy、symlink は残さない。入口は `docs/spec/README.md` に集約する。
 - contract / policy ref は新しい canonical path へ更新し、parser、code comment、fixture、golden test を
   同じ変更で更新する。
+
+## Alternatives
+
+- **旧pathにredirect file / symlinkを残す**: pathはprotocolのsemantic identityの一部であり、aliasによる暗黙の同一視はdigestの意味を壊す。二つの入口が残ること自体が、解消したかった正本の非一意性である。
+- **二体系の並存を維持し、相互リンクで運用する**: 「どちらが正本か」の判断が文書ごとに必要になり、更新漏れがsemantic inputの不一致として表面化するまで検出できない。
 
 ## Protocol migration
 
@@ -46,20 +49,11 @@ semantic input に含まれる。単なる file move でも path identity と di
 ## Consequences
 
 - 文書の探索と正本判断は `docs/spec/README.md` から一意に行える。
-- `docs/` 直下に `spec/` 以外の文書を追加しない運用が必要になる。
+- `docs/` 直下に `spec/` 以外の文書を追加しない運用が必要になる（ADR の置き場所は [ADR-0008](0008-adr-directory-outside-spec.md) が変更した）。
 - canonical fixture の body、Task Context、Manifest、Operation、Review Request digest は新 path に応じて変わる。
 - 外部に保存された Task Issue template や authority ref が旧 path を指す場合は、新 path への明示更新が必要になる。
 - 文書移動を cosmetic change として扱えないため、将来の path 変更にも contract migration 判断が必要になる。
 
-## 2026-08-21 追記: ADR を `docs/adr/` へ移動する
+## Revisit conditions
 
-ADR は特定機能の仕様ではなく repository 全体の決定記録であるため、`docs/spec/` 体系の外に置く。
-
-- `docs/spec/05_design/decisions/*` は `docs/adr/*` へ移動する。file 名と番号は維持する。
-- repository-facing documentation の root は `docs/spec/`（仕様）と `docs/adr/`（ADR）の二つとし、それ以外を追加しない。入口は引き続き `docs/spec/README.md` に集約する。
-- ADR path が `authorityRefs` / `policyRefs` に現れる場合、本 ADR の Protocol migration と同じ規律を適用する。旧 path を指す進行中入力は再利用せず、reference を新 path へ明示更新する。
-- 旧 path の redirect / alias は置かない。
-
-| 旧 path | 新 path |
-| --- | --- |
-| `docs/spec/05_design/decisions/*` | `docs/adr/*` |
+- `docs/spec/` の階層構成が実運用で探索の障害になった場合でも、path変更はcontract migrationを伴う。再編は新しいADRとProtocol migrationの組で行う。

@@ -165,7 +165,7 @@ Task Context / Context Manifest identityが同じなら、新しいbody digest�
 canonical bytesとauthority bytesはAttempt終了時に破棄し、次Operationは再度live sourceから取得する。
 Compilerはclaim contextの`compiler`でversionを明示選択する。対応versionが無い場合にdeployment既定のCompilerへ
 fallbackせず、unsupported versionとして停止する。
-保存境界とトレードオフは[ADR-0006](../../../adr/0006-live-context-reconstruction.md)を正とする。
+この保存境界を選んだ理由とトレードオフは[ADR-0006](../../../adr/0006-live-context-reconstruction.md)を参照。
 
 ## Execution Policy
 
@@ -214,7 +214,7 @@ attempt retryのcounterはlogical Operationかつ無人区間ごとに独立し�
 
 Escalation PolicyはControllerのdeployment configurationからだけ解決する。Task Issue本文、`authorityRefs`、変更対象repositoryの内容、Worker Resultからは読まない。gateされる側がgate条件を供給できる経路を作らない。
 
-`EscalationPolicyRef{schema,digest}`はRunへ記録するが、Runのsemantic input identityには含めない。attempt retry上限とreview round上限はController側の自動継続判断だけに使い、Workerまたはreviewerの判断入力へ渡さないため、値の変更は既存のOperation identity、Review Request、approvalをstaleにしない。deployment configurationの変更は次のclaimから有効になり、進行中のRunはpin済みの値を使い切る。判断の背景は[ADR-0003](../../../adr/0003-review-round-limit.md)を正とする。
+`EscalationPolicyRef{schema,digest}`はRunへ記録するが、Runのsemantic input identityには含めない。attempt retry上限とreview round上限はController側の自動継続判断だけに使い、Workerまたはreviewerの判断入力へ渡さないため、値の変更は既存のOperation identity、Review Request、approvalをstaleにしない。deployment configurationの変更は次のclaimから有効になり、進行中のRunはpin済みの値を使い切る。この置き場所を選んだ理由と代替案は[ADR-0003](../../../adr/0003-review-round-limit.md)を参照。
 
 provider、model、adapter version、tool permission、timeout、credential、secret path、session IDをfieldとして持たない。実行境界はExecution Policyが固定し、両者の役割を重ねない。
 
