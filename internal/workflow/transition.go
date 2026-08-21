@@ -35,6 +35,7 @@ var transitions = map[transitionKey]transition{
 	{PhasePublishingFinalHead, KindHeadPublished}:          onFinalHeadPublished,
 	{PhaseAwaitingFinalReview, KindReviewCompleted}:        onFinalReviewCompleted,
 	{PhaseFinalizingPullRequest, KindPullRequestFinalized}: onPullRequestFinalized,
+	{PhaseMergingPullRequest, KindPullRequestMerged}:       onPullRequestMerged,
 }
 
 type transitionKey struct {
@@ -114,6 +115,7 @@ func normalizeEvent(event Event) (Event, EventKind, bool) {
 		ReviewCompleted,
 		ImplementationFixed,
 		PullRequestFinalized,
+		PullRequestMerged,
 		ObservationRecorded,
 		SemanticInputChanged,
 		AttemptFailed,
@@ -373,8 +375,27 @@ func onPullRequestFinalized(run Run, event Event) (Decision, error) {
 		return gate(run, finalized.EventKind(), "final approve に bind された head だけを確定できる: got %s",
 			finalized.Head)
 	}
-	run.Phase = PhaseAwaitingHumanReview
-	return decide(run, ProjectStatus{Label: StatusReviewWaiting})
+	run.Phase = PhaseMergingPullRequest
+	return decide(run, DispatchOperation{Kind: contract.OperationMergePullRequest})
+}
+
+// onPullRequestMerged は merge を terminal として確定する。
+//
+// merge 済み head を final approve へ束縛し直すのは、gate 評価から mutation までの間に
+// head が動きうるためである。ここで approve と一致しない head の merge を成功として
+// 受理すると、review していない変更が base へ入ったまま Run が正常終了する。
+func onPullRequestMerged(run Run, event Event) (Decision, error) {
+	merged := event.(PullRequestMerged)
+	if run.FinalApproval == nil || merged.Head != run.FinalApproval.Head {
+		return gate(run, merged.EventKind(), "final approve に bind された head だけを merge できる: got %s",
+			merged.Head)
+	}
+	if merged.MergeCommit == "" {
+		return gate(run, merged.EventKind(), "merge commit を持たない merge は成立していない")
+	}
+	run.Phase = PhaseMerged
+	run.MergeCommit = merged.MergeCommit
+	return decide(run, ProjectStatus{Label: StatusMerged, CloseIssue: true})
 }
 
 // onObservationRecorded は audit lineage だけを進める。phase、approval、semantic

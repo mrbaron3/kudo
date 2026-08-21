@@ -20,7 +20,7 @@ reaper が Operation を再度 eligible にする。
 | invalid provider output | bounded retry 後に execution failure とする |
 | quality `request_changes` | 同じ gate の修正 Operation へ進める |
 | stale semantic input | 現在の identity に対する新しい評価を要求する |
-| authority conflict、安全判断、外部 close / merge | `needs_human` へ遷移する |
+| authority conflict、安全判断、intent に紐付かない外部 close / merge、`merge_blocked` | `needs_human` へ遷移する |
 | immutable inputに対するprotocol validation error | Worker Result / AttemptFailureとして受理せず、`ProtocolError`を記録してOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ送る |
 
 retry budgetはclaim時に`kudo.escalation-policy/v1alpha1`へ`attemptRetries`として固定する。既定`3`、許容範囲`1`〜`10`で、値は初回Attemptの後に許す追加Attempt数である。timeout、rate limit、network、provider crash、GitHub transport、provider invalid responseは一つのlogical Operation内で同じcounterを共有し、次のAttemptを作成するたびに1を消費する。quality verdict、stale input、protocol validation errorは消費しない。provider invalid responseとはproviderのraw出力をversioned Resultへdecodeできない失敗であり、既に構築されたimmutable envelope/refのvalidation違反とは区別する。
@@ -46,7 +46,7 @@ Issue Observation、Pull Request Observation、Escalation Policy、無人区間c
 
 - Resume Identity全体が同じなら、`needs_human`から保存済み停止phaseへ戻し、そのphaseに対応するOperationまたはReviewをfresh Attemptとして再dispatchする。publish/finalizeはlive GitHub stateを照合するidempotent recoveryとして再実行する。
 - `InputIdentity`が変わった場合は旧Runをsupersededとし、新しいRun/review lineageを作る。以前のapprovalを移さない。
-- `CheckpointIdentity`だけが変わった場合は旧approvalをstaleとし、同じRunをresumeしない。validな新規inputとして安全にclaimできる場合だけsupersedeし、PR close/merge等でできない場合は`needs_human`を維持する。
+- `CheckpointIdentity`だけが変わった場合は旧approvalをstaleとし、同じRunをresumeしない。validな新規inputとして安全にclaimできる場合だけsupersedeし、intentに紐付かないPR close/merge等でできない場合は`needs_human`を維持する。
 - Issue ObservationまたはPull Request Observationだけが変わった場合はaudit lineageを追加し、identityを維持する。
 
 resume / supersedeの選択、paused Runのversion確認、writer排他、次Operationのenqueueは一つのtransactionで決定する。

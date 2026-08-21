@@ -2,7 +2,7 @@
 
 ## Purpose
 
-本書は、人間が Task Issue を準備してから、Kudo が Pull Request を作成し、人間の review へ引き渡すまでの規範的な順序を定義する。外部 protocol の field は [Issue Contract](contracts/issue-contract-v1alpha1.md) と [Implementation–Review Protocol](contracts/review-protocol-v1alpha1.md)を正とする。
+本書は、人間が Task Issue を準備してから、Kudo が Pull Request を作成し、承認済み head を merge して Issue を close するまでの規範的な順序を定義する。外部 protocol の field は [Issue Contract](contracts/issue-contract-v1alpha1.md) と [Implementation–Review Protocol](contracts/review-protocol-v1alpha1.md)を正とする。
 
 ## Actors
 
@@ -35,54 +35,98 @@ sequenceDiagram
     participant C as Controller
     participant DB as PostgreSQL
     participant IW as Issue Worker
+    participant IC as Issue Compiler
     participant RW as Review Worker
 
     H->>GH: Issueを確定しassign + ai-ready
     GH-->>C: issues webhook
     Note over C,GH: webhook欠落時はpollingがIssueRefを発見
-    C->>DB: ReconcileIssueをdeduplicate/queue
-    C->>IW: claim(IssueRef)
-    IW->>GH: live Issue/contextを取得
-    IW-->>C: Issue Observation + Task Context + Context Manifest
-    C->>DB: Runとclaimをcommit
+    C->>DB: inboxへ記録してReconcileIssue
+    C->>DB: claim Operationをenqueue
+    Note over IW,RW: Workerはrole/kindが一致するeligible Operationをpollしてleaseする
+    Note over C,DB: Controllerはterminal Result、retry due、outboxを継続reconcileする
+    IW->>DB: claim Operationをlease
+    IW->>GH: live Issueを取得
+    IW->>IC: compile(verified identity, raw body)
+    IC-->>IW: Issue Observation + Task Context + Claim Requirements
+    IW->>GH: relationship/dependency/authority/baseを解決
+    IW->>DB: Claim Result + versioned artifact refsを記録
+    C->>DB: Result検証 + Run開始 + author_tests enqueue + status outbox
+    C->>DB: status outboxをlease
     C->>GH: ai-in-progressを冪等に投影
-    C->>IW: author_tests(immutable context)
-    IW-->>C: test plan/patch + RED evidence
-    C->>IW: publish_head(test-only head)
+    IW->>DB: author_testsをlease
+    IW->>DB: test plan/patch + RED evidence Resultを記録
+    C->>DB: Result検証 + publish_head enqueue
+    IW->>DB: publish_headをlease
     IW->>GH: branch push + draft PR ensure
-    IW-->>C: PR ref + PR observation
-    C->>RW: review(test_validity, PR anchored)
+    IW->>DB: PR ref + PR observation Resultを記録
+    C->>DB: Result検証 + test_validity Review Request enqueue
+    RW->>DB: test_validity Review Requestをlease
     RW->>GH: live Issue/PR照合
-    RW-->>C: approve / request_changes / needs_human
+    RW->>DB: Review Resultを記録
+    C->>DB: Review Resultを取得・検証
     alt test request_changes
-        C->>IW: revise_tests(findings, artifacts)
-        IW-->>C: new test artifacts + RED evidence
-        C->>IW: publish_head(revised head / 同一PR)
-        C->>RW: new test_validity request
+        C->>DB: revise_testsをenqueue
+        IW->>DB: revise_testsをlease
+        IW->>DB: new test artifacts + RED evidence Resultを記録
+        C->>DB: Result検証 + publish_head enqueue
+        IW->>DB: publish_headをlease
+        IW->>GH: revised headを同一PRへpublish
+        IW->>DB: PR observation Resultを記録
+        C->>DB: Result検証 + new test_validity Request enqueue
     else test approve
-        C->>IW: implement(approved tests, Issue context)
-        IW-->>C: GREEN + refactor/check evidence
-        C->>IW: publish_head(final head / 同一PR)
-        C->>RW: review(final_implementation, PR anchored)
-        RW-->>C: approve / request_changes / needs_human
+        C->>DB: implementをenqueue
+        IW->>DB: implementをlease
+        IW->>DB: GREEN + refactor/check evidence Resultを記録
+        C->>DB: Result検証 + publish_head enqueue
+        IW->>DB: publish_headをlease
+        IW->>GH: final headを同一PRへpublish
+        IW->>DB: PR observation Resultを記録
+        C->>DB: Result検証 + final Review Request enqueue
+        RW->>DB: final Review Requestをlease
+        RW->>GH: live Issue/PR照合
+        RW->>DB: Review Resultを記録
+        C->>DB: Review Resultを取得・検証
         alt final request_changes
-            C->>IW: repair_implementation(findings, artifacts)
-            IW-->>C: new head + evidence
-            C->>IW: publish_head(repaired head / 同一PR)
-            C->>RW: new final_implementation request
+            C->>DB: repair_implementationをenqueue
+            IW->>DB: repair_implementationをlease
+            IW->>DB: new head + evidence Resultを記録
+            C->>DB: Result検証 + publish_head enqueue
+            IW->>DB: publish_headをlease
+            IW->>GH: repaired headを同一PRへpublish
+            IW->>DB: PR observation Resultを記録
+            C->>DB: Result検証 + new final Review Request enqueue
         else final approve
-            C->>IW: finalize_pull_request(approved head)
+            C->>DB: finalize_pull_requestをenqueue
+            IW->>DB: finalize_pull_requestをlease
             IW->>GH: PR body確定 + draft解除
-            C->>GH: ai-review-waitingを冪等に投影
+            IW->>DB: finalized PR observation Resultを記録
+            C->>DB: Result検証 + merge_pull_request enqueue
+            IW->>DB: merge_pull_requestをlease
+            IW->>GH: required check照合 + compare-and-merge + branch削除
+            IW->>DB: merged PR observation Resultを記録
+            C->>DB: Result検証 + merged遷移 + status outbox
+            C->>DB: status outboxをlease
+            C->>GH: Issue closeとai-mergedを冪等に投影
         else final needs_human
-            C->>DB: needs_humanをcommit
+            C->>DB: needs_human遷移 + status outbox
+            C->>DB: status outboxをlease
             C->>GH: ai-needs-humanを冪等に投影
         end
     else test needs_human
-        C->>DB: needs_humanをcommit
+        C->>DB: needs_human遷移 + status outbox
+        C->>DB: status outboxをlease
         C->>GH: ai-needs-humanを冪等に投影
     end
 ```
+
+Controller と Worker の間に direct RPC はない。Controller が「Operationを発行する」とは、Run transition
+と versioned Operation / Review Request の enqueue を同じ PostgreSQL transaction で確定することをいう。
+Worker は対象 role / kind の eligible row を poll して lease し、Result または Attempt Failure も
+PostgreSQL へ記録する。Controller は terminal Result、retry due、outbox を継続的に reconcile し、Result
+の binding を検証して次の transition を決める。図中の「Result検証 + transition」は、この読み取りと
+transactional commit をまとめた表記である。DB の wake-up 最適化を追加する場合も、通知自体を正本にせず
+durable row の polling を fallback として維持する。
 
 ### 1. Discovery and reconciliation
 
@@ -92,7 +136,18 @@ Reconciliation は live GitHub state で candidate 条件を確認する。条�
 
 ### 2. Claim
 
-Controller は IssueRef に対する短い claim lease を取得し、Issue Worker へ claim Operation を dispatch する。Issue Worker は GitHub から現在の Issue を直接取得し、Contract、native relationship、dependency、authority、base commit を検証する。
+Controller は IssueRef に対する短い claim lease を取得し、claim Operation を PostgreSQL queue へ
+enqueue する。Issue Worker は対象 Operation を lease してから deterministic claim handler を開始する。
+claim handler は GitHub から現在の Issue を直接取得し、verified Issue identity と raw body を pure な
+Issue Compiler へ渡す。Issue Compiler だけが Contract、section、
+Acceptance Criteria を strict parse し、Issue Observation、canonical Task Context、Claim Requirements を
+返す。claim handler の Context Resolver は Claim Requirements に従って native relationship、dependency、
+authority、base commit を live source から解決し、Context Manifest と evidence を構築する。
+
+Controller は Claim Result の versioned schema、artifact ref、digest、binding を検証するが、raw Issue body
+または Task Context の prose を再解釈しない。claim 後の model-bearing Operation は canonical Task Context
+と Context Manifest が明示する immutable authority/source artifact を使い、raw GitHub API response を
+model input へ渡さない。
 
 claim 成功時は、Run、Issue Observation、Task Context、Context Manifest、Execution Policy、Escalation Policy、base SHA を一つの durable transition として確定する。その後、outbox から`ai-ready`と古い status label を外し、`ai-in-progress`を付ける。GitHub projection が一時的に失敗しても Run を巻き戻さない。
 
@@ -108,7 +163,7 @@ RED 固定後、Controller は`publish_head`を発行する。Issue Worker は�
 
 ### 4. Test validity review
 
-Controller は immutable input から、publish 済み draft PR の head へ繋留された`test_validity` Review Request を作り、[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)を`policyRefs`へ含める。required policy refが欠落または未対応のRequestはbinding境界でrejectされ、reviewerの推測で補わない。policy取得のtransport failureもquality verdictへ変換しない。Review Worker は live Issue に加えて live PR（open/draft 状態、head/base の一致）を照合する。headまたはbaseの不一致は品質 verdict ではなく stale、close/mergeは品質 verdict に変換せず、Run を`needs_human`phaseへ送るため人間へescalateし、PR body編集またはdraft/ready遷移だけの差分はaudit lineageへ追記する。そのうえで fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence をpolicyの標準観点で評価する。
+Controller は immutable input から、publish 済み draft PR の head へ繋留された`test_validity` Review Request を作り、[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)を`policyRefs`へ含める。required policy refが欠落または未対応のRequestはbinding境界でrejectされ、reviewerの推測で補わない。policy取得のtransport failureもquality verdictへ変換しない。Review Worker は live Issue に加えて live PR（open/draft 状態、head/base の一致）を照合する。headまたはbaseの不一致は品質 verdict ではなく stale、Kudo 自身の merge intent に紐付かない close/merge は品質 verdict に変換せず、Run を`needs_human`phaseへ送るため人間へescalateし、PR body編集またはdraft/ready遷移だけの差分はaudit lineageへ追記する。そのうえで fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence をpolicyの標準観点で評価する。
 
 - `approve`: 承認対象 digest を固定し、implementation へ進む。
 - `request_changes`: blocking finding を versioned Result として返す。Controller は同じ Run/worktree を所有する Issue Worker の新しい`revise_tests` session へ finding と artifact を渡す。
@@ -140,7 +195,7 @@ final head の publish 後に、Controller は final head、approved test review
 
 `request_changes`は fresh`repair_implementation` session へ handoff し、修正後の head に新しい review を要求する。head または artifact が変われば以前の approve は stale である。`needs_human`は自動 loop を停止する。`final_implementation`の round 上限に達した`request_changes`も、`repair_implementation`を発行せずに自動 loop を終了させる。counter は`test_validity`と独立であり、test 側で消費した round は final 側の予算に影響しない。
 
-### 7. Pull Request finalize と handoff
+### 7. Pull Request finalize
 
 Pull Request 自体は RED 固定後から draft として存在する。final approve と required checks が同じ head に bind され、live PR head とも一致する場合だけ、Issue Worker は`finalize_pull_request`で required PR body を確定し draft を解除する。ready 化だけが final approve を gate とする。確定後の PR body は `.github/pull_request_template.md` の必須項目を満たし、少なくとも次を含む。
 
@@ -152,9 +207,15 @@ Pull Request 自体は RED 固定後から draft として存在する。final a
 - 残存 risk と人間が確認すべき事項
 - Run ID、base SHA、head SHA
 
-PR の ready 化が durable に記録された後、Controller は`ai-in-progress`を外し、`ai-review-waiting`を付ける。これが Kudo の正常 handoff terminal である。merge、Issue close、PR review comment への対応はこの workflow の外に置く。
+### 8. Merge と完了投影
 
-Run 中に人間が同 branch へ push した場合、PR を close/merge した場合、base を変更した場合は外部干渉であり、compare-and-push と review の live 照合で検出する。branch pushによるhead不一致とbase変更はstale、close/mergeは品質 verdict に変換せず、Run を`needs_human`phaseへ送るため人間へescalateし、blind に上書きしない。
+ready 化が durable に記録された後、Controller は`merge_pull_request`を発行する。発行条件と失敗時の routing は [ADR-0005](decisions/0005-auto-merge.md) を正とし、少なくとも final approve の binding、live PR の open / base / head 一致、required status check の success、mergeable の4点が揃わなければ発行しない。required check の pending は品質 verdict でも execution failure でもなく、Operation の`retry_wait`として backoff 再照合する。
+
+Issue Worker は期待 head SHA を明示した compare-and-merge で merge commit を作り、head branch を冪等に削除し、merge commit SHA と merged 状態を`pull-request-observation`へ固定する。merge method は merge commit に固定し、squash と rebase は承認済み commit lineage を base 側で失わせるため使わない。
+
+merge completion が durable に記録された後、Controller は Task Issue を close し、`ai-in-progress`を外して`ai-merged`を付ける。これが Kudo の正常 terminal である。release、deploy、merge 後の revert 判断と、merge 後に付いた PR review comment への対応はこの workflow の外に置く。
+
+Run 中に人間が同 branch へ push した場合、base を変更した場合、Kudo の merge intent と無関係に PR を close/merge した場合は外部干渉であり、compare-and-push、merge 時の期待 head 照合、review の live 照合で検出する。branch pushによるhead不一致とbase変更はstale、intent に紐付かないclose/mergeは品質 verdict に変換せず、Run を`needs_human`phaseへ送るため人間へescalateし、blind に上書きしない。記録済み merge intent と一致する merged 観測は自分の mutation の再観測であり、干渉として扱わず成功へ収束させる。
 
 ## Durable states
 
@@ -171,8 +232,9 @@ stateDiagram-v2
     publishing_final_head --> awaiting_final_review: PR head published
     awaiting_final_review --> implementing: request_changes（round 上限未満）/ fresh repair session
     awaiting_final_review --> finalizing_pull_request: approve
-    finalizing_pull_request --> awaiting_human_review: PR ready + body finalized
-    awaiting_human_review --> [*]
+    finalizing_pull_request --> merging_pull_request: PR ready + body finalized
+    merging_pull_request --> merged: merge成立 + branch削除
+    merged --> [*]
     claimed --> needs_human
     authoring_tests --> needs_human
     publishing_test_head --> needs_human
@@ -181,6 +243,7 @@ stateDiagram-v2
     publishing_final_head --> needs_human
     awaiting_final_review --> needs_human: needs_human verdict / round 上限到達
     finalizing_pull_request --> needs_human
+    merging_pull_request --> needs_human: merge_blocked / 外部mutation
     state resume_checkpoint <<choice>>
     needs_human --> resume_checkpoint: ai-ready + ResumeIdentity一致
     resume_checkpoint --> claimed: stoppedAt=claimed
@@ -191,11 +254,12 @@ stateDiagram-v2
     resume_checkpoint --> publishing_final_head: stoppedAt=publishing_final_head
     resume_checkpoint --> awaiting_final_review: stoppedAt=awaiting_final_review
     resume_checkpoint --> finalizing_pull_request: stoppedAt=finalizing_pull_request
+    resume_checkpoint --> merging_pull_request: stoppedAt=merging_pull_request
     needs_human --> superseded: ai-ready + semantic input変更
     superseded --> [*]
 ```
 
-上図はRun phaseを表す。`resume_checkpoint`は同一transaction内のchoiceでありdurable phaseではない。checkpoint identityが不一致、または外部close/merge等で安全に再構築できない場合は辺を進まず`needs_human`を維持する。
+上図はRun phaseを表す。`resume_checkpoint`は同一transaction内のchoiceでありdurable phaseではない。checkpoint identityが不一致、またはmerge intentに紐付かない外部close/merge等で安全に再構築できない場合は辺を進まず`needs_human`を維持する。`merged`はterminalであり、Issue closeと`ai-merged`はこのphaseからの投影である。
 
 retry可能なtransport/execution failureはquality stateではなくOperationの`retry_wait`として記録し、backoff後に同じlogical Operationを新しいexecution Attemptで実行する。provider sessionはAttemptごとに新規作成する。retry budgetはclaim時にEscalation Policyへ`attemptRetries`として固定し、既定`3`は初回後の追加Attemptを最大3回、すなわち既定で最大4 Attemptまで許す。retryable failureを確定して次のAttemptを作るたびに1を消費し、同じlogical Operation内のtimeout、rate limit、network、provider crash、GitHub transport、provider invalid responseで共有する。immutable inputに対するprotocol validation errorは同じinputで成功し得ないため、provider invalid responseへ読み替えない。Worker Result / AttemptFailureとして受理せず`ProtocolError`をdurableに記録し、retry budgetを消費せずOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ送る。
 

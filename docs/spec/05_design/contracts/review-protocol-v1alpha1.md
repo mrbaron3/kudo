@@ -50,7 +50,7 @@ createdAt: 2026-08-11T00:00:00Z
 
 Review Workerは`issueObservation`が指すIssue Observation artifactを検証したうえで、`issue`をGitHubから直接取得し、現在bodyのdigestがartifact内の`bodyDigest`と一致することを確認する。保存済みraw bodyだけを現在のIssueであるかのように扱わない。GitHub accessをfakeへ置き換えるtestでも、同じIssue Reader contractを通す。model sessionへはraw bodyではなく、Context Manifestの`TaskContextRef`が指すcanonical Task Contextを渡す。
 
-同様に、`pullRequest`が指すlive PRを取得し、open状態・headが`headSha`と一致・baseがContext Manifestのbaseと一致することを確認する。保存済みPR observationだけを現在のPRとして扱わない。live照合の結果は新しい`kudo.pull-request-observation/v1alpha1` artifact（PR ref、open/closed/merged、draft、head SHA、base ref、body digest）としてlineageへ追記する。観測時刻はcanonical contentに含めず、Artifact Storeのmetadataが持つ。
+同様に、`pullRequest`が指すlive PRを取得し、open状態・headが`headSha`と一致・baseがContext Manifestのbaseと一致することを確認する。保存済みPR observationだけを現在のPRとして扱わない。live照合の結果は新しい`kudo.pull-request-observation/v1alpha1` artifact（PR ref、open/closed/merged、draft、head SHA、base ref、body digest、mergedのときはmerge commit SHA）としてlineageへ追記する。観測時刻はcanonical contentに含めず、Artifact Storeのmetadataが持つ。
 
 Review Workerがsource treeを必要とする場合、artifact manifestに含まれるimmutable source bundle/snapshotから`headSha`を検証したdisposable checkoutを構築する。既にread-only remoteから同一commitを取得できる場合はそれを利用してよい。Issue Workerのworktree pathをRequestへ含めず、mutable worktreeをmountしない。
 
@@ -202,9 +202,9 @@ draft PRのpublish（`publish_head`）はreview approveをgateにしない。RED
 
 `test_validity`のapproveが、publish済みPRのlive headと一致するtest-only headとartifact manifestにbindされている場合だけ、Controllerは`implement` Operationを発行できる。
 
-`final_implementation`のapproveが、publish済みPRのlive headと一致するfinal head、GREEN/refactor/check evidenceにbindされている場合だけ、Issue Workerは`finalize_pull_request`でrequired PR bodyを確定しdraftを解除できる。ready化だけがfinal approveをgateとする。finalize前後でheadが変わった場合はapproveをstaleにし、再publishと再reviewを要求する。PR bodyだけをartifactから決定論的に作成・更新してもsource headが変わらない場合、review bindingは維持できるが、required PR field validationは別途通さなければならない。
+`final_implementation`のapproveが、publish済みPRのlive headと一致するfinal head、GREEN/refactor/check evidenceにbindされている場合だけ、Issue Workerは`finalize_pull_request`でrequired PR bodyを確定しdraftを解除できる。ready化とmergeがfinal approveをgateとする。finalize前後でheadが変わった場合はapproveをstaleにし、再publishと再reviewを要求する。PR bodyだけをartifactから決定論的に作成・更新してもsource headが変わらない場合、review bindingは維持できるが、required PR field validationは別途通さなければならない。
 
-Review approveはGitHub Issueの完了またはmergeを意味しない。final approve後にPRのready化がdurableに記録され、Issueが`ai-review-waiting`へ投影された時点でKudo workflowは人間へhandoffする。
+Review approveはそれ自体がmergeではない。approveはmerge gateの品質側条件であり、mergeにはさらにlive headの一致、required status checkのsuccess、mergeable、branch protectionという外形条件が要る。外形条件はControllerとIssue Workerが判定し、reviewerへ問い合わせない（[ADR-0005](../decisions/0005-auto-merge.md)）。final approve後にready化と`merge_pull_request`がdurableに記録され、Task Issueがcloseされて`ai-merged`へ投影された時点でKudo workflowはterminalになる。
 
 ## Failure and staleness
 
@@ -212,7 +212,7 @@ timeout、rate limit、network error、provider crash、invalid responseはtrans
 
 Context Manifest ref、Execution Policy ref、commit SHA、Artifact Manifest ref、policy ref、Pull Request refのいずれかが変わった時点で既存Resultはstaleになる。Issue ObservationまたはPull Request Observationの変化だけではstaleにしない。PR bodyの編集やdraft/readyの状態遷移は観測の変化としてlineageへ追記される。
 
-live PRのheadがrequestの`headSha`と一致しない場合、またはbaseがContext Manifestのbaseと一致しない場合は品質verdictを返さず、stale inputとしてControllerへ返す。PRが外部でcloseまたはmergeされている場合はRunを停止し、人間へescalateする。PR body編集またはdraft/ready遷移だけの差分はstaleにせず、観測をlineageへ追記する。同branchへの外部pushはIssue Workerのcompare-and-pushとこのlive照合の両方で検出する。
+live PRのheadがrequestの`headSha`と一致しない場合、またはbaseがContext Manifestのbaseと一致しない場合は品質verdictを返さず、stale inputとしてControllerへ返す。Kudo自身のmerge intentに紐付かないcloseまたはmergeを観測した場合はRunを停止し、人間へescalateする。記録済みintentと一致するmerged観測は自分のmutationの再観測であり、干渉として扱わない。PR body編集またはdraft/ready遷移だけの差分はstaleにせず、観測をlineageへ追記する。同branchへの外部pushはIssue Workerのcompare-and-pushとこのlive照合の両方で検出する。
 
 live Issueのbody digestがIssue Observation artifact内の`bodyDigest`と一致しない場合は品質verdictを返さず、Controllerへ返す。raw bodyの非意味的差分でTask Context/Context Manifestが変わらない場合も、このlive freshness判定は省略しない。Controllerは最新のcompile結果と解決済みrefでsemantic comparisonを行い、`SameSemanticInput`なら新しいIssue Observationをaudit lineageへ追記して同じrequestを続行し、`ChangedSemanticInput`ならstale inputとして扱う。stale後は新しいReview Requestを発行し、古いResultを新しい入力のapprovalとして再利用しない。review開始後の既存Requestへ最新refを上書きしない。
 

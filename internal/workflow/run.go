@@ -64,4 +64,9 @@ type Run struct {
 
 	TestApproval  *Approval
 	FinalApproval *Approval
+
+	// MergeCommit は承認済み head を base へ統合した commit である。
+	// terminal Run が「どの commit が base へ入ったか」を artifact を読まずに
+	// answer できるようにするため、head と同じく aggregate が持つ。
+	MergeCommit string
 }

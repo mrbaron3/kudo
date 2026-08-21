@@ -11,7 +11,7 @@ approved test validity result
   -> GREEN / refactor / required checks
   -> publish_head(final head)
   -> review(final_implementation)
-       ├─ approve         -> Pull Request handoff gate
+       ├─ approve         -> Pull Request 確定と merge gate
        ├─ request_changes -> repair_implementation -> publish -> new review
        └─ needs_human     -> escalation
 ```

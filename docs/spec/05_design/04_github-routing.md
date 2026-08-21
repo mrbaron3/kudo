@@ -2,7 +2,7 @@
 
 ## Purpose
 
-本書は、GitHub Issue を Kudo の対応候補として見つける条件、webhook と polling の統合、claim 前の再検証、GitHub 上へ投影する status label を定義する。
+本書は、GitHub Issue を Kudo の対応候補として見つける条件、webhook と polling の統合、claim 前の再検証、GitHub 上へ投影する status label と Issue close を定義する。
 
 Routing metadata は implementation authority ではない。Issue 本文と`authorityRefs`が実装入力であり、assignee、label、webhook payload、Project field、Kudo comment で不足した Contract を補わない。
 
@@ -71,7 +71,7 @@ Controller の`POST /webhooks/github`は GitHub `issues` event を受ける。ad
 
 候補成立に直接関係しない action でも、同じ reconciliation を実行すれば live state に基づいて no-op にできる。Webhook は遅延、重複、順不同、欠落し得る通知であり、payload の Issue snapshot を source of truth にしない。
 
-claim 成功後に assignee または status label が手で変更されても、それだけを implicit cancel command にしない。Issue close や Issue body/authority の変更を active Run が検出した場合は安全な checkpoint で停止し、stale/needs-human rule に従う。cancel は将来、明示的な versioned Operation として設計する。
+claim 成功後に assignee または status label が手で変更されても、それだけを implicit cancel command にしない。Kudo 自身の merge completion による close を除き、Issue close や Issue body/authority の変更を active Run が検出した場合は安全な checkpoint で停止し、stale/needs-human rule に従う。cancel は将来、明示的な versioned Operation として設計する。
 
 ## Polling fallback
 
@@ -96,7 +96,7 @@ Kudo が認識する label は次の4種類に限定する。
 | --- | --- | --- |
 | `ai-ready` | Human | 完成した Issue Contract に対する新規実行または escalation 後の再評価依頼 |
 | `ai-in-progress` | Kudo | Run を claim 済みで、自動 test/review/implementation workflow が進行中 |
-| `ai-review-waiting` | Kudo | 規定を満たす Pull Request を作成済みで、人間の PR review 待ち |
+| `ai-merged` | Kudo | 承認済み head を base へ merge 済みで、Issue は close されている |
 | `ai-needs-human` | Kudo | 自動判断できない理由で停止し、人間の契約・authority・環境対応が必要 |
 
 `ai-ready`だけが人間所有の trigger で、残りは PostgreSQL の durable state から作る projection である。label の手動変更で内部 Run state を上書きしない。Controller は desired label set を冪等に reconcile する。
@@ -105,9 +105,11 @@ Kudo が認識する label は次の4種類に限定する。
 
 | Durable event | Remove | Add |
 | --- | --- | --- |
-| claim committed | `ai-ready`, `ai-needs-human`, `ai-review-waiting` | `ai-in-progress` |
-| Run needs human | `ai-ready`, `ai-in-progress`, `ai-review-waiting` | `ai-needs-human` |
-| PR handoff committed | `ai-ready`, `ai-in-progress`, `ai-needs-human` | `ai-review-waiting` |
+| claim committed | `ai-ready`, `ai-needs-human`, `ai-merged` | `ai-in-progress` |
+| Run needs human | `ai-ready`, `ai-in-progress`, `ai-merged` | `ai-needs-human` |
+| merge completed | `ai-ready`, `ai-in-progress`, `ai-needs-human` | `ai-merged` |
+
+merge completion は label と同時に Task Issue の close intent を同じ transaction へ記録する。PR body の closing keyword で GitHub が先に close していた場合は観測して no-op にする。close は base が default branch のときだけ効く副作用に依存させない。
 
 state transition と projection intent を同じ database transaction に記録し、outbox が GitHub mutation を retry する。GitHub API failure で確定済み Run state を巻き戻さない。polling が一時的に残った`ai-ready`を再発見しても、active Run constraint で二重 Run を防ぐ。
 
@@ -124,7 +126,8 @@ dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`�
 | `retry_budget_exhausted` | bounded retry を超え、operator の診断が必要な execution failure |
 | `protocol_validation_failed` | immutable envelope、Result、ref等がversioned protocolを満たさず、同じinputのretryでは復旧できない |
 | `contract_authority_conflict` | Contract、Acceptance Criteria、authority の矛盾、不足、曖昧さ |
-| `external_mutation_conflict` | PR の外部 close/merge のように blind mutation できない外部干渉 |
+| `external_mutation_conflict` | Kudo の merge intent に紐付かない PR の close/merge のように、blind mutation できない外部干渉 |
+| `merge_blocked` | required check failure、conflict、branch protection の拒否など、承認済み head を安全に merge できない外形条件（[ADR-0005](decisions/0005-auto-merge.md)） |
 | `unsafe_mutation_unauthorized` | 危険な mutation に対する明示的許可不足 |
 | `specification_decision_required` | 自動選択できない仕様判断 |
 | `external_configuration_required` | 必須 credential または外部設定が人間の操作なしに復旧できない状態 |
@@ -156,10 +159,12 @@ Kudo が保証するのは「無人で回り続けないこと」と「区間の
 
 人間は Issue 本文または`authorityRefs`が指す正本を修正し、再度`ai-ready`を付ける。reconciliation が安全な再開または新しい Run を確定した時点で、Kudo は`ai-needs-human`を外して`ai-in-progress`へ投影する。
 
-### Review waiting
+### Merge completion
 
-`ai-review-waiting`は internal test review や final implementation review を意味しない。Kudo が PR を作成し、人間の Pull Request review へ handoff 済みであることだけを表す。
+`ai-merged`は internal test review や final implementation review の結果ではなく、「approved head が base へ入った」という外形事実の投影である。この label が付いた Issue は close 済みであり、`open`を要求する candidate 条件を満たさないため polling で再発見されない。
 
-この状態で`ai-ready`を追加しても、同じ Issue の新しい implementation Run を暗黙に開始しない。PR review comment 対応、再実装、cancel、merge 後 status は、この workflow に versioned command を追加する別 decision まで人間が扱う。
+Issue を reopen して`ai-ready`を追加しても、同じ Issue の新しい implementation Run を暗黙に開始しない。再実装、cancel、revert、merge 後の PR review comment 対応は、この workflow に versioned command を追加する別 decision まで人間が扱う。
+
+`merge_blocked`で停止した Run は PR を open のまま残す。Kudo は required check、conflict、protection 設定を自動で回避しない。人間が原因を解消して`ai-ready`を付け直した時点で、reconciliation が安全な resume または supersede を判断する。
 
 `ai-reviewing`、`ai-completed`、`ai-failed`、`ai-blocked`は導入しない。詳細な phase、retry、dependency、failure は PostgreSQL と status comment/telemetry で追跡する。

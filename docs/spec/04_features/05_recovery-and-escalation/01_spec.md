@@ -161,7 +161,7 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
   - Given Context Manifest、Execution Policy、head、artifact manifest、policy ref、Pull Request ref、approval bindingのいずれかが変更されている。
   - When `ai-ready` 再付与後に reconciliation する。
   - Then semantic inputが変わり新しいvalid inputを構築できる場合は旧Runをsupersededとし、新しいRunとreview lineageを作り、以前のapprovalを移さない。
-  - And 外部close/merge等で安全なcheckpointを構築できない場合は同じRunをresumeせず、`needs_human`のまま停止する。
+  - And intentに紐付かない外部close/merge等で安全なcheckpointを構築できない場合は同じRunをresumeせず、`needs_human`のまま停止する。
 
 - **排他: Concurrent Resumption**
   - Given 複数 trigger が paused Run の再開を同時に試みる。

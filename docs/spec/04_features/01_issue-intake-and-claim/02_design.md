@@ -11,7 +11,10 @@ protocol field の厳密な定義は versioned contract、component の権限は
 | Webhook adapter | 署名と payload を検証し、delivery ID と IssueRef を durable inbox へ記録する |
 | Poller | 起動時と定期実行で configured repository の候補 IssueRef を列挙する |
 | Controller | trigger を `ReconcileIssue` へ集約し、claim lease、Execution / Escalation Policy の解決、Run transition、status projection を調停する |
-| Issue Worker | live Issue、relationship、dependency、authority、base を取得し、claim result と immutable claim artifact を構築する |
+| Issue Worker claim handler | GitHub Reader、Issue Compiler、Context Resolver を調停し、claim result と immutable claim artifact を構築する。model session は起動しない |
+| GitHub / repository reader | API response を typed data へ変換し、live Issue、relationship、dependency、authority、base を取得する。Issue Contract の意味解析は行わない |
+| Issue Compiler | verified Issue identity と raw body だけから Issue Observation、canonical Task Context、Claim Requirements を決定論的に生成する唯一の pure component |
+| Context Resolver | Claim Requirements に従って relationship、dependency completion、authority content、base を live source から解決し、Context Manifest と claim evidence を構築する |
 | Artifact Store | claim artifact の bytes を content-addressed かつ write-once に保存し、digest / length / schema を検証する |
 | PostgreSQL adapter | inbox、claim 排他、artifact metadata / ref、Run 作成、outbox を transaction と constraint で保護する |
 
@@ -27,14 +30,27 @@ Webhook と polling は同じ application operation を呼び、candidate rule �
 
 ## Contract compilation と Claim
 
-Issue Worker は Issue body を [Issue Contract](../../05_design/contracts/issue-contract-v1alpha1.md) に従って
-deterministic に parse する。relationship、dependency、authority reference は live API から解決し、
-[Task Context Protocol](../../05_design/contracts/task-context-v1alpha1.md) に従って次を生成する。
+Issue Worker の claim handler は GitHub Reader が取得した raw Issue body と verified Issue identity を
+[Issue Compiler](../../05_design/contracts/task-context-v1alpha1.md#issue-compiler-boundary)へ渡す。Compiler は
+[Issue Contract](../../05_design/contracts/issue-contract-v1alpha1.md)を deterministic に strict parse し、
+次を生成する。
 
 - audit lineage 用の Issue Observation
 - model-bearing Operation の入力になる canonical Task Context
+- relationship と authority 解決に必要な Claim Requirements
+
+Context Resolver は Claim Requirements に従って relationship、dependency、authority reference、base を
+live source から解決し、[Task Context Protocol](../../05_design/contracts/task-context-v1alpha1.md)に従って
+次を生成する。
+
 - authority content と base を bind する Context Manifest
 - claim 時点の base SHA と dependency evidence
+
+Issue Compiler は外部 I/O を持たず、Issue Contract の section と Acceptance Criteria を解釈する唯一の
+component である。GitHub Reader は transport を解析するだけで、Compiler 以外の Controller、claim
+handler、後続 Worker は raw body を意味解析しない。model-bearing Operation へ渡す Issue 表現は
+canonical Task Context に限定し、source と authority content は YAML へ要約せず、Context Manifest が
+参照する immutable artifact として渡す。
 
 Controller は Issue Worker の claim result とは別に、deployment configuration から provider、model、adapter、
 tool、timeout を解決して immutable Execution Policy を構築する。attempt retry と review round の上限も

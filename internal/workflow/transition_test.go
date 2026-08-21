@@ -13,6 +13,7 @@ const (
 	testHead     = "89abcdef0123456789abcdef0123456789abcdef"
 	finalHead    = "fedcba9876543210fedcba9876543210fedcba98"
 	repairedHead = "0123456789abcdef0123456789abcdef01234567"
+	mergeCommit  = "abcdef0123456789abcdef0123456789abcdef01"
 )
 
 func sampleInput() InputIdentity {
@@ -135,7 +136,8 @@ func TestNormalFlowReachesHumanHandoff(t *testing.T) {
 		{ReviewCompleted{Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictApprove,
 			Head: finalHead, RequestDigest: contract.SHA256([]byte("r2"))},
 			PhaseFinalizingPullRequest, []string{"dispatch_operation"}},
-		{PullRequestFinalized{Head: finalHead}, PhaseAwaitingHumanReview, []string{"project_status"}},
+		{PullRequestFinalized{Head: finalHead}, PhaseMergingPullRequest, []string{"dispatch_operation"}},
+		{PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit}, PhaseMerged, []string{"project_status"}},
 	}
 	for i, step := range steps {
 		decision := requireDecision(t, run, step.event)
@@ -182,6 +184,7 @@ func TestPointerEventsHaveTheSameSemanticsAsValues(t *testing.T) {
 		Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictApprove,
 		Head: finalHead, RequestDigest: contract.SHA256([]byte("final-request")),
 	})
+	merging := advance(t, finalizing, PullRequestFinalized{Head: finalHead})
 	changed := sampleInput()
 	changed.ContextManifest.Digest = contract.SHA256([]byte("changed-context"))
 
@@ -200,6 +203,7 @@ func TestPointerEventsHaveTheSameSemanticsAsValues(t *testing.T) {
 		{"review completed", awaitingTestReview(t), ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead}, &ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead}},
 		{"implementation fixed", implementing, ImplementationFixed{Head: finalHead, ChecksPassed: true}, &ImplementationFixed{Head: finalHead, ChecksPassed: true}},
 		{"pull request finalized", finalizing, PullRequestFinalized{Head: finalHead}, &PullRequestFinalized{Head: finalHead}},
+		{"pull request merged", merging, PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit}, &PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit}},
 		{"observation recorded", awaitingTestReview(t), ObservationRecorded{Observation: contract.SHA256([]byte("o2"))}, &ObservationRecorded{Observation: contract.SHA256([]byte("o2"))}},
 		{"semantic input changed", awaitingTestReview(t), SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: changed}, &SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: changed}},
 		{"attempt failed", awaitingTestReview(t), AttemptFailed{Class: contract.FailureTimeout}, &AttemptFailed{Class: contract.FailureTimeout}},
@@ -244,6 +248,7 @@ func TestUndeclaredTransitionsAreRejected(t *testing.T) {
 		KindReviewCompleted:      ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead, RequestDigest: contract.SHA256([]byte("r"))},
 		KindImplementationFixed:  ImplementationFixed{Head: finalHead, ChecksPassed: true},
 		KindPullRequestFinalized: PullRequestFinalized{Head: finalHead},
+		KindPullRequestMerged:    PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit},
 		KindObservationRecorded:  ObservationRecorded{Observation: contract.SHA256([]byte("o2"))},
 		KindSemanticInputChanged: SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: sampleInput()},
 		KindAttemptFailed:        AttemptFailed{Class: contract.FailureTimeout},
@@ -378,6 +383,12 @@ func TestFinalizeRequiresApprovalAndChecksOnPublishedHead(t *testing.T) {
 	// PR finalize は final approve に bind された head だけを確定できる
 	finalizing := advance(t, awaitingFinalReview(t), approve(finalHead))
 	requireRejected(t, finalizing, PullRequestFinalized{Head: testHead}, TransitionGateUnsatisfied)
+
+	// merge も同じ head へ束縛する。承認していない head の merge を成功として受理すると、
+	// review していない変更が base へ入る。
+	merging := advance(t, finalizing, PullRequestFinalized{Head: finalHead})
+	requireRejected(t, merging, PullRequestMerged{Head: testHead, MergeCommit: mergeCommit},
+		TransitionGateUnsatisfied)
 }
 
 // AC-4: transport failure と request_changes を needs_human と混同しない。
@@ -571,6 +582,19 @@ func TestGatesRejectInconsistentStoredRun(t *testing.T) {
 			run: Run{ID: "run-01", Phase: PhaseFinalizingPullRequest, Input: sampleInput(),
 				PublishedHead: finalHead, ChecksHead: finalHead},
 			event: PullRequestFinalized{Head: finalHead},
+		},
+		"merge without final approval": {
+			run: Run{ID: "run-01", Phase: PhaseMergingPullRequest, Input: sampleInput(),
+				PublishedHead: finalHead, ChecksHead: finalHead},
+			event: PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit},
+		},
+		// merge commit 無しの成功は「merge した」と主張できていない。base 側に commit が
+		// 生まれていない状態を terminal として確定させない。
+		"merge without merge commit": {
+			run: Run{ID: "run-01", Phase: PhaseMergingPullRequest, Input: sampleInput(),
+				PublishedHead: finalHead, ChecksHead: finalHead,
+				FinalApproval: &Approval{Head: finalHead, RequestDigest: contract.SHA256([]byte("final-approve"))}},
+			event: PullRequestMerged{Head: finalHead},
 		},
 		"publish head never fixed": {
 			run:   Run{ID: "run-01", Phase: PhasePublishingTestHead, Input: sampleInput()},

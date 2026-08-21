@@ -14,7 +14,7 @@ protocol field、canonical encoding、review policy など、既に versioned �
 | 4.1 | Issue 受付・Contract 検証・Claim | F-01 / F-02 | [Spec](01_issue-intake-and-claim/01_spec.md) | [Design](01_issue-intake-and-claim/02_design.md) |
 | 4.2 | Test Authoring・RED・Test Validity Review | F-03 / F-04 | [Spec](02_test-first-review/01_spec.md) | [Design](02_test-first-review/02_design.md) |
 | 4.3 | Implementation・GREEN・Final Review | F-05 / F-06 | [Spec](03_implementation-review/01_spec.md) | [Design](03_implementation-review/02_design.md) |
-| 4.4 | Pull Request 確定・人間への Handoff | F-07 | [Spec](04_pull-request-handoff/01_spec.md) | [Design](04_pull-request-handoff/02_design.md) |
+| 4.4 | Pull Request 確定・Merge | F-07 | [Spec](04_pull-request-handoff/01_spec.md) | [Design](04_pull-request-handoff/02_design.md) |
 | 4.5 | Retry・Recovery・Human Escalation | F-08 | [Spec](05_recovery-and-escalation/01_spec.md) | [Design](05_recovery-and-escalation/02_design.md) |
 | 4.6 | Dependency・並行実行・冪等性 | F-09 | [Spec](06_concurrency-and-idempotency/01_spec.md) | [Design](06_concurrency-and-idempotency/02_design.md) |
 

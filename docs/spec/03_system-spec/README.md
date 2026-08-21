@@ -1,8 +1,8 @@
 # 03. システム仕様
 
 Kudo の完成形を、プロダクト全体の視点から示す中央仕様である。Kudo は、定型 GitHub Issue を
-入力として、独立した test validity review を含む TDD を実行し、証跡付き Pull Request を人間へ
-引き渡す、単一 host 向けの issue-to-PR runtime である。
+入力として、独立した test validity review を含む TDD を実行し、証跡付き Pull Request を承認済み
+head のまま base へ merge する、単一 host 向けの issue-to-merge runtime である。
 
 本書は system-wide なアクター、要求、構成、不変条件を所有する。厳密な field や遷移を本書へ
 複製せず、次の正本へ委譲する。
@@ -19,7 +19,7 @@ Kudo の完成形を、プロダクト全体の視点から示す中央仕様で
 人間が完成した Task Issue に assignee `mrbaron3` と `ai-ready` label を付けると、Kudo は live
 GitHub state を検証して Run を開始する。test を先に作り、その test の妥当性を独立 reviewer が
 承認した後にだけ実装へ進む。最終実装も別の read-only review を通し、同じ head に対する証跡を
-Pull Request へまとめて人間へ返す。
+Pull Request へまとめたうえで、その head を base へ merge し、Task Issue を close する。
 
 Kudo は webhook 欠落、重複 event、process restart、provider failure、複数 Issue の同時実行を
 通常の運用条件として扱う。process-local memory や会話履歴を workflow の正本にしない。
@@ -29,7 +29,7 @@ Kudo は webhook 欠落、重複 event、process restart、provider failure、�
 | アクター | 責任 |
 | --- | --- |
 | Human Author | Issue Contract、authority、受け入れ条件を確定し、`ai-ready`で実行を依頼する |
-| Human Reviewer | 完成した Pull Request を最終 review し、merge / release を判断する |
+| Repository Owner | branch protection、required check、merge 対象 base branch で Kudo の merge 境界を設定し、merge 後の release / revert を判断する |
 | Controller | candidate reconciliation、state transition、Operation dispatch、retry / escalation、status projection を行う |
 | Issue Worker | claim、test、implementation、worktree、branch、Pull Request mutation を所有する唯一の writer |
 | Review Worker | immutable input と独立 checkout から test validity / final implementation verdict を返す |
@@ -44,14 +44,14 @@ Compose 上では権限の異なる container に分離する。
 
 ```mermaid
 flowchart LR
-    H[Human] -->|Issue / PR review| GH[GitHub]
+    H[Human] -->|Issue / repository 設定| GH[GitHub]
     GH -->|webhook| C[Controller]
     C -->|fallback polling| GH
     C <--> DB[(PostgreSQL)]
     IW[Issue Worker] <--> DB
     RW[Review Worker] <--> DB
     C -->|label / comment projection| GH
-    IW -->|branch / PR write| GH
+    IW -->|branch / PR write / merge| GH
     RW -->|Issue / PR / source read| GH
     IW -->|fresh session| IP[Codex or Claude]
     RW -->|fresh read-only session| RP[Codex or Claude]
@@ -60,11 +60,18 @@ flowchart LR
     IW --> WS[(Run workspace)]
 ```
 
+この図は process / container boundary を示す。Issue Contract の意味解析を所有する pure な Issue Compiler
+は独立 service ではなく、Issue Worker の deterministic claim handler から呼ばれる単一 Go module 内の
+component である。claim 後の Controller と Worker は raw Issue を再解釈せず、Compiler が生成した
+versioned canonical artifact を使用する。component 間の詳細は
+[Architecture](../05_design/01_architecture.md)を正とする。
+
 ### 3.1. 採用構成
 
 | レイヤー | 採用 | 役割 |
 | --- | --- | --- |
 | 言語 / binary | Go、単一 module / binary | domain、application、adapter を compile-time boundary で分ける |
+| Contract compilation | pure Issue Compiler component | verified Issue identity と raw body から Issue Observation、canonical Task Context、Claim Requirements を一度だけ生成する |
 | 実行基盤 | Docker Compose | 同一 binary を role 別 container として分離する正式 runtime |
 | Workflow store / queue | PostgreSQL | durable state、queue、lease、inbox / outbox の正本 |
 | Artifact Store | content-addressed named volume | digest 付きの write-once evidence を共有する |
@@ -95,9 +102,12 @@ flowchart LR
 
 ### F-02. Contract 検証と claim
 
-- live GitHub API から Issue、relationship、dependency、authority、base commit を取得する。
-- Issue Contract を strict parse し、Issue Observation、canonical Task Context、Context Manifest、
-  Execution Policy を固定する。
+- Issue Worker の deterministic claim handler が live GitHub API から Issue を取得する。
+- pure な Issue Compiler だけが verified Issue identity と raw body を strict parse し、Issue Observation、
+  canonical Task Context、Claim Requirements を生成する。
+- Context Resolver が Claim Requirements に従って relationship、dependency、authority、base commit を
+  live source から解決し、Context Manifest を固定する。
+- Controller は Compiler の結果を再解釈せず、deployment configuration から Execution Policy を固定する。
 - required input の欠落、曖昧さ、authority conflict を推測で補わない。
 - dependency が未完了の Issue は readiness gate で待機させる。
 
@@ -131,13 +141,17 @@ flowchart LR
 - `request_changes`は fresh `repair_implementation` session へ渡し、変更後の head を再 review する。
 - head、artifact、policy reference など semantic input が変われば、以前の approval を stale にする。
 
-### F-07. Pull Request の確定と handoff
+### F-07. Pull Request の確定と merge
 
 - final approval、required checks、live Pull Request head が同じ commit に bind された場合だけ draft を解除する。
 - Pull Request body に Task Issue、Acceptance Criteria、RED / GREEN / checks、二つの Review Result、
   residual risk、Run / base / head identity を含める。
-- ready 化を durable に記録した後、Issue を `ai-review-waiting`へ投影する。
-- merge、Issue close、release は実行しない。
+- final approve、live head 一致、required status check の success、mergeable がすべて成立する場合だけ、
+  期待 head SHA を明示した compare-and-merge で merge commit を作り、head branch を削除する。
+- merge completion を durable に記録した後、Task Issue を close し、`ai-merged`へ投影する。
+- required check failure、conflict、branch protection の拒否は `merge_blocked`として停止し、設定の回避や
+  squash / rebase での強行を行わない。
+- release、deploy、merge 後の revert 判断は実行しない。
 
 ### F-08. Recovery と escalation
 
@@ -167,7 +181,8 @@ Issue ready
   -> final head publish
   -> final implementation review
   -> PR ready
-  -> human review waiting
+  -> merge + branch 削除
+  -> Issue close
 ```
 
 review の `request_changes`は該当 gate 内で fresh correction session と再 review を繰り返す。
@@ -185,7 +200,7 @@ retry、stale、transport failure は review verdict と別に扱う。規範的
 | Escalation Policy | attempt retry と gate ごとの review round 上限を固定する Controller policy |
 | Artifact Manifest | test、patch、source snapshot、command evidence などの immutable reference |
 | Review Request / Result | review input identity と versioned verdict / finding の binding |
-| Pull Request Observation | live PR の head、base、open / draft state の監査 lineage |
+| Pull Request Observation | live PR の head、base、open / draft / merged state、merge commit の監査 lineage |
 
 schema と staleness rule は [contracts/](../05_design/contracts/) を正とする。
 
@@ -238,6 +253,8 @@ PostgreSQL migration、health / readiness、backup / restore、graceful shutdown
 - session 間では会話履歴ではなく immutable artifact と versioned result を渡す。
 - transport failure と review verdict を同じ結果として扱わない。
 - semantic input が変わった review approval を再利用しない。
+- approve された head と一致しない head を merge しない。
+- Kudo 自身の merge intent に紐付かない close / merge を、自分の mutation の成功として扱わない。
 - GitHub label / comment と telemetry を authoritative workflow state にしない。
 - dependency のない Issue を repository global lock で直列化しない。
 

@@ -4,6 +4,7 @@
 - 関連Issue: [#25](https://github.com/mrbaron3/kudo/issues/25)、[#28](https://github.com/mrbaron3/kudo/issues/28)、[#29](https://github.com/mrbaron3/kudo/issues/29)、[#43](https://github.com/mrbaron3/kudo/issues/43)、[#44](https://github.com/mrbaron3/kudo/issues/44)、[#47](https://github.com/mrbaron3/kudo/issues/47)
 - 実装Task: [#49](https://github.com/mrbaron3/kudo/issues/49)（本ADRの確定とprotocol/workflow改訂）
 - Supersede対象: [migration-from-servo.md](../../06_project/03_migration-from-servo.md)「New Kudo decisions」の「PR作成前のfinal implementation review gate」、および[workflow.md](../02_workflow.md) §6–7のPR作成順序
+- Supersedeされた箇所: D1のterminal記述は[ADR-0005](0005-auto-merge.md)が置き換える。ready化はhandoff terminalではなくmergeの前提段階になった
 
 ## Context
 
@@ -21,7 +22,7 @@
 
 - Issue WorkerはRED evidence固定後、branchをpushしdraft Pull Requestを冪等に作成する。
 - `test_validity`と`final_implementation`の全Review Requestは、このPRとそのhead SHAへ繋留される。
-- final approveはPR作成ではなく、PR bodyの確定とdraft→ready遷移をgateする。ready化とai-review-waiting投影がhandoff terminalである。
+- final approveはPR作成ではなく、PR bodyの確定とdraft→ready遷移をgateする。ready化とai-review-waiting投影がhandoff terminalである（terminalは[ADR-0005](0005-auto-merge.md)が`merged`へ置き換えた）。
 - PR mutationの権限はIssue Workerだけが持つ現行のmutation authorityを変更しない。Review WorkerはPRのread権限だけを追加で得る。
 
 ### D2. 観点の適用可否はreview sessionが判断し、Resultへ構造化して残す
@@ -53,7 +54,7 @@ PRはRunの人間可視なanchorであり、「publish」を単位に更新さ�
 - publishはIssue Workerのidempotency keyと期待head照合（compare-and-push）で二重mutationと外部干渉を防ぐ。
 - PR body更新はartifactから決定論的に生成し、source headを変えないためreview bindingを壊さない（既存契約の規則を維持）。
 - PR bodyは自動管理であることを明記し、人間の編集はhandoff後まで想定しない。
-- 外部干渉はlive PR observationとreconciliationで検出する。同branchへのpushによるhead不一致とbase変更はstale、PRのclose/mergeはRunを`needs_human`phaseへ送るため人間へescalateする。PR body編集とdraft/ready遷移だけの差分はaudit lineageへ追記し、いずれも品質verdictには変換しない。
+- 外部干渉はlive PR observationとreconciliationで検出する。同branchへのpushによるhead不一致とbase変更はstale、PRのclose/mergeはRunを`needs_human`phaseへ送るため人間へescalateする（Kudo自身のmergeとの区別は[ADR-0005](0005-auto-merge.md) D6が追加した）。PR body編集とdraft/ready遷移だけの差分はaudit lineageへ追記し、いずれも品質verdictには変換しない。
 - draft PR上のCIはtest-only headではREDになる。これは隠すべき異常ではなくTDDの位相の正直な表示であり、required checksのenforcementはready遷移時にのみ意味を持つ。
 
 ### 2. Workflow変更

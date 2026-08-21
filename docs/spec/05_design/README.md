@@ -9,7 +9,7 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 | 領域 | 正本 | 定義するもの |
 | --- | --- | --- |
 | Component / package architecture | [Architecture](01_architecture.md) | Controller / Worker、port / adapter、永続化、並行性、権限境界 |
-| Workflow / state machine | [End-to-end workflow](02_workflow.md) | Issue 受付から PR handoff までの順序、retry、stale、escalation |
+| Workflow / state machine | [End-to-end workflow](02_workflow.md) | Issue 受付から merge 完了までの順序、retry、stale、escalation |
 | Runtime / deployment | [Runtime platform](03_runtime-platform.md) | Compose service、PostgreSQL、volume、secret、backup / recovery |
 | GitHub integration | [GitHub routing policy](04_github-routing.md) | candidate、webhook / polling、label / comment projection |
 | Issue input | [Issue Contract](contracts/issue-contract-v1alpha1.md) | Task Issue の構造と authority semantics |
@@ -22,6 +22,7 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 | PR-anchored review | [ADR-0002](decisions/0002-pr-anchored-review.md) | review を publish 済み draft PR へ繋留する判断 |
 | Review round 上限 | [ADR-0003](decisions/0003-review-round-limit.md) | 自動修正 loop の上限と escalation policy |
 | 文書の単一ルート | [ADR-0004](decisions/0004-single-documentation-root.md) | `docs/spec/` への正本集約と protocol path 移行 |
+| 自動 merge | [ADR-0005](decisions/0005-auto-merge.md) | 承認済み head の自動 merge、完了 terminal、merge gate |
 
 ```text
 05_design/
@@ -42,7 +43,8 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
     ├── 0001-compose-runtime.md
     ├── 0002-pr-anchored-review.md
     ├── 0003-review-round-limit.md
-    └── 0004-single-documentation-root.md
+    ├── 0004-single-documentation-root.md
+    └── 0005-auto-merge.md
 ```
 
 ## 機能設計との分担

@@ -1,7 +1,7 @@
-# 4.4. Pull Request 確定・人間への Handoff 受け入れ要件
+# 4.4. Pull Request 確定・Merge 受け入れ要件
 
 [03. システム仕様](../../03_system-spec/) F-07 に対する Why / What の受け入れ基準である。
-finalize gate、Pull Request mutation、status projection の実現方法は [詳細設計](02_design.md) で扱う。
+finalize gate、merge gate、Pull Request mutation、完了 projection の実現方法は [詳細設計](02_design.md) で扱う。
 
 ## サブ機能一覧
 
@@ -9,15 +9,15 @@ finalize gate、Pull Request mutation、status projection の実現方法は [�
 | --- | --- | --- |
 | 4.4.1 | Finalize 前検証 | 高 |
 | 4.4.2 | Pull Request 確定 | 高 |
-| 4.4.3 | 人間への Handoff | 高 |
+| 4.4.3 | Merge と完了投影 | 高 |
 
 ## 4.4.1. Finalize 前検証
 
 **ユーザーストーリー**
 
-- 誰が: Pull Request を引き継ぐ人間 reviewer
-- 何を: 承認と検証の対象が、実際に review する Pull Request head と一致していてほしい
-- なぜ: 承認後に差し替えられた未評価の変更を review ready と誤認しないため
+- 誰が: repository の maintainer
+- 何を: 承認と検証の対象が、実際に base へ入る Pull Request head と一致していてほしい
+- なぜ: 承認後に差し替えられた未評価の変更を、review 済みとして base へ入れないため
 
 **事前条件**
 
@@ -42,7 +42,7 @@ finalize gate、Pull Request mutation、status projection の実現方法は [�
   - Then stale として停止し、自動的に期待値へ書き戻さない。
 
 - **外部干渉: Close または Merge 済み**
-  - Given Pull Request が人間または外部 automation により close / merge されている。
+  - Given Kudo の merge intent に紐付かない close / merge が人間または外部 automation により行われている。
   - When live state を取得する。
   - Then 品質 verdict に変換せず、理由と観測結果を添えて human escalation へ送る。
 
@@ -66,9 +66,9 @@ finalize gate、Pull Request mutation、status projection の実現方法は [�
 
 **ユーザーストーリー**
 
-- 誰が: Pull Request を引き継ぐ人間 reviewer
-- 何を: 要件、変更、検証、独立 review、残存リスクが整理された Pull Request を受け取りたい
-- なぜ: 証跡を複数の session やログから集めずに、人間 review を開始できるから
+- 誰が: merge 後に変更を追跡する人間
+- 何を: 要件、変更、検証、独立 review、残存リスクが整理された Pull Request を base の履歴に残したい
+- なぜ: 証跡を複数の session やログから集めずに、何がなぜ入ったかを後から辿れるから
 
 **事前条件**
 
@@ -85,7 +85,7 @@ finalize gate、Pull Request mutation、status projection の実現方法は [�
 - **正常系: Draft 解除**
   - Given required body が確定し、live head が approval と一致している。
   - When finalize mutation を実行する。
-  - Then 同じ Pull Request の draft が解除され、人間が review 可能な状態になる。
+  - Then 同じ Pull Request の draft が解除され、merge gate を評価できる状態になる。
 
 - **権限: Mutation Role**
   - Given Controller または Review Worker が finalize 相当の処理を行おうとする。
@@ -113,55 +113,89 @@ finalize gate、Pull Request mutation、status projection の実現方法は [�
 - 自動テスト: body生成 / draft解除 / role拒否 / timeout再試行 / mutation直前stale を検証する。
 - デモ: final approval 済み draft Pull Request が、証跡付きで ready for review になる。
 
-## 4.4.3. 人間への Handoff
+## 4.4.3. Merge と完了投影
 
 **ユーザーストーリー**
 
-- 誰が: Kudo の実行結果を確認する人間 reviewer
-- 何を: 自動実装が完了した Issue と Pull Request を、明確な状態と根拠付きで引き継ぎたい
-- なぜ: 自動化の責任範囲と、その後に人間が行う判断を混同しないため
+- 誰が: repository の maintainer
+- 何を: 独立 review が承認した head だけが、証跡付きで base へ入ってほしい
+- なぜ: merge 操作のために人間の在席を待たず、かつ未 review の変更が base へ入らないため
 
 **事前条件**
 
-- Pull Request の required body と draft 解除が確認されている。
-- handoff completion を durable に記録できる。
+- Pull Request の required body 確定と draft 解除が durable に記録されている。
+- merge intent の idempotency identity を mutation 前に durable へ記録できる。
 
 **受け入れ基準**
 
-- **正常系: Review Waiting への遷移**
-  - Given Pull Request finalize が成功している。
-  - When handoff completion を確定する。
-  - Then durable state が先に更新され、Issue に `ai-review-waiting` が投影される。
+- **正常系: 承認済み head の Merge**
+  - Given final approve、live PR の open / base / head 一致、required status check の success、mergeable が
+    すべて成立している。
+  - When `merge_pull_request` を実行する。
+  - Then 承認済み head が merge commit として base へ入り、head branch が削除され、merge commit SHA と
+    merged 状態が observation として固定される。
 
-- **回復系: Status Projection Failure**
-  - Given handoff completion 後に label または comment の更新が一時的に失敗する。
+- **鮮度: Merge 直前の Head 変化**
+  - Given 照合後、merge 要求までの間に branch へ外部 push が入る。
+  - When 期待 head SHA を明示して merge を要求する。
+  - Then merge は成立せず、stale として再 publish と再 review へ戻る。
+
+- **異常系: Required Check の未達**
+  - Given required status check が failure、または conflict が存在する。
+  - When merge gate を評価する。
+  - Then merge を実行せず、`merge_blocked` として human escalation へ送り、設定の回避や squash / rebase での
+    強行を行わない。
+
+- **待機: Required Check の Pending**
+  - Given required status check がまだ pending である。
+  - When merge gate を評価する。
+  - Then 品質 verdict にも execution failure にもせず、retry budget を消費しない待機として backoff 再照合し、
+    Operation の execution deadline を超えた時点で `merge_blocked` とする。
+
+- **冪等性: 結果不明後の再試行**
+  - Given merge 要求が timeout し、GitHub 上では既に merge が成立している。
+  - When 同じ logical merge Operation を再試行する。
+  - Then 記録済み intent と merge commit の親が期待 head であることを照合し、二重 merge を作らずに成功へ
+    収束する。
+
+- **外部干渉: Intent の無い Merge**
+  - Given Kudo の merge intent が無い状態で PR が close / merge されている。
+  - When live state を取得する。
+  - Then 自分の mutation の成功として扱わず、`external_mutation_conflict` として human escalation へ送る。
+
+- **正常系: 完了投影**
+  - Given merge completion が durable に記録されている。
+  - When 完了 projection を実行する。
+  - Then Task Issue が close され、`ai-in-progress` を外して `ai-merged` が投影される。closing keyword で
+    既に close 済みの場合は no-op として成功にする。
+
+- **回復系: Projection Failure**
+  - Given merge completion 後に label、comment、close の更新が一時的に失敗する。
   - When outbox projection を再試行する。
-  - Then finalized Pull Request と completion は巻き戻されず、同じ status が重複なく投影される。
+  - Then 成立済みの merge と completion は巻き戻されず、同じ状態が重複なく投影される。
 
-- **境界: Merge と Close の非実行**
-  - Given Pull Request が ready for review になっている。
+- **境界: Release と Revert の非実行**
+  - Given merge が成立している。
   - When Kudo の自動 workflow が完了する。
-  - Then merge、Issue close、release、人間の review comment 対応は実行されない。
-
-- **追跡性: Handoff Evidence**
-  - Given 人間 reviewer が Issue または Pull Request を開く。
-  - When handoff 内容を確認する。
-  - Then Task Issue、Run、final head、検証 evidence、両 review verdict、residual risk を辿れる。
+  - Then release、deploy、revert、merge 後の review comment 対応は実行されない。
 
 **非機能要件**
 
+- 冪等性: merge、branch 削除、Issue close、label 投影が retry 下で一度だけ成立する。
+- 安全性: 承認済み head と一致しない head を merge しない。
 - 回復性: GitHub status は durable workflow state の再生成可能な投影とする。
-- 可観測性: handoff completion と projection attempt を別々に追跡できる。
-- 権限分離: 人間だけが merge、close、release の最終判断を行う。
+- 権限分離: merge を実行できるのは Issue Worker credential だけである。
 
 **完了条件**
 
-- 自動テスト: completion / projection retry / merge非実行 / evidence link を検証する。
-- デモ: Issue と ready Pull Request の双方から同じ Run evidence を確認できる。
+- 自動テスト: merge 成立 / head 不一致 / check failure / check pending / timeout 再試行 / intent 無し merged /
+  projection retry を検証する。
+- デモ: `ai-ready` を付けた Issue が、人手を介さず merge 済み・close 済みになるまで進む。
 
 ## 参照する正本
 
-- [End-to-end workflow](../../05_design/02_workflow.md) §7
-- [GitHub routing policy](../../05_design/04_github-routing.md) — Review waiting
+- [End-to-end workflow](../../05_design/02_workflow.md) §7–8
+- [ADR-0005](../../05_design/decisions/0005-auto-merge.md) — merge gate、failure routing、完了 terminal
+- [GitHub routing policy](../../05_design/04_github-routing.md) — Merge completion
 - [Architecture](../../05_design/01_architecture.md) — Mutation authority
 - [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)

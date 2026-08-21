@@ -48,7 +48,7 @@ Controller の label / comment projection は transactional outbox と stable pr
 
 - concurrent claim、lease acquisition、Run transition を複数 goroutine と deterministic store fake で検証する。
 - webhook / polling の順序と重複を組み合わせ、Run が一つに収束することを検証する。
-- mutation 前後の timeout、外部 push、close / merge を fake GitHub で検証する。
+- mutation 前後の timeout、外部 push、close / merge を fake GitHub で検証する。intent 有無による merged 観測の解釈差も同じ fake で検証する。
 - 複数 Issue が独立 workspace で同時進行でき、global lock によって直列化されないことを検証する。
 
 ## 参照

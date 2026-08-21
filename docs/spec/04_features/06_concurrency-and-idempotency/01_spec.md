@@ -159,9 +159,14 @@ dependency graph、constraint、lease、stable identity の実現方法は [詳�
   - Then blind overwrite せず stale とし、以前の approval を変更後の input に適用しない。
 
 - **外部干渉: Pull Request の Close / Merge**
-  - Given 対象 Pull Request が外部から close または merge される。
+  - Given Kudo の merge intent に紐付かない close / merge が外部から行われる。
   - When 次の mutation または review freshness check を行う。
   - Then 品質 verdict にせず、人間が判断できる evidence とともに `needs_human` へ送る。
+
+- **冪等性: 自分の Merge の再観測**
+  - Given `merge_pull_request` の idempotency identity が durable に記録され、merge commit の親が期待 head である。
+  - When 応答を失った retry が live state を再取得する。
+  - Then 外部干渉として扱わず、同じ merge を成功として確認し、二重 merge を作らない。
 
 **非機能要件**
 

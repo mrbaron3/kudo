@@ -138,7 +138,7 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
 - **正常系: Approve**
   - Given live Issue / PR と Request が一致し、必須観点に blocking finding がない。
   - When Review Worker が exact final head を評価する。
-  - Then applicability 宣言を含む `approve` Result が固定され、Pull Request handoff gate が開く。
+  - Then applicability 宣言を含む `approve` Result が固定され、Pull Request 確定と merge gate が開く。
 
 - **修正系: Request Changes**
   - Given 自動修正可能な correctness、regression、scope、quality、security、evidence の finding がある。

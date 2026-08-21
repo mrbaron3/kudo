@@ -183,7 +183,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 
 ## Milestone 6 — GREEN, refactor, final review, and PR
 
-承認済み test から implementation を完成させ、人間 review 用 PR へ handoff する。
+承認済み test から implementation を完成させ、承認済み head を merge して Task Issue を close する。
 
 ### Milestone 6 deliverables
 
@@ -195,7 +195,9 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 - approved head binding と stale review prevention
 - `finalize_pull_request`による required PR body 確定と draft 解除
 - required PR body validator と `.github/pull_request_template.md` integration
-- `ai-review-waiting` projection
+- `merge_pull_request`による merge gate 評価、compare-and-merge、head branch 削除
+- merge intent の idempotency identity と、外部 close/merge との区別
+- Task Issue close と `ai-merged` projection
 
 ### Milestone 6 exit criteria
 
@@ -204,7 +206,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 - performance bound宣言時は測定command、固定条件、環境identity、複数回実行の要約、bound比較を最終headへbindし、宣言がないTaskへ標準harnessを推測して要求しない。
 - final`request_changes`は fresh repair session に渡り、head change 後に必ず再 review する。
 - final approval と required checks がない head では PR を ready 化できない。draft の publish は approve を gate にしない。
-- crash が publish/finalize response の前後どちらで起きても PR は一つだけになり、Run は`awaiting_human_review`へ収束する。
+- crash が publish/finalize/merge response の前後どちらで起きても PR は一つだけになり、merge は一度だけ成立し、Run は`merged`へ収束する。
 - PR body が Issue、AC、RED/GREEN、二つの review、checks、risk、Run/base/head を参照する。
 
 ## Milestone 7 — Production Compose deployment and operations
@@ -256,7 +258,8 @@ Milestone 0のCompose基盤を、完成したController/Worker use caseを実行
 
 ### Automated acceptance matrix
 
-- happy path: Issue -> RED -> draft PR publish -> test approve -> GREEN/refactor -> final approve -> PR ready化 ->`ai-review-waiting`
+- happy path: Issue -> RED -> draft PR publish -> test approve -> GREEN/refactor -> final approve -> PR ready化 -> merge + branch削除 -> Issue close ->`ai-merged`
+- merge gate: check pending の待機、check failure / conflict / protection 拒否の`merge_blocked`、merge 直前の head 変化
 - test and final`request_changes`の複数 loop
 - `needs_human`、人間修正、`ai-ready`再付与、safe resume/supersede
 - webhook loss、duplicate、reorder、invalid signature、poll overlap

@@ -32,8 +32,13 @@ const (
 	PhaseAwaitingFinalReview Phase = "awaiting_final_review"
 	// PhaseFinalizingPullRequest は required PR body 確定と draft 解除の段階である。
 	PhaseFinalizingPullRequest Phase = "finalizing_pull_request"
-	// PhaseAwaitingHumanReview は Kudo の正常 handoff terminal である。
-	PhaseAwaitingHumanReview Phase = "awaiting_human_review"
+	// PhaseMergingPullRequest は merge gate が成立し、承認済み head を base へ
+	// 統合している段階である。finalize と分けるのは、body 確定のやり直しなしに
+	// merge だけを再試行できるようにするためである。
+	PhaseMergingPullRequest Phase = "merging_pull_request"
+	// PhaseMerged は Kudo の正常 terminal である。Task Issue の close と
+	// `ai-merged` label は、この phase からの投影である。
+	PhaseMerged Phase = "merged"
 	// PhaseNeedsHuman は実行を停止した paused Run である。terminal ではないが、
 	// resume と supersede は再 reconciliation が排他的に決める。
 	PhaseNeedsHuman Phase = "needs_human"
@@ -56,7 +61,8 @@ var phases = []Phase{
 	PhasePublishingFinalHead,
 	PhaseAwaitingFinalReview,
 	PhaseFinalizingPullRequest,
-	PhaseAwaitingHumanReview,
+	PhaseMergingPullRequest,
+	PhaseMerged,
 	PhaseNeedsHuman,
 	PhaseSuperseded,
 }
@@ -66,7 +72,7 @@ func Phases() []Phase { return slices.Clone(phases) }
 
 // Terminal は Run がこれ以上進まない phase かを返す。
 func (p Phase) Terminal() bool {
-	return p == PhaseAwaitingHumanReview || p == PhaseSuperseded
+	return p == PhaseMerged || p == PhaseSuperseded
 }
 
 // Paused は人の対応を待って停止している phase かを返す。

@@ -6,7 +6,7 @@ Kudo が誰のどの問題を解き、どこまでを製品責任として引き
 
 ## 1. 解決する課題
 
-Issue からコードを生成するだけでは、人間が安心して Pull Request をレビューできる状態にはならない。
+Issue からコードを生成するだけでは、その変更を人手を介さずに base へ統合してよい状態にはならない。
 少なくとも次の問題が残る。
 
 - Issue の不足を会話履歴や実装者の推測で補うと、何を根拠に実装したか再現できない。
@@ -14,9 +14,10 @@ Issue からコードを生成するだけでは、人間が安心して Pull Re
 - model session や process-local memory に進行状態を置くと、再起動や timeout 後に安全に再開できない。
 - webhook の欠落、重複 event、外部 push、provider failure が二重実行や古い approval の再利用を招く。
 - 最終差分だけを見ても、RED、GREEN、review、必須 check がどの commit に対して成立したか追跡しにくい。
+- 承認した head と実際に統合する head がずれると、review していない変更が base へ入る。
 
-Kudo はこれらを、明示的な Issue Contract、TDD gate、独立 review、immutable evidence、durable
-workflow を一つの issue-to-PR runtime として提供することで解決する。
+Kudo はこれらを、明示的な Issue Contract、TDD gate、独立 review、immutable evidence、承認済み head に
+束縛した merge、durable workflow を一つの issue-to-merge runtime として提供することで解決する。
 
 ## 2. プロダクトのゴール
 
@@ -26,17 +27,20 @@ workflow を一つの issue-to-PR runtime として提供することで解決�
 2. 受け入れ条件に対応する test を先に作り、未実装を示す RED を固定する。
 3. 実装とは隔離された Review Worker が test validity を承認する。
 4. 承認済み test を変えずに実装し、GREEN、refactor、必須 check の証跡を固定する。
-5. 最終 head を独立 review し、承認された同じ head の Pull Request を人間へ渡す。
+5. 最終 head を独立 review し、承認された同じ head の Pull Request を証跡付きで確定する。
+6. 承認済み head を base へ merge し、branch を削除し、Task Issue を close する。
 
-正常な完了点は、Pull Request が review 可能な状態になり、Issue が
-`ai-review-waiting` へ投影された時点である。merge、release、最終的な製品判断は人間が所有する。
+正常な完了点は、承認済み head が merge され、Issue が close されて `ai-merged` へ投影された時点である。
+merge の可否は独立 review の approve と、live head 一致、required check、conflict の外形照合で決める。
+人間は branch protection、required check、対象 base branch という repository 設定で Kudo の merge 境界を
+決め、release、deploy、merge 後の revert 判断を所有する。
 
 ## 3. 利用者と責任
 
 | 利用者 | Kudo に期待すること | 利用者が所有する判断 |
 | --- | --- | --- |
 | Issue Author | 定型 Issue から、受け入れ条件に沿った実装 PR が作られる | Outcome、Scope、Acceptance Criteria、authority、停止条件の確定 |
-| Repository Maintainer | RED / GREEN / review の根拠を追跡できる PR をレビューする | 最終 review、merge、release |
+| Repository Maintainer | 承認済み変更が、根拠を追跡できる PR として base へ merge される | branch protection、required check、merge 対象 base branch の設定、release、revert |
 | Operator | 再起動や外部障害後も Run を診断し、安全に回復する | credential、capacity、運用 policy、人間への escalation 対応 |
 
 Kudo は曖昧な要求を補完するプロダクトではない。必要情報が不足または競合する場合は claim を拒否し、
@@ -64,14 +68,21 @@ workflow state と queue を PostgreSQL に置き、外部 mutation は idempote
 Issue Worker だけが implementation worktree、branch、Pull Request を変更できる。Review Worker は
 別 checkout と immutable input だけを読み、write credential と implementation workspace を持たない。
 
+### 4.5. 承認済み変更を人手を介さずに統合する
+
+独立 review が approve した head だけを、live head 一致、required check の success、conflict 不在を
+照合したうえで merge する。merge、branch 削除、Issue close は crash と retry の下でも一度だけ成立し、
+Kudo 自身が実行した merge と外部からの close / merge を観測で区別する。
+
 ## 5. プロダクト境界
 
-Kudo が担当する範囲は、実行依頼の検出から、人間がレビューできる Pull Request の handoff までである。
+Kudo が担当する範囲は、実行依頼の検出から、承認済み head の merge と Task Issue の close までである。
 次は標準 workflow に含めない。
 
 - 曖昧な Issue を人間に代わって完成させること
-- Pull Request の merge、Issue close、deploy、release
-- 人間の Pull Request review comment に対する自動修正 loop
+- branch protection、required check、merge 対象 base branch の設定
+- deploy、release、merge 後の revert 判断
+- merge 後に付いた人間の Pull Request review comment に対する自動修正 loop
 - pass@k、best-of-N、複数 candidate の競争実行や scoring dashboard
 - 複数 host を前提とした distributed scheduler
 - Kubernetes を必須とする deployment
@@ -92,6 +103,8 @@ Kudo が担当する範囲は、実行依頼の検出から、人間がレビュ
 - 承認済み test を通す実装、refactor、GREEN command evidence
 - 最終 head に対する独立した final implementation approval
 - 実行した必須 check、その結果、残存 risk を含む Pull Request
+- approved head と live head の一致、required check の結果、mergeable 状態を照合したうえで実行した
+  merge の commit SHA
 
 artifact、Review Request、Review Result は immutable identity を持つ。Context Manifest、Execution Policy、
 head SHA、artifact digest、policy reference のいずれかが変われば、以前の review approval は再利用しない。
@@ -110,5 +123,8 @@ live verification で証明する。
 - dependency のない複数 Issue は同時実行でき、同じ Issue は二重実行されない。
 - Review Worker は implementation worktree と write credential を持たない。
 - Task Context に影響する Issue 変更、または head 変更が以前の approval を stale にする。
-- Pull Request と `ai-review-waiting` projection が crash / retry 下でも一度だけ成立する。
+- 承認済み head と live head が違う、required check が失敗している、conflict がある、branch protection が
+  拒否するいずれかの場合に merge しない。
+- Kudo 自身が実行した merge と、人間または外部 automation による close / merge を区別できる。
+- Pull Request、merge、branch 削除、Issue close、label 投影が crash / retry 下でも一度だけ成立する。
 - Compose stack の health、migration、backup / restore、graceful shutdown 手順が検証されている。

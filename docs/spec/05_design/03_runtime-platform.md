@@ -144,8 +144,8 @@ GitHub は PAT ではなく GitHub App を標準とする。installation token �
 
 | Role | GitHub authority |
 | --- | --- |
-| Controller | metadata read、Issues read/write。label/comment projection用 |
-| Issue Worker | metadata/issues read、contents write、pull requests write、required check read |
+| Controller | metadata read、Issues read/write。label/comment projectionとmerge完了時のIssue close用 |
+| Issue Worker | metadata/issues read、contents write、pull requests write、required check read。PRのmergeとhead branch削除を含む |
 | Review Worker | metadata/issues/contents/pull requests read-only |
 
 credential と provider config directory を Worker 間で共有しない。log、artifact、Review Result に token、private key、credential path を含めない。

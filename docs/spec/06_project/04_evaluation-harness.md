@@ -2,7 +2,7 @@
 
 ## Decision
 
-評価ハーネスはKudo runtimeの完成条件に含めない。まずproduction workflowとして、単一runのcontract、artifact lineage、test validity review、最終review、PR handoffが再現可能に動くことを確認する。
+評価ハーネスはKudo runtimeの完成条件に含めない。まずproduction workflowとして、単一runのcontract、artifact lineage、test validity review、最終review、mergeとIssue closeが再現可能に動くことを確認する。
 
 Runtime Controllerは必要だが、evaluation harnessではない。Controllerは1 runの安全な状態遷移を担い、evaluation harnessは複数run、候補、設定、model/provider、system versionを比較する。
 

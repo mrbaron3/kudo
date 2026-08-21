@@ -78,10 +78,11 @@ var artifactNames = []ArtifactName{
 // logical name である。protocol 文書の kind 表が Output として挙げる artifact のうち、
 // head と external reference のように別 field が担うものを除いた集合と一致させる。
 //
-// publish_head と finalize_pull_request が PR observation を必須にするのは、publish の
-// 成否と PR の状態遷移（draft の ensure、ready 化）を Controller が観測 record から
-// 検証できなければ、Review Request の lineage と handoff terminal の根拠を用意できない
-// ためである。
+// publish_head、finalize_pull_request、merge_pull_request が PR observation を必須にするのは、
+// publish の成否と PR の状態遷移（draft の ensure、ready 化、merged）を Controller が観測
+// record から検証できなければ、Review Request の lineage と merge 完了の根拠を用意できない
+// ためである。merge の成否を Result の真偽値ではなく観測 record に置くことで、応答を失った
+// retry が同じ観測から自分の merge を再確認できる。
 var requiredOperationOutputs = map[OperationKind][]ArtifactName{
 	OperationClaim: {
 		ArtifactNameRawIssueBody,
@@ -95,6 +96,7 @@ var requiredOperationOutputs = map[OperationKind][]ArtifactName{
 	OperationRepairImplementation: {ArtifactNameGreenEvidence, ArtifactNameCheckEvidence, ArtifactNamePullRequestDraft, ArtifactNameSourceBundle},
 	OperationPublishHead:          {ArtifactNamePullRequestObservation},
 	OperationFinalizePullRequest:  {ArtifactNamePullRequestObservation},
+	OperationMergePullRequest:     {ArtifactNamePullRequestObservation},
 }
 
 // requiredReviewEntries は review kind の Artifact Manifest が備えていなければならない

@@ -233,6 +233,7 @@ func TestOperationKindRequiresDeclaredInputArtifacts(t *testing.T) {
 		OperationRepairImplementation,
 		OperationPublishHead,
 		OperationFinalizePullRequest,
+		OperationMergePullRequest,
 	}
 	for _, kind := range requiring {
 		t.Run(string(kind), func(t *testing.T) {
@@ -503,7 +504,7 @@ func TestSucceededResultRequiresKindOutput(t *testing.T) {
 			switch kind {
 			case OperationClaim:
 				result.HeadSHA = ""
-			case OperationPublishHead, OperationFinalizePullRequest:
+			case OperationPublishHead, OperationFinalizePullRequest, OperationMergePullRequest:
 				result.HeadSHA = op.HeadSHA
 				result.ExternalRefs = []string{"github://mrbaron3/kudo/pull/42"}
 			}
@@ -549,12 +550,15 @@ func sampleKindOutputs(kind OperationKind) []NamedArtifact {
 	return outputs
 }
 
-// publish_head と finalize_pull_request は source head を進めない Operation であり、
-// 固定済み head をそのまま branch と PR へ反映する。Result が別の head を報告できると、
-// review していない head に対する外部 mutation が gate を通ってしまう。対象 PR の
-// reference と観測 record も succeeded の必須出力である。
+// publish_head、finalize_pull_request、merge_pull_request は source head を進めない
+// Operation であり、固定済み head をそのまま branch、PR、base へ反映する。Result が別の
+// head を報告できると、review していない head に対する外部 mutation が gate を通ってしまう。
+// merge commit は base 側に生まれる別の commit であり、この head 照合を緩める理由にならない。
+// 対象 PR の reference と観測 record も succeeded の必須出力である。
 func TestPublishOperationsBindHeadAndReference(t *testing.T) {
-	for _, kind := range []OperationKind{OperationPublishHead, OperationFinalizePullRequest} {
+	for _, kind := range []OperationKind{
+		OperationPublishHead, OperationFinalizePullRequest, OperationMergePullRequest,
+	} {
 		t.Run(string(kind), func(t *testing.T) {
 			op := sampleWorkerOperation(t)
 			op.Kind = kind

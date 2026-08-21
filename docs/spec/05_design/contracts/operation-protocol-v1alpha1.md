@@ -54,6 +54,7 @@ Issue Observation、Task Context、Context Manifest、Execution Policyのschema�
 | `repair_implementation` | fresh | current implementation head、blocking final Review Result | repaired head、new GREEN/refactor/check evidence、revised Pull Request draft、source bundle |
 | `publish_head` | no | 固定済みhead、source bundle、idempotency identity | branch push、draft PRのensure/update、GitHub PR number、URL、observed head、pull request observation |
 | `finalize_pull_request` | no | final approved head、approved final Review Result、PR body artifact、idempotency identity | required PR bodyの確定、draft解除、GitHub PR number、URL、observed head、pull request observation |
+| `merge_pull_request` | no | final approved head、approved final Review Result、finalize済みPull Request reference、期待head SHA、idempotency identity | 期待headへ束縛したmerge commit、head branch削除の結果、GitHub PR number、URL、observed head、merged状態のpull request observation |
 
 `claim`ではControllerがRun IDを予約するが、claim成功まではactive Runとして公開しない。また、Issue Observation、Context Manifest、headはまだ存在しないため、envelope上の該当fieldを省略する。Execution Policyはclaim成功時にRunへ固定する。それ以外のOperationではkindに必要なfieldを省略しない。空文字や直前Runの値から推測しない。Task ContextはContext Manifest内の`TaskContextRef`から取得し、digestだけでschemaを推測しない。
 
@@ -65,9 +66,9 @@ kindごとのfield要件は次のとおりとする。validatorは省略だけ�
 | --- | --- | --- |
 | `claim` | 持たない | 持たない |
 | `author_tests` | 必須 | 任意 |
-| `revise_tests`、`implement`、`repair_implementation`、`publish_head`、`finalize_pull_request` | 必須 | 1件以上必須 |
+| `revise_tests`、`implement`、`repair_implementation`、`publish_head`、`finalize_pull_request`、`merge_pull_request` | 必須 | 1件以上必須 |
 
-`publish_head`はRED evidence固定後とGREEN/refactor evidence固定後の両方で使い、同じdraft PRへheadを再publishする。publishはreview approveをgateにしない。`finalize_pull_request`はfinal approveにbindされたheadに対してだけ発行され、ready化がhandoff terminalになる（gate規則は[Implementation–Review Protocol](review-protocol-v1alpha1.md)を正とする）。どちらもbranchへのmutation前に期待headとlive branch headを照合し（compare-and-push）、外部pushによるhead不一致を検出した場合はblind mutationせず`stale_input`として返す。
+`publish_head`はRED evidence固定後とGREEN/refactor evidence固定後の両方で使い、同じdraft PRへheadを再publishする。publishはreview approveをgateにしない。`finalize_pull_request`はfinal approveにbindされたheadに対してだけ発行され、required PR bodyの確定とready化を行う。`merge_pull_request`はready化の後、final approveに加えてlive headの一致、required status checkのsuccess、mergeableが揃った場合だけ発行される（gate規則は[Implementation–Review Protocol](review-protocol-v1alpha1.md)と[ADR-0005](../decisions/0005-auto-merge.md)を正とする）。いずれもmutation前に期待headとlive branch headを照合し（compare-and-push、compare-and-merge）、外部pushによるhead不一致を検出した場合はblind mutationせず`stale_input`として返す。`merge_pull_request`は期待head SHAをmerge要求自体にも載せ、照合とmergeの間に入る外部pushをGitHub側でも弾く。
 
 model-bearing Operationは、同じRun/worktreeを扱う場合もfresh provider process/sessionを作る。継続に必要な情報はcurrent commit、input artifact、versioned Review Resultとして渡し、resume tokenやconversation transcriptを渡さない。
 
@@ -114,11 +115,11 @@ Result digestは、schema、参照するOperation digest、outcome、head SHA、
 | --- | --- | --- | --- |
 | `claim` | 返さない | 必須logical nameを満たす | 任意 |
 | `author_tests`、`revise_tests`、`implement`、`repair_implementation` | 必須 | 必須logical nameを満たす | 任意 |
-| `publish_head`、`finalize_pull_request` | 入力`headSha`と一致 | 必須logical nameを満たす | 同じrepositoryのPR referenceを1件以上必須 |
+| `publish_head`、`finalize_pull_request`、`merge_pull_request` | 入力`headSha`と一致 | 必須logical nameを満たす | 同じrepositoryのPR referenceを1件以上必須 |
 
 外部referenceは`github://owner/repository/pull/<number>`形式のcanonicalなPull Request referenceとする。非空判定だけでは、成功と主張するResultからPR numberとURLを復元できず、retry時の既存PR照合とdurable handoffが成立しない。Issue referenceと同じく、numberは先頭0や符号を含まない十進表記だけを許可し、owner/repositoryはcase-insensitiveに正規化する。Operationが対象とするrepository以外のPR referenceは成功の根拠にしない。
 
-`succeeded`は「Operation contractを満たすoutputがimmutableに固定された」ことを意味する。kindが要求するlogical nameを欠いた成功を受理すると、後続Operationとreviewが存在しないartifactを前提に進む。必須集合は後述のArtifact logical names節が定める。`publish_head`と`finalize_pull_request`はsource headを進めず固定済みheadをbranchとPRへ反映するOperationなので、Result headが入力headと一致しないことは、reviewしていないheadへ外部mutationを行ったことを意味する。binding境界で拒否する。
+`succeeded`は「Operation contractを満たすoutputがimmutableに固定された」ことを意味する。kindが要求するlogical nameを欠いた成功を受理すると、後続Operationとreviewが存在しないartifactを前提に進む。必須集合は後述のArtifact logical names節が定める。`publish_head`、`finalize_pull_request`、`merge_pull_request`はsource headを進めず固定済みheadをbranch、PR、baseへ反映するOperationなので、Result headが入力headと一致しないことは、reviewしていないheadへ外部mutationを行ったことを意味する。binding境界で拒否する。merge commit SHAはbase側に生まれる新しいcommitであり、`headSha`へ載せない。
 
 ## Artifact logical names
 
@@ -135,7 +136,7 @@ artifactはcontent addressで一意になるが、digestだけでは「そのbyt
 | `green-evidence` | 実装後にtestが通ったことの実行証跡 | `implement`、`repair_implementation` |
 | `check-evidence` | refactor後のrequired checksとIssue Verificationの証跡 | `implement`、`repair_implementation` |
 | `pull-request-draft` | PRへ載せるsummary、risk、manual verificationの草稿 | `implement`、`repair_implementation` |
-| `pull-request-observation` | publish済みPRのexact observation record（PR ref、state、draft、head、base、body digest） | `publish_head`、`finalize_pull_request` |
+| `pull-request-observation` | publish済みPRのexact observation record（PR ref、state、draft、head、base、body digest、mergedのときはmerge commit SHA） | `publish_head`、`finalize_pull_request`、`merge_pull_request` |
 | `performance-evidence` | performance bound宣言時の測定証跡（command、実行条件、環境identity、複数回実行の要約） | `implement`、`repair_implementation` |
 | `source-bundle` | head SHAを再構築・検証できるimmutable snapshot | headを生成するIssue Worker Operation |
 | `test-validity-result` | final reviewが前提とする承認済みtest validity verdict | Controller |
@@ -155,9 +156,9 @@ kindごとの`succeeded` Resultは、次のlogical nameをすべて`outputArtifa
 | `claim` | `raw-issue-body`、`issue-observation`、`task-context`、`context-manifest` |
 | `author_tests`、`revise_tests` | `test-plan`、`red-evidence`、`source-bundle` |
 | `implement`、`repair_implementation` | `green-evidence`、`check-evidence`、`pull-request-draft`、`source-bundle` |
-| `publish_head`、`finalize_pull_request` | `pull-request-observation` |
+| `publish_head`、`finalize_pull_request`、`merge_pull_request` | `pull-request-observation` |
 
-集合はkind表のOutput列にあるartifactから、head SHA、external reference、structured rejectionのように別fieldまたは別outcomeが担うものを除いて決める。`publish_head`と`finalize_pull_request`が`pull-request-observation`を必須にするのは、publishの成否とPRの状態遷移（draftのensure、ready化）をControllerが観測recordから検証できなければ、Review Requestのlineageとhandoff terminalの根拠を用意できないためである。`pull-request-draft`を実装側kindの必須outputに含めるのは、`finalize_pull_request`のRequired inputがPR body artifactを名指ししており、それを作るOperationが他に無いためである。`performance-evidence`はperformance boundが宣言されたTaskでのみ要求される条件付きoutputであり、静的な必須集合には含めない。条件の判定はreviewのdeterministic prerequisiteが行う。`source-bundle`はmodelの成果ではないが、headを生成したIssue Workerだけがreview前のlocal checkpointを読めるため、そのOperationの成功に含める。ControllerはIssue Worker workspaceもartifact bytesもmountせず、欠落したbundleを後から生成しない。
+集合はkind表のOutput列にあるartifactから、head SHA、external reference、structured rejectionのように別fieldまたは別outcomeが担うものを除いて決める。`publish_head`、`finalize_pull_request`、`merge_pull_request`が`pull-request-observation`を必須にするのは、publishの成否とPRの状態遷移（draftのensure、ready化、merged）をControllerが観測recordから検証できなければ、Review Requestのlineageとmerge完了の根拠を用意できないためである。merge成立の根拠をResultの真偽値ではなく観測recordに置くのは、応答を失ったretryが同じ観測から自分のmergeを再確認できるようにするためである。`pull-request-draft`を実装側kindの必須outputに含めるのは、`finalize_pull_request`のRequired inputがPR body artifactを名指ししており、それを作るOperationが他に無いためである。`performance-evidence`はperformance boundが宣言されたTaskでのみ要求される条件付きoutputであり、静的な必須集合には含めない。条件の判定はreviewのdeterministic prerequisiteが行う。`source-bundle`はmodelの成果ではないが、headを生成したIssue Workerだけがreview前のlocal checkpointを読めるため、そのOperationの成功に含める。ControllerはIssue Worker workspaceもartifact bytesもmountせず、欠落したbundleを後から生成しない。
 
 非空判定では足りない。protocolはkindごとに「何を」残すかまで定めており、test planの代わりに任意の1件を置いたResultも非空判定なら通る。binding境界は欠落したlogical nameをすべてerrorへ載せ、`protocol_kind_constraint`として分類する。
 
@@ -182,7 +183,7 @@ live Issue body digestが一致しない場合、それだけではstaleと判�
 
 comparisonはpure functionであり、最新入力を既存Operation、approval、reviewへ書き戻さない。書き戻すと、古いapprovalが新しい入力のapprovalとして黙って再利用される。新しい入力で続けるには新しいOperationを作る。
 
-GitHub mutationを伴う`publish_head`と`finalize_pull_request`は、repository、Run、Issue、headを含むstable idempotency markerをPR bodyまたは検索可能なmetadataへ記録する。responseを受け取る前にprocessが停止した場合、retry時は既存PRを検索・照合してからcreate/updateする。
+GitHub mutationを伴う`publish_head`、`finalize_pull_request`、`merge_pull_request`は、repository、Run、Issue、headを含むstable idempotency markerをPR bodyまたは検索可能なmetadataへ記録する。responseを受け取る前にprocessが停止した場合、retry時は既存PRを検索・照合してからcreate/update/mergeする。`merge_pull_request`のretryでは、記録済みidempotency identityとmerge commitの親が期待headであることを照合して自分のmergeを再確認し、identityの無いmerged観測を自分の成功として扱わない。
 
 Issue Workerだけがimplementation worktree、branch、commit、Pull Requestを変更できる。ControllerはOperationをenqueueできてもmutationを代行しない。
 

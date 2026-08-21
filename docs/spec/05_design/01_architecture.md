@@ -17,7 +17,7 @@ Controller が Codex や Claude を直接操作するのではない。Controlle
 
 ```mermaid
 flowchart LR
-    H[Human] -->|Issue / PR review| GH[GitHub]
+    H[Human] -->|Issue / repository 設定| GH[GitHub]
     GH -->|issues webhook| C[Controller]
     C -->|poll current candidates| GH
     C <--> DB[(PostgreSQL)]
@@ -35,7 +35,55 @@ flowchart LR
 
 PostgreSQL は workflow state の正本、GitHub は live Issue/repository/PR の正本である。artifact volume は immutable evidence の bytes を保持する。OTel や log backend は観測用であり、いずれの正本も代替しない。
 
+上図は process / deployment boundary を示す。Issue Contract の意味解析を所有する Issue Compiler は
+独立 service ではなく、Issue Worker の claim handler から呼ばれる pure component である。component
+boundary と claim 時のデータフローは次のとおりである。
+
+```mermaid
+flowchart LR
+    subgraph IW[Issue Worker process]
+        CH[Claim Handler] -->|fetch live Issue| GA[GitHub / Repository Readers]
+        GA -->|verified Issue identity<br/>raw Issue body| CH
+        CH -->|compile| IC[Issue Compiler]
+        IC -->|Issue Observation<br/>Task Context<br/>Claim Requirements| CH
+        CH -->|resolve Claim Requirements| CR[Context Resolver]
+        CR -->|read required live inputs| GA
+        GA -->|relationship / dependency<br/>authority / base| CR
+        CR -->|Context Manifest<br/>base / dependency evidence| CH
+    end
+
+    GA --> GH[GitHub]
+    GA --> BS[Fixed base source]
+    CH -->|raw body + versioned YAML| AS[(Artifact Store)]
+    C[Controller] -->|enqueue claim Operation| DB[(PostgreSQL)]
+    CH -->|lease claim Operation| DB
+    CH -->|Claim Result<br/>artifact refs only| DB
+    DB -->|terminal Result| C
+```
+
+GitHub Reader Adapter は API response の transport 表現を typed data へ変換するが、Issue Contract の
+section や Acceptance Criteria を解釈しない。Issue Compiler は verified Issue identity と raw body
+だけを入力とし、外部 I/O を行わない。Context Resolver は Compiler が返した`ClaimRequirements`に
+従い、relationship、dependency、authority、base を live source から解決する。claim 成功後の
+Controller、Issue Worker、Review Worker は raw Issue を再解釈せず、versioned artifact/ref を使う。
+
 ## Component responsibilities
+
+### Issue Compiler と Context Resolver
+
+Issue Compiler は Issue Contract を意味解析する唯一の application-facing component である。同じ raw
+body、verified Issue identity、Compiler version から、byte 単位で同じ Issue Observation、canonical
+Task Context、Claim Requirements を生成する。GitHub、repository、filesystem、clock、provider、
+Artifact Store へ接続せず、不正または曖昧な入力を構造化 validation error として拒否する。
+
+Context Resolver は Issue Worker の claim handler 内で`ClaimRequirements`を受け取り、native
+relationship、dependency completion、authority content、base commit を live source から解決して
+Context Manifest と claim evidence を構築する。source や authority content を YAML の要約へ置換せず、
+exact bytes を immutable artifact として固定し、Context Manifest にはその digest を記録する。
+
+Issue Compiler は単一 Go module 内の component であり、Compose service や別の`go.mod`には分割しない。
+現在の実装上の所有 package は`internal/contract`である。I/O を伴う Context Resolver と claim orchestration
+は`internal/issueworker`が所有する。
 
 ### Controller
 
@@ -48,23 +96,28 @@ Controller は control plane であり、次を所有する。
 - Issue/Run scoped lease と concurrent capacity の調停
 - versioned Worker Operation と Review Request の dispatch
 - timeout、retry、review round 予算、stale input、escalation の routing
-- transactional outbox による GitHub label/comment projection
+- transactional outbox による GitHub label/comment projection と merge 完了時の Task Issue close
 
-Controller は model/provider session を持たず、Issue の不足情報を補う prompt を作らない。Review Result の schema、request binding、staleness は検証するが、reviewer の品質 verdict を approve に変更しない。
+Controller は model/provider session を持たず、Issue Compiler を呼び出して Issue 本文を解釈しない。
+Issue の不足情報を補う prompt も作らない。Worker が返した versioned Result、artifact ref、schema、digest、
+request binding、staleness は検証するが、Task Context を再構成せず、reviewer の品質 verdict を approve に
+変更しない。
 
-Controller が行える GitHub mutation は、durable state を正本にした Issue label/comment の status projection に限る。worktree、branch、commit、Pull Request は変更しない。
+Controller が行える GitHub mutation は、durable state を正本にした Issue label/comment の status projection と、merge completion に伴う Task Issue の close に限る。worktree、branch、commit、Pull Request は変更しない。merge を実行できるのは Issue Worker credential だけである。
 
 ### Issue Worker
 
-Issue Worker は implementation data plane であり、実装側の唯一の writer role である。
+Issue Worker は deterministic な claim handler と model-bearing handler を持つ implementation data plane
+であり、実装側の唯一の writer role である。
 
-- live Issue、native relationship、dependency、authority、base を取得して claim evidence を作る
+- claim handler で live Issue を取得し、Issue Compiler と Context Resolver から claim evidence を作る
 - Run 専用 workspace、worktree、branch、checkpoint commit を管理する
 - test authoring/revision、RED command、implementation/repair、GREEN/refactor checks を実行する
 - model-bearing Operation ごとに fresh Codex/Claude process を supervision する
 - artifact manifest と command evidence を content-addressed store へ追加する
 - 固定済み head の compare-and-push と draft Pull Request の ensure/update（`publish_head`）を冪等に行う
 - final approve 後に required PR body を確定し draft を解除する（`finalize_pull_request`）
+- merge gate 成立後に期待 head SHA を明示した compare-and-merge で merge commit を作り、head branch を削除する（`merge_pull_request`）
 
 同じ Run の新しい Operation は同じ専用 worktree を引き継げる。ただし継続に必要な状態は commit と artifact へ固定し、前 provider session の transcript、session ID、private memory に依存しない。
 
@@ -92,7 +145,9 @@ GitHub 固有処理は薄い adapter とし、次を application operation か�
 - branch、commit、Pull Request API
 - GitHub App installation token の発行
 
-Webhook adapter と poller は business rule を持たず、いずれも`ReconcileIssue`を呼ぶ。Issue Worker の claim は event payload ではなく live API response を使う。
+Webhook adapter と poller は business rule を持たず、いずれも`ReconcileIssue`を呼ぶ。Issue Worker の
+claim は event payload ではなく live API response を使う。GitHub adapter が担うのは JSON 等の transport
+解析と API 操作であり、Issue Contract の意味解析は Issue Compiler だけが行う。
 
 ### Provider and process adapters
 
@@ -206,7 +261,8 @@ retry policy は error class ごとに決める。
 - changed Context Manifest/Execution Policy/head/artifact/policy/PR ref: stale。新しい identity で再評価し、古い approval は破棄
 - changed Issue Observation / PR observation のみ（Task Context と Context Manifest が同じ）: audit lineage へ追記し、identity と approval は維持
 - PR の head 不一致（branch への外部 push を含む）またはbase 不一致: blind mutation せず stale
-- PR の外部 close/merge: blind mutation せず、品質 verdict に変換せずに Run を`needs_human`phaseへ送るため人間へescalate
+- Kudo の merge intent に紐付かない PR の close/merge: blind mutation せず、品質 verdict に変換せずに Run を`needs_human`phaseへ送るため人間へescalate
+- merge gate の required check failure、conflict、branch protection の拒否: 品質 verdict に変換せず`merge_blocked`として`needs_human`。required check の pending は retry budget を消費しない待機とし、Operation の execution deadline 超過で`merge_blocked`
 
 review round 上限は retry budget と別の予算である。retry budget は同じ logical Operation を何回 execution attempt するかを決め、round 上限は quality verdict が`request_changes`のまま何 round 自動修正を続けるかを決める。片方を使い切ってももう片方は消費しない。詳細は [ADR-0003](decisions/0003-review-round-limit.md) を正とする。
 
@@ -280,10 +336,10 @@ top-level の`pkg/`や`package/` directory は作らない。Kudo は外部 modu
 cmd/
 └─ kudo/                     CLI、role command、composition root
 internal/
-├─ contract/                 Issue/Review/Operation schema、strict parse、canonical digest
+├─ contract/                 Issue Compiler、Issue/Review/Operation schema、canonical encoding / digest
 ├─ workflow/                 Run aggregate、pure transition、error/result taxonomy
 ├─ controller/               reconcile、dispatch、retry、projection use caseと利用側interface
-├─ issueworker/              claim、test、implement、workspace/PR use case
+├─ issueworker/              claim orchestration / context resolution、test、implement、workspace/PR use case
 ├─ reviewworker/             read-only review use case
 ├─ artifact/                 content-addressed store contract
 ├─ adapter/
@@ -307,7 +363,7 @@ flowchart TD
     C --> WF[workflow]
     IW --> WF
     RW --> WF
-    C --> CT[contract]
+    C --> CT[contract / Issue Compiler]
     IW --> CT
     RW --> CT
     AD --> CT

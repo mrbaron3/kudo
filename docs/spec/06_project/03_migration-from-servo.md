@@ -31,9 +31,9 @@ Servo の`docs/requirements/lightweight-tdd-issue-to-pr-run/`にあった draft 
 
 - `mrbaron3` assignment と`ai-ready`をcandidate条件にする簡潔なrouting
 - Webhookをprimary通知、60秒pollingを必須fallbackとするunified reconciliation
-- `ai-ready`、`ai-in-progress`、`ai-review-waiting`、`ai-needs-human`のstatus projection
+- `ai-ready`、`ai-in-progress`、`ai-merged`、`ai-needs-human`のstatus projection
 - model-bearing Operation ごとのfresh Codex/Claude sessionと、Orca handoffに似た明示artifact handoff
-- test reviewに加えたfinal implementation review gate。当初はPR作成をfinal approve後に置いたが、[ADR-0002](../05_design/decisions/0002-pr-anchored-review.md)でsupersedeし、RED固定後にdraft PRをpublishして全review roundをPRへ繋留し、ready化だけをfinal approveのgateにした
+- test reviewに加えたfinal implementation review gate。当初はPR作成をfinal approve後に置いたが、[ADR-0002](../05_design/decisions/0002-pr-anchored-review.md)でsupersedeし、RED固定後にdraft PRをpublishして全review roundをPRへ繋留した。さらに[ADR-0005](../05_design/decisions/0005-auto-merge.md)で、final approveをready化と自動mergeのgateにし、正常終端をmergeとIssue closeにした
 - PostgreSQLをRun state、Operation queue、lease、inbox/outboxの正本にする構成
 - 一つのGo binaryをrole別containerとして起動するDocker Compose deployment
 - content-addressed artifact volumeとIssue Worker専用workspace volume

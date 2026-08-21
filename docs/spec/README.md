@@ -67,7 +67,7 @@ docs/
 | プロダクトの目的、対象範囲、完成条件 | [01. プロダクト設計](01_product-design/) |
 | system-wide な機能・非機能要件 | [03. システム仕様](03_system-spec/) |
 | 機能ごとの振る舞いと実現方法 | [04. 機能仕様と詳細設計](04_features/) |
-| Issue から PR handoff までの規範的な順序 | [End-to-end workflow](05_design/02_workflow.md) |
+| Issue から merge 完了までの規範的な順序 | [End-to-end workflow](05_design/02_workflow.md) |
 | Controller / Worker の責務と権限 | [Architecture](05_design/01_architecture.md) |
 | Compose、PostgreSQL、volume、secret、復旧運用 | [Runtime platform](05_design/03_runtime-platform.md) |
 | GitHub candidate、webhook / polling、label | [GitHub routing policy](05_design/04_github-routing.md) |

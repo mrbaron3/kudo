@@ -17,6 +17,7 @@ const (
 	KindReviewCompleted      EventKind = "review_completed"
 	KindImplementationFixed  EventKind = "implementation_fixed"
 	KindPullRequestFinalized EventKind = "pull_request_finalized"
+	KindPullRequestMerged    EventKind = "pull_request_merged"
 	KindObservationRecorded  EventKind = "observation_recorded"
 	KindSemanticInputChanged EventKind = "semantic_input_changed"
 	KindAttemptFailed        EventKind = "attempt_failed"
@@ -31,6 +32,7 @@ var eventKinds = []EventKind{
 	KindReviewCompleted,
 	KindImplementationFixed,
 	KindPullRequestFinalized,
+	KindPullRequestMerged,
 	KindObservationRecorded,
 	KindSemanticInputChanged,
 	KindAttemptFailed,
@@ -112,6 +114,16 @@ type PullRequestFinalized struct {
 	Head string
 }
 
+// PullRequestMerged は承認済み head が base へ統合されたことを表す。
+//
+// MergeCommit を運ぶのは、merge の成立を真偽値ではなく base 側に生まれた commit で
+// 表すためである。応答を失った retry は同じ commit の観測から自分の merge を再確認でき、
+// intent を持たない merged 観測（外部干渉）と区別できる。
+type PullRequestMerged struct {
+	Head        string
+	MergeCommit string
+}
+
 // ObservationRecorded は exact な観測だけが変わったことを表す audit event である。
 type ObservationRecorded struct {
 	Observation contract.Digest
@@ -146,6 +158,7 @@ func (HeadPublished) EventKind() EventKind        { return KindHeadPublished }
 func (ReviewCompleted) EventKind() EventKind      { return KindReviewCompleted }
 func (ImplementationFixed) EventKind() EventKind  { return KindImplementationFixed }
 func (PullRequestFinalized) EventKind() EventKind { return KindPullRequestFinalized }
+func (PullRequestMerged) EventKind() EventKind    { return KindPullRequestMerged }
 func (ObservationRecorded) EventKind() EventKind  { return KindObservationRecorded }
 func (SemanticInputChanged) EventKind() EventKind { return KindSemanticInputChanged }
 func (AttemptFailed) EventKind() EventKind        { return KindAttemptFailed }

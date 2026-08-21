@@ -30,8 +30,13 @@ const (
 	// round を PR head へ繋留する。draft の publish は review approve を gate にしない。
 	OperationPublishHead OperationKind = "publish_head"
 	// OperationFinalizePullRequest は final approve に bind された head に対して required
-	// PR body を確定し、draft を解除する。ready 化だけが final approve を gate とする。
+	// PR body を確定し、draft を解除する。ready 化と merge が final approve を gate とする。
 	OperationFinalizePullRequest OperationKind = "finalize_pull_request"
+	// OperationMergePullRequest は承認済み head を base へ merge し、head branch を削除する。
+	// 期待 head SHA を merge 要求自体へ載せることで、live 照合と merge の間に入る外部 push を
+	// GitHub 側でも弾く。finalize と分けるのは、gate 入力（live check、mergeable）も失敗の
+	// 意味も別であり、同じ Operation へ畳むと再試行が body 確定からやり直しになるためである。
+	OperationMergePullRequest OperationKind = "merge_pull_request"
 )
 
 // operationKindRule は kind ごとの field 要件を固定する。
@@ -60,6 +65,7 @@ var operationKindRules = map[OperationKind]operationKindRule{
 	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true},
 	OperationPublishHead:          {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
 	OperationFinalizePullRequest:  {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
+	OperationMergePullRequest:     {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
 }
 
 // WorkerOperation は Controller が queue へ記録する run-once Operation である。
