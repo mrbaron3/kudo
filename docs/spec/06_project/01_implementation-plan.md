@@ -47,6 +47,26 @@ M0とM1は完了扱いのまま変わらない。M2はRunStoreまで到達して
 
 各sliceで「何を作るか」と「何を意図的に雑にするか」、および後から入れられないため貫通でも落としてはならないものは、ADR-0007が定義する。
 
+### Epic構成
+
+作業単位はEpicであり、**GitHubのEpicは貫通sliceに対応させる**（2026-08-21）。milestone Epicは「完成の定義」と未達台帳として残すため、Epicとmilestoneは1対1ではない。milestoneの進捗は上の未達表を正とする。
+
+| Epic | 役割 | 配下 |
+| --- | --- | --- |
+| [S1](https://github.com/mrbaron3/kudo/issues/63) | 貫通の実行単位 | #16、#17 |
+| [S2](https://github.com/mrbaron3/kudo/issues/64) | 貫通の実行単位 | #20、#21、#22、#24 |
+| [S3](https://github.com/mrbaron3/kudo/issues/65) | 貫通の実行単位（本ADRの主目的） | #29 |
+| [M2](https://github.com/mrbaron3/kudo/issues/2) | 未達台帳 | #14、#15、#44 |
+| [M3](https://github.com/mrbaron3/kudo/issues/3) | 未達台帳 | #18、#19、#59 |
+| [M4](https://github.com/mrbaron3/kudo/issues/4) | 未達台帳 | #23 |
+| [M5](https://github.com/mrbaron3/kudo/issues/5) | 未達台帳／S4予定 | #25、#26 |
+| [M6](https://github.com/mrbaron3/kudo/issues/6) | 未達台帳／S5予定 | #27、#28、#53、#60、#62 |
+| [M7](https://github.com/mrbaron3/kudo/issues/36)、[M8](https://github.com/mrbaron3/kudo/issues/8) | 貫通の影響を受けない | 変更なし |
+
+S4とS5のEpicは作らない。ADR-0007が「S4 / S5の内訳はS3の実測結果を見てから確定する」としているため、S3到達後に切る。それまで該当Taskはmilestone Epicに置く。
+
+Task Issueは必ず1つのEpicに属する。Epic所属は実行順序を作らない——依存のgateは[Issue Contract](../05_design/contracts/issue-contract-v1alpha1.md)のとおり`dependsOn`だけである。
+
 ## Delivery rules
 
 - protocol、parser、fixture、test を同じ change で更新する。
@@ -54,7 +74,7 @@ M0とM1は完了扱いのまま変わらない。M2はRunStoreまで到達して
 - PostgreSQL、GitHub、process、clock、filesystem、provider、telemetry は interface と deterministic fake を持つ。
 - transport/execution failure と quality verdict を別 type として保つ。
 - model-bearing Operation は常に fresh session factory を通す。
-- 一つの milestone の temporary shortcut を target architecture として文書化しない。貫通slice中に意図して雑にしたものは実装PRと[docs/deferred/](deferred/)へ記録し、`architecture.md`や`contracts/`へは書かない。
+- 一つの milestone の temporary shortcut を target architecture として文書化しない。貫通slice中に意図して雑にしたものは実装PRと[Evaluation harness — deferred](04_evaluation-harness.md)へ記録し、`architecture.md`や`contracts/`へは書かない。
 - `internal/contract`はfeature freezeする（[ADR-0007](../../adr/0007-vertical-slice-delivery.md) D2）。変更は「貫通で実際に詰まった箇所」だけを理由に行い、網羅性や対称性を理由に追加しない。
 - Milestone 0以降の実装とintegration testは、host固有のdaemonではなくCompose基盤で再現できる状態を維持する。
 - 各 milestone の merge 前に`mise run check`を通す。
