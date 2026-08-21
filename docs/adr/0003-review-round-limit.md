@@ -8,9 +8,9 @@
 
 `request_changes`は自動修正loopへroutingされるが、loopを止める上限がどこにも定義されていない。
 
-- [architecture.md](../01_architecture.md)のretry policyは、`bounded retry`をtimeout、rate limit、network failure、invalid provider outputというtransport/execution failureに対してだけ定義する。
-- [operation-protocol-v1alpha1.md](../contracts/operation-protocol-v1alpha1.md)のattempt failureも同じくexecution failure側の概念である。
-- 一方でreviewのquality verdict `request_changes`には回数の記載が無い。[github-routing.md](../04_github-routing.md)は「test/final reviewの`request_changes`は自動修正loopなので`ai-in-progress`を保つ」とだけ述べ、[workflow.md](../02_workflow.md)のstate図は`awaiting_test_review → authoring_tests`と`awaiting_final_review → implementing`を無条件の辺として描く。
+- [architecture.md](../spec/05_design/01_architecture.md)のretry policyは、`bounded retry`をtimeout、rate limit、network failure、invalid provider outputというtransport/execution failureに対してだけ定義する。
+- [operation-protocol-v1alpha1.md](../spec/05_design/contracts/operation-protocol-v1alpha1.md)のattempt failureも同じくexecution failure側の概念である。
+- 一方でreviewのquality verdict `request_changes`には回数の記載が無い。[github-routing.md](../spec/05_design/04_github-routing.md)は「test/final reviewの`request_changes`は自動修正loopなので`ai-in-progress`を保つ」とだけ述べ、[workflow.md](../spec/05_design/02_workflow.md)のstate図は`awaiting_test_review → authoring_tests`と`awaiting_final_review → implementing`を無条件の辺として描く。
 
 したがってreviewerが「まだ直せる」と判断し続ける限り、Runは`authoring_tests ⇄ awaiting_test_review`または`implementing ⇄ awaiting_final_review`を無限に往復しうる。現行設計で自動loopを止められるのは、reviewer自身がauthorityまたは安全判断が必要だと判断して`needs_human`を返した場合だけである。
 
@@ -26,14 +26,14 @@
 - reviewerへround数、上限、過去roundの結果を渡さない。reviewerに「上限だから`needs_human`を返せ」と判断させない。上限はreviewの品質基準ではなく、Controllerが自動継続をやめる条件である。
 - Run phase、Operation outcome、Review verdictの3つの値空間を混ぜない。上限到達は`Decide`がRun phaseを`needs_human`へ送ることで表現し、Review ResultにもOperation Resultにも新しい値を追加しない。
 
-Controllerが行うのは「reviewerが返した`request_changes`に対して修正Operationを発行するか、人間へ渡すか」の選択だけであり、`request_changes`という判断自体は上書きしない（[architecture.md](../01_architecture.md)「Controllerはreviewerの品質verdictをapproveに変更しない」を維持する）。
+Controllerが行うのは「reviewerが返した`request_changes`に対して修正Operationを発行するか、人間へ渡すか」の選択だけであり、`request_changes`という判断自体は上書きしない（[architecture.md](../spec/05_design/01_architecture.md)「Controllerはreviewerの品質verdictをapproveに変更しない」を維持する）。
 
 ### D2. counterはgateごとに独立、Run scope、単調増加
 
 - `test_validity`と`final_implementation`は別々のcounterを持つ。2つのgateは失敗理由も修正Operation（`revise_tests` / `repair_implementation`）も異なる独立した収束過程であり、通算にすると片方のgateが荒れただけでもう片方の予算を食い潰す。
 - counterはRun aggregateが持ち、同じgateへ再入してもresetしない。
 - 数えるのはquality verdictが確定したroundである。attempt failure、stale input、transport failure、protocol validation errorはroundを消費しない。いずれもverdictではなく、attempt/transport failureはretry budget、protocol validation errorはResult非受理・即時terminal routingの別経路で扱う。
-- （2026-08-21追記）`test_validity`のcounterは、implement laneが「承認済みtestの変更が必要」と判断して返す`test_revision_required`（[operation-protocol-v1alpha1.md](../contracts/operation-protocol-v1alpha1.md)）の確定でも1を消費する。reviewerのverdictではないが、test gateを再び開いて無人loopを継続させる差し戻しであり、予算が縛る対象（無人区間のtest gate churn）は同じである。消費しないと、implement→revise→approve→implementの往復がどの予算にも数えられず、無人区間が有限にならない。
+- （2026-08-21追記）`test_validity`のcounterは、implement laneが「承認済みtestの変更が必要」と判断して返す`test_revision_required`（[operation-protocol-v1alpha1.md](../spec/05_design/contracts/operation-protocol-v1alpha1.md)）の確定でも1を消費する。reviewerのverdictではないが、test gateを再び開いて無人loopを継続させる差し戻しであり、予算が縛る対象（無人区間のtest gate churn）は同じである。消費しないと、implement→revise→approve→implementの往復がどの予算にも数えられず、無人区間が有限にならない。
 
 ### D3. 予算の単位は無人区間であり、escalationごとにresetする
 
@@ -69,7 +69,7 @@ deployment configurationからControllerが解決し、claim時にRunへpinす�
 
 規則:
 
-- Escalation PolicyはControllerのdeployment configurationからだけ解決する。Task Issue本文、`authorityRefs`、変更対象repositoryの内容、Worker Resultからは読まない（[operation-protocol-v1alpha1.md](../contracts/operation-protocol-v1alpha1.md)の「Issue本文からproviderを推測しない」と同じ規律）。gateされる側がgate条件を供給できる経路を作らない。
+- Escalation PolicyはControllerのdeployment configurationからだけ解決する。Task Issue本文、`authorityRefs`、変更対象repositoryの内容、Worker Resultからは読まない（[operation-protocol-v1alpha1.md](../spec/05_design/contracts/operation-protocol-v1alpha1.md)の「Issue本文からproviderを推測しない」と同じ規律）。gateされる側がgate条件を供給できる経路を作らない。
 - `EscalationPolicyRef{schema,digest}`をRunへ記録する。人間が「なぜ3回で止まったのか」を問うたとき、答えがdigestで確定する。
 - `InputIdentity`には含めない。Escalation Policyが変わっても既存のOperation identity、Review Request、approvalはstaleにならない。Worker/reviewerがこのpolicyを判断入力として読まないためである。
 - deployment configurationの変更は次のclaimから有効になる。進行中のRunはpin済みの値を使い切る。
@@ -114,9 +114,9 @@ Run aggregateはfinding本文もfingerprintも保持しない。findingはimmuta
 
 ### D7. escalation reason codeを語彙として固定する
 
-[github-routing.md](../04_github-routing.md)は`ai-needs-human` commentに「理由code」を含めることを要求しているが、語彙が定義されていなかった。round上限のescalationを識別可能にするため、ここで語彙を確定する。
+[github-routing.md](../spec/05_design/04_github-routing.md)は`ai-needs-human` commentに「理由code」を含めることを要求しているが、語彙が定義されていなかった。round上限のescalationを識別可能にするため、ここで語彙を確定する。
 
-`review_round_limit_exceeded`を含む語彙は[github-routing.md](../04_github-routing.md)の Human escalation 節を正本とする。state machineが自ら導出するcode（`review_needs_human`、`review_round_limit_exceeded`、`retry_budget_exhausted`、`protocol_validation_failed`）は、外部からの明示的escalation eventでは指定できない。指定できると、counterが上限に達していないRunを「上限到達」として停止させたり、検証済みResultをprotocol違反として偽装したりでき、lineageとcodeが食い違う。
+`review_round_limit_exceeded`を含む語彙は[github-routing.md](../spec/05_design/04_github-routing.md)の Human escalation 節を正本とする。state machineが自ら導出するcode（`review_needs_human`、`review_round_limit_exceeded`、`retry_budget_exhausted`、`protocol_validation_failed`）は、外部からの明示的escalation eventでは指定できない。指定できると、counterが上限に達していないRunを「上限到達」として停止させたり、検証済みResultをprotocol違反として偽装したりでき、lineageとcodeが食い違う。
 
 ### D8. attempt retry budgetもEscalation Policyへ固定する
 
@@ -163,10 +163,10 @@ reviewRounds:
   finalImplementation: "3"
 ```
 
-- `attemptRetries`と`reviewRounds`の整数はArtifact Manifestの`length`と同じくdecimal stringとしてencodeする（[task-context-v1alpha1.md](../contracts/task-context-v1alpha1.md)のcanonical encoding規則を共有する）。
+- `attemptRetries`と`reviewRounds`の整数はArtifact Manifestの`length`と同じくdecimal stringとしてencodeする（[task-context-v1alpha1.md](../spec/05_design/contracts/task-context-v1alpha1.md)のcanonical encoding規則を共有する）。
 - provider、credential、timeout、tool permissionのfieldを持たない。Execution Policyと役割を重ねない。
 - payloadのkindは`escalation-policy`、schemaは`kudo.escalation-policy/v1alpha1`とし、`execution-policy` kindへ紐付けない。ref/payloadのkind、schema、digest、bytesをすべて照合する。
-- （2026-08-21修正）bytesはArtifact Storeへ保存しない。producerのControllerはartifact volumeをmountしないためである。内容はstructured claim contextと同じくPostgreSQLのtyped dataとしてRunへ固定し、canonical encodeはidentity計算とbinding検証にだけ使う。保存境界の正本は[task-context-v1alpha1.md](../contracts/task-context-v1alpha1.md)のCanonical payload and persistence boundaryに置く。
+- （2026-08-21修正）bytesはArtifact Storeへ保存しない。producerのControllerはartifact volumeをmountしないためである。内容はstructured claim contextと同じくPostgreSQLのtyped dataとしてRunへ固定し、canonical encodeはidentity計算とbinding検証にだけ使う。保存境界の正本は[task-context-v1alpha1.md](../spec/05_design/contracts/task-context-v1alpha1.md)のCanonical payload and persistence boundaryに置く。
 
 ### 2. Run aggregateの変更
 

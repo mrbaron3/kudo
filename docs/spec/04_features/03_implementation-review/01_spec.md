@@ -183,4 +183,4 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
 - [End-to-end workflow](../../05_design/02_workflow.md) §5〜§6
 - [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)
 - [Final Implementation Review Policy](../../05_design/review-policies/final-implementation-v1alpha1.md)
-- [ADR-0002](../../05_design/decisions/0002-pr-anchored-review.md)
+- [ADR-0002](../../../adr/0002-pr-anchored-review.md)

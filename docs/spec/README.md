@@ -1,8 +1,9 @@
 # Kudo 仕様書
 
 Kudo のプロダクト仕様、機能別 Acceptance Criteria、詳細設計、versioned contract、実装計画を格納する、
-リポジトリ内で唯一の文書体系である。文書への入口は本ファイルに集約し、`docs/spec/` の外に別の正本や
-補足文書を作らない。
+リポジトリ内で唯一の文書体系である。文書への入口は本ファイルに集約し、ADR を置く [docs/adr/](../adr/)
+（[ADR-0004](../adr/0004-single-documentation-root.md) 2026-08-21 追記）を唯一の例外として、`docs/spec/` の
+外に別の正本や補足文書を作らない。
 
 完成形の **Why / What / How** と、現在地を示す project 文書を同じ体系内で分離する。
 同じ field、state、権限、判断理由を複数文書で再定義せず、概要文書から一つの正本へリンクする。
@@ -18,7 +19,7 @@ Kudo のプロダクト仕様、機能別 Acceptance Criteria、詳細設計、v
 4. [04_features/](04_features/)
    — 機能単位の Acceptance Criteria と機能固有の詳細設計
 5. [05_design/](05_design/)
-   — architecture、workflow、runtime、protocol、review policy、ADR の正本
+   — architecture、workflow、runtime、protocol、review policy の正本（ADR は [docs/adr/](../adr/)）
 6. [06_project/](06_project/)
    — 実装状況、delivery order、開発手順、移行記録、保留事項
 
@@ -26,6 +27,8 @@ Kudo のプロダクト仕様、機能別 Acceptance Criteria、詳細設計、v
 
 ```text
 docs/
+├── adr/
+│   └── NNNN-<decision-name>.md
 └── spec/
     ├── README.md
     ├── 01_product-design/
@@ -46,8 +49,7 @@ docs/
     │   ├── 03_runtime-platform.md
     │   ├── 04_github-routing.md
     │   ├── contracts/
-    │   ├── review-policies/
-    │   └── decisions/
+    │   └── review-policies/
     └── 06_project/
         ├── README.md
         ├── 01_implementation-plan.md
@@ -73,13 +75,13 @@ docs/
 | GitHub candidate、webhook / polling、label | [GitHub routing policy](05_design/04_github-routing.md) |
 | machine-readable protocol | [contracts/](05_design/contracts/) |
 | Review Worker の品質判断基準 | [review-policies/](05_design/review-policies/) |
-| 技術選択と変更理由 | [decisions/](05_design/decisions/) |
+| 技術選択と変更理由 | [docs/adr/](../adr/) |
 | 実装状況、実装順序、milestone | [Implementation plan](06_project/01_implementation-plan.md) |
 | 開発・検証手順 | [Development environment](06_project/02_development.md) |
 
 ## SSOT 原則
 
-- `docs/spec/` だけを repository-facing documentation の root とする。
+- `docs/spec/` と ADR 専用の `docs/adr/` だけを repository-facing documentation の root とする。
 - 同じ要求は一つの文書だけが定義し、他文書は要約せず正本へリンクする。
 - `05_design/contracts/` の意味または path を変える場合は、文書、parser、fixture、test を同じ変更で更新する。
 - review policy の意味を変える場合は新しい versioned path を追加し、進行中 Request の基準を上書きしない。

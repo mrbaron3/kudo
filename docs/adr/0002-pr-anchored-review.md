@@ -3,7 +3,7 @@
 - Status: accepted（2026-08-18）
 - 関連Issue: [#25](https://github.com/mrbaron3/kudo/issues/25)、[#28](https://github.com/mrbaron3/kudo/issues/28)、[#29](https://github.com/mrbaron3/kudo/issues/29)、[#43](https://github.com/mrbaron3/kudo/issues/43)、[#44](https://github.com/mrbaron3/kudo/issues/44)、[#47](https://github.com/mrbaron3/kudo/issues/47)
 - 実装Task: [#49](https://github.com/mrbaron3/kudo/issues/49)（本ADRの確定とprotocol/workflow改訂）
-- Supersede対象: [migration-from-servo.md](../../06_project/03_migration-from-servo.md)「New Kudo decisions」の「PR作成前のfinal implementation review gate」、および[workflow.md](../02_workflow.md) §6–7のPR作成順序
+- Supersede対象: [migration-from-servo.md](../spec/06_project/03_migration-from-servo.md)「New Kudo decisions」の「PR作成前のfinal implementation review gate」、および[workflow.md](../spec/05_design/02_workflow.md) §6–7のPR作成順序
 - Supersedeされた箇所: D1のterminal記述は[ADR-0005](0005-auto-merge.md)が置き換える。ready化はhandoff terminalではなくmergeの前提段階になった
 - Supersedeされた箇所: Issue freshnessの保存済みObservation照合は[ADR-0006](0006-live-context-reconstruction.md)がlive再compileへ置き換える
 
@@ -114,7 +114,7 @@ gate semanticsの差分:
 
 ### 3. Contract変更
 
-[review-protocol-v1alpha1](../contracts/review-protocol-v1alpha1.md)を改訂する。protocolはalphaで外部consumerを持たないため、version名は`v1alpha1`のまま文書・parser・fixture・testを同時に変更する（contract discipline）。
+[review-protocol-v1alpha1](../spec/05_design/contracts/review-protocol-v1alpha1.md)を改訂する。protocolはalphaで外部consumerを持たないため、version名は`v1alpha1`のまま文書・parser・fixture・testを同時に変更する（contract discipline）。
 
 #### Review Request
 
@@ -180,7 +180,7 @@ findings: []
 
 ### 4. 観点適用判断とsession assembly
 
-適用可否の正本は[Final Implementation Review Policy](../review-policies/final-implementation-v1alpha1.md)の条件付き観点表（適用条件と主な確認事項）である。本ADRはrule classifierを定義せず、適用条件をpath patternやfile classの代理変数へ写像しない。適用可否は変更の意味に対する判断であり、品質判定と同じsessionが同じ根拠（canonical Task Contextとimmutable diff/artifact）から行い、結果を観点別applicability宣言としてResultへ残す。
+適用可否の正本は[Final Implementation Review Policy](../spec/05_design/review-policies/final-implementation-v1alpha1.md)の条件付き観点表（適用条件と主な確認事項）である。本ADRはrule classifierを定義せず、適用条件をpath patternやfile classの代理変数へ写像しない。適用可否は変更の意味に対する判断であり、品質判定と同じsessionが同じ根拠（canonical Task Contextとimmutable diff/artifact）から行い、結果を観点別applicability宣言としてResultへ残す。
 
 - performanceの適用は「boundの宣言」または「性能が問題になりやすい実行surface（frontend、batch/job）の変更」で決まる。宣言も該当surfaceもないと判断した場合の非適用宣言は、policyの適用条件に忠実な既定である。
 - 非適用の宣言には理由codeと、判断根拠となったTask Context節やdiff範囲を指すevidenceを必須とする。宣言のないResultは受理しない。

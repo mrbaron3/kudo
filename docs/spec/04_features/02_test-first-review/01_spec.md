@@ -181,4 +181,4 @@ Operation、artifact binding、review isolation の実現方法は [詳細設計
 - [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)
 - [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)
 - [Test Validity Review Policy](../../05_design/review-policies/test-validity-v1alpha1.md)
-- [ADR-0002](../../05_design/decisions/0002-pr-anchored-review.md)
+- [ADR-0002](../../../adr/0002-pr-anchored-review.md)

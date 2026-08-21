@@ -290,7 +290,7 @@ retry policy は error class ごとに決める。
 - Kudo の merge intent に紐付かない PR の close/merge: blind mutation せず、品質 verdict に変換せずに Run を`needs_human`phaseへ送るため人間へescalate
 - merge gate の required check failure、conflict、branch protection の拒否: 品質 verdict に変換せず`merge_blocked`として`needs_human`。required check の pending は retry budget を消費しない待機とし、Operation の execution deadline 超過で`merge_blocked`
 
-review round 上限は retry budget と別の予算である。retry budget は同じ logical Operation を何回 execution attempt するかを決め、round 上限は quality verdict が`request_changes`のまま何 round 自動修正を続けるかを決める。片方を使い切ってももう片方は消費しない。詳細は [ADR-0003](decisions/0003-review-round-limit.md) を正とする。
+review round 上限は retry budget と別の予算である。retry budget は同じ logical Operation を何回 execution attempt するかを決め、round 上限は quality verdict が`request_changes`のまま何 round 自動修正を続けるかを決める。片方を使い切ってももう片方は消費しない。詳細は [ADR-0003](../../adr/0003-review-round-limit.md) を正とする。
 
 ## Scheduling and concurrency
 

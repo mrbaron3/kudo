@@ -165,7 +165,7 @@ Task Context / Context Manifest identityが同じなら、新しいbody digest�
 canonical bytesとauthority bytesはAttempt終了時に破棄し、次Operationは再度live sourceから取得する。
 Compilerはclaim contextの`compiler`でversionを明示選択する。対応versionが無い場合にdeployment既定のCompilerへ
 fallbackせず、unsupported versionとして停止する。
-保存境界とトレードオフは[ADR-0006](../decisions/0006-live-context-reconstruction.md)を正とする。
+保存境界とトレードオフは[ADR-0006](../../../adr/0006-live-context-reconstruction.md)を正とする。
 
 ## Execution Policy
 
@@ -210,11 +210,11 @@ reviewRounds:
 
 attempt retryのcounterはlogical Operationかつ無人区間ごとに独立して持つ。初回Attemptは予算を消費せず、escalation時に区間counterを0へ戻すが、Attempt lineageと生涯Attempt数は戻さない。人間が`ai-ready`を再付与して同じRunをresumeした場合は、新しい無人区間の初回Attemptから開始する。
 
-`reviewRounds`はreview gateごとに無人の自動修正loopを続けるround数の上限である。`test_validity`と`final_implementation`は独立した上限と独立したcounterを持ち、通算しない。`test_validity`のcounterはquality verdictの確定に加え、`implement` / `repair_implementation`が返す`test_revision_required`の確定でも1を消費する。どちらもtest gateを再び開く差し戻しであり、無人区間のchurnを有限にするという予算の意図は同じである（[ADR-0003](../decisions/0003-review-round-limit.md)）。各値は`1`以上`10`以下でなければならず、範囲はprotocol coreが固定してconfigurableにしない。下限`1`は「自動修正を行わず最初の差し戻しで即escalate」という最小のgateである。`0`は`>=`比較の下で`1`と挙動が変わらず、予算未設定と識別もできないため受理しない。過大な値は事実上の無制限でありgateの意味を失わせる。`attemptRetries`を含む整数はArtifact Manifestの`length`と同じくdecimal stringとしてencodeする。
+`reviewRounds`はreview gateごとに無人の自動修正loopを続けるround数の上限である。`test_validity`と`final_implementation`は独立した上限と独立したcounterを持ち、通算しない。`test_validity`のcounterはquality verdictの確定に加え、`implement` / `repair_implementation`が返す`test_revision_required`の確定でも1を消費する。どちらもtest gateを再び開く差し戻しであり、無人区間のchurnを有限にするという予算の意図は同じである（[ADR-0003](../../../adr/0003-review-round-limit.md)）。各値は`1`以上`10`以下でなければならず、範囲はprotocol coreが固定してconfigurableにしない。下限`1`は「自動修正を行わず最初の差し戻しで即escalate」という最小のgateである。`0`は`>=`比較の下で`1`と挙動が変わらず、予算未設定と識別もできないため受理しない。過大な値は事実上の無制限でありgateの意味を失わせる。`attemptRetries`を含む整数はArtifact Manifestの`length`と同じくdecimal stringとしてencodeする。
 
 Escalation PolicyはControllerのdeployment configurationからだけ解決する。Task Issue本文、`authorityRefs`、変更対象repositoryの内容、Worker Resultからは読まない。gateされる側がgate条件を供給できる経路を作らない。
 
-`EscalationPolicyRef{schema,digest}`はRunへ記録するが、Runのsemantic input identityには含めない。attempt retry上限とreview round上限はController側の自動継続判断だけに使い、Workerまたはreviewerの判断入力へ渡さないため、値の変更は既存のOperation identity、Review Request、approvalをstaleにしない。deployment configurationの変更は次のclaimから有効になり、進行中のRunはpin済みの値を使い切る。判断の背景は[ADR-0003](../decisions/0003-review-round-limit.md)を正とする。
+`EscalationPolicyRef{schema,digest}`はRunへ記録するが、Runのsemantic input identityには含めない。attempt retry上限とreview round上限はController側の自動継続判断だけに使い、Workerまたはreviewerの判断入力へ渡さないため、値の変更は既存のOperation identity、Review Request、approvalをstaleにしない。deployment configurationの変更は次のclaimから有効になり、進行中のRunはpin済みの値を使い切る。判断の背景は[ADR-0003](../../../adr/0003-review-round-limit.md)を正とする。
 
 provider、model、adapter version、tool permission、timeout、credential、secret path、session IDをfieldとして持たない。実行境界はExecution Policyが固定し、両者の役割を重ねない。
 

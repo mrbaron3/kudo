@@ -244,4 +244,4 @@ Compose の同一 host 上で Issue Worker と Review Worker を複数 replica �
 
 Apple Container は正式 orchestrator には採用しない。ただし Kudo image は OCI-compliant な`linux/arm64` image として build し、基本 command の compatibility test 対象にできる。将来、macOS 固有の per-Operation sandbox として使う場合も、Controller workflow へ runtime 固有 command を埋め込まず、Worker 内の Sandbox Runner adapter として追加する。
 
-判断の根拠と再検討条件は [ADR-0001](decisions/0001-compose-runtime.md) を参照する。
+判断の根拠と再検討条件は [ADR-0001](../../adr/0001-compose-runtime.md) を参照する。

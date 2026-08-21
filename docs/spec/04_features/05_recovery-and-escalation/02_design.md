@@ -65,4 +65,4 @@ resume / supersedeの選択、paused Runのversion確認、writer排他、次Ope
 - [End-to-end workflow](../../05_design/02_workflow.md) — Durable states、Escalation and resumption
 - [Architecture](../../05_design/01_architecture.md) — Durable model、Queue / lease / recovery
 - [Task Context Protocol](../../05_design/contracts/task-context-v1alpha1.md) — Escalation Policy
-- [ADR-0003](../../05_design/decisions/0003-review-round-limit.md)
+- [ADR-0003](../../../adr/0003-review-round-limit.md)

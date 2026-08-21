@@ -83,8 +83,8 @@ Issue Contractの意味解析はIssue Compilerだけが所有し、Controllerは
 | Telemetry | structured log、metric、trace | 診断と改善に使うが workflow state の正本にはしない |
 
 採用理由と container / volume / secret の厳密な境界は
-[ADR-0001](../05_design/decisions/0001-compose-runtime.md)、
-[ADR-0006](../05_design/decisions/0006-live-context-reconstruction.md)、
+[ADR-0001](../../adr/0001-compose-runtime.md)、
+[ADR-0006](../../adr/0006-live-context-reconstruction.md)、
 [Runtime platform](../05_design/03_runtime-platform.md)を正とする。
 
 ### 3.2. 権限境界

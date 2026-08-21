@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-19
+- 追記（2026-08-21）: ADR だけは `docs/spec/05_design/decisions/` から `docs/adr/` へ移動した。本文末尾の「2026-08-21 追記」を参照。
 
 ## Context
 
@@ -49,3 +50,16 @@ semantic input に含まれる。単なる file move でも path identity と di
 - canonical fixture の body、Task Context、Manifest、Operation、Review Request digest は新 path に応じて変わる。
 - 外部に保存された Task Issue template や authority ref が旧 path を指す場合は、新 path への明示更新が必要になる。
 - 文書移動を cosmetic change として扱えないため、将来の path 変更にも contract migration 判断が必要になる。
+
+## 2026-08-21 追記: ADR を `docs/adr/` へ移動する
+
+ADR は特定機能の仕様ではなく repository 全体の決定記録であるため、`docs/spec/` 体系の外に置く。
+
+- `docs/spec/05_design/decisions/*` は `docs/adr/*` へ移動する。file 名と番号は維持する。
+- repository-facing documentation の root は `docs/spec/`（仕様）と `docs/adr/`（ADR）の二つとし、それ以外を追加しない。入口は引き続き `docs/spec/README.md` に集約する。
+- ADR path が `authorityRefs` / `policyRefs` に現れる場合、本 ADR の Protocol migration と同じ規律を適用する。旧 path を指す進行中入力は再利用せず、reference を新 path へ明示更新する。
+- 旧 path の redirect / alias は置かない。
+
+| 旧 path | 新 path |
+| --- | --- |
+| `docs/spec/05_design/decisions/*` | `docs/adr/*` |

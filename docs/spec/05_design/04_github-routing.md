@@ -120,7 +120,7 @@ merge completion は label と同時に Task Issue の close intent を同じ tr
 
 state transition と projection intent を同じ database transaction に記録し、outbox が GitHub mutation を retry する。GitHub API failure で確定済み Run state を巻き戻さない。polling が一時的に残った`ai-ready`を再発見しても、active Run constraint で二重 Run を防ぐ。
 
-dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`を消費しない。test/final review の`request_changes`は自動修正 loop なので`ai-in-progress`を保つ。ただし当該 gate の review round 上限に達した`request_changes`は自動 loop を終了させ、`ai-needs-human`へ投影する（[ADR-0003](decisions/0003-review-round-limit.md)）。
+dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`を消費しない。test/final review の`request_changes`は自動修正 loop なので`ai-in-progress`を保つ。ただし当該 gate の review round 上限に達した`request_changes`は自動 loop を終了させ、`ai-needs-human`へ投影する（[ADR-0003](../../adr/0003-review-round-limit.md)）。
 
 ### Human escalation
 
@@ -134,7 +134,7 @@ dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`�
 | `protocol_validation_failed` | immutable envelope、Result、ref等がversioned protocolを満たさず、同じinputのretryでは復旧できない |
 | `contract_authority_conflict` | Contract、Acceptance Criteria、authority の矛盾、不足、曖昧さ |
 | `external_mutation_conflict` | Kudo の merge intent に紐付かない PR の close/merge のように、blind mutation できない外部干渉 |
-| `merge_blocked` | required check failure、conflict、branch protection の拒否など、承認済み head を安全に merge できない外形条件（[ADR-0005](decisions/0005-auto-merge.md)） |
+| `merge_blocked` | required check failure、conflict、branch protection の拒否など、承認済み head を安全に merge できない外形条件（[ADR-0005](../../adr/0005-auto-merge.md)） |
 | `unsafe_mutation_unauthorized` | 危険な mutation に対する明示的許可不足 |
 | `specification_decision_required` | 自動選択できない仕様判断 |
 | `external_configuration_required` | 必須 credential または外部設定が人間の操作なしに復旧できない状態 |
@@ -178,8 +178,8 @@ Issue を reopen して`ai-ready`を追加しても、同じ Issue の新しい 
 
 ## Repository 設定の前提と推奨
 
-merge の可否は repository 設定として宣言的に表現し、Kudo は設定を変更も回避もしない（[ADR-0005](decisions/0005-auto-merge.md)）。本節を deployment 側 GitHub 設定の正本とする。
+merge の可否は repository 設定として宣言的に表現し、Kudo は設定を変更も回避もしない（[ADR-0005](../../adr/0005-auto-merge.md)）。本節を deployment 側 GitHub 設定の正本とする。
 
 - **前提**: 対象 base branch で merge commit が許可されている。squash / rebase のみの repository では`merge_pull_request`が`merge_blocked`になる。
 - **前提**: 人間が必須とする quality gate は required status check として宣言する。required でない CI は merge gate に影響しない。
-- **推奨**: `Require branches to be up to date before merging`を有効にする。無効の場合、並行 Run が互いの merge 結果を取り込まないまま、textual には mergeable な変更を同じ base へ重ねられるため、review した head と merge 後の base 合成状態が意味的に食い違う可能性が残る。この残余 risk は Kudo の review では検出できず、base 側の CI と人間の revert 判断が受け皿になる。有効にした場合は、他 Run の merge のたびに遅れた Run が`merge_blocked`で停止し、人間の`ai-ready`再付与と supersede による追従（全 test / review のやり直し）が必要になる。Kudo は自動 rebase / base merge を行わない（[ADR-0005](decisions/0005-auto-merge.md) 未決事項）。どちらを選ぶかは repository の並行度と安全要求に応じた deployment 判断である。
+- **推奨**: `Require branches to be up to date before merging`を有効にする。無効の場合、並行 Run が互いの merge 結果を取り込まないまま、textual には mergeable な変更を同じ base へ重ねられるため、review した head と merge 後の base 合成状態が意味的に食い違う可能性が残る。この残余 risk は Kudo の review では検出できず、base 側の CI と人間の revert 判断が受け皿になる。有効にした場合は、他 Run の merge のたびに遅れた Run が`merge_blocked`で停止し、人間の`ai-ready`再付与と supersede による追従（全 test / review のやり直し）が必要になる。Kudo は自動 rebase / base merge を行わない（[ADR-0005](../../adr/0005-auto-merge.md) 未決事項）。どちらを選ぶかは repository の並行度と安全要求に応じた deployment 判断である。

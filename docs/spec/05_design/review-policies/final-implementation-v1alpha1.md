@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`final_implementation` reviewで、承認済みテストとIssue Contractに対してfinal headが正しく、回帰、scope逸脱、重大なriskを残していないかを判定する標準観点を定義する。本policyはPRのready化（draft解除）とmergeの前に置く独立quality gateである。approveはmerge gateの品質側条件であり、live headの一致、required check、conflict、branch protectionという外形条件は[ADR-0005](../decisions/0005-auto-merge.md)に従いControllerとIssue Workerが判定する。reviewerにmergeの可否そのものを判断させない。release、deploy、merge後のrevert判断は代替しない。
+`final_implementation` reviewで、承認済みテストとIssue Contractに対してfinal headが正しく、回帰、scope逸脱、重大なriskを残していないかを判定する標準観点を定義する。本policyはPRのready化（draft解除）とmergeの前に置く独立quality gateである。approveはmerge gateの品質側条件であり、live headの一致、required check、conflict、branch protectionという外形条件は[ADR-0005](../../../adr/0005-auto-merge.md)に従いControllerとIssue Workerが判定する。reviewerにmergeの可否そのものを判断させない。release、deploy、merge後のrevert判断は代替しない。
 
 ## Applicability and binding
 

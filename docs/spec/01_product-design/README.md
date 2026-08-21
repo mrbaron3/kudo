@@ -58,7 +58,7 @@ production code より先に test と RED evidence を作り、別の read-only 
 claim時のCompiler versionとIssue Observation / Task Context / Context Manifestのdigest、test plan、command
 evidence、Review Resultを残す。Issue由来contextは各Operationでlive GitHubから再生成し、承認時のidentity
 と一致するかを再計算・検証できるようにする。Issueが後から編集された場合に過去の本文そのものを復元する
-ことは保証しない（[ADR-0006](../05_design/decisions/0006-live-context-reconstruction.md)）。
+ことは保証しない（[ADR-0006](../../adr/0006-live-context-reconstruction.md)）。
 
 ### 4.3. 中断を前提に安全に回復する
 

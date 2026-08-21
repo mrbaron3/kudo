@@ -1,7 +1,7 @@
 # 4.4. Pull Request 確定・Merge 詳細設計
 
 [機能仕様](01_spec.md)を、finalize gate、merge gate、Issue Worker の Pull Request mutation、Controller の
-完了 projection に分けて実現する。merge の判断規則は [ADR-0005](../../05_design/decisions/0005-auto-merge.md)
+完了 projection に分けて実現する。merge の判断規則は [ADR-0005](../../../adr/0005-auto-merge.md)
 を正とする。
 
 ## Finalize gate
@@ -18,7 +18,7 @@ PR body や draft / ready 表示だけの差分は observation lineage として
 
 加えて `finalize_pull_request` と `merge_pull_request` は Operation 開始時に live Issue / authority から
 Task Context / Context Manifest を再構築し、claim context の期待 digest と照合する
-（[ADR-0005](../../05_design/decisions/0005-auto-merge.md) D8）。final approve 後の Issue の意味的編集を
+（[ADR-0005](../../../adr/0005-auto-merge.md) D8）。final approve 後の Issue の意味的編集を
 検出できる最後の enforcement point であり、不一致は stale として mutation を行わない。
 
 ## Pull Request mutation
@@ -93,7 +93,7 @@ completion を巻き戻さない。closing keyword で既に closed の Issue �
 ## 参照
 
 - [End-to-end workflow](../../05_design/02_workflow.md) §7–8
-- [ADR-0005](../../05_design/decisions/0005-auto-merge.md) — merge gate と failure routing
+- [ADR-0005](../../../adr/0005-auto-merge.md) — merge gate と failure routing
 - [Architecture](../../05_design/01_architecture.md) — Issue Worker、Mutation authority
 - [GitHub routing policy](../../05_design/04_github-routing.md) — Merge completion
 - [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)

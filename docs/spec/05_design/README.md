@@ -18,12 +18,12 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 | Review messaging | [Implementation–Review Protocol](contracts/review-protocol-v1alpha1.md) | Request / Result、manifest、verdict、staleness |
 | Test review policy | [Test Validity Review Policy](review-policies/test-validity-v1alpha1.md) | RED と test validity の評価観点 |
 | Final review policy | [Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md) | final head の必須 / 条件付き評価観点 |
-| Compose 採用判断 | [ADR-0001](decisions/0001-compose-runtime.md) | Compose を canonical runtime とする理由と再検討条件 |
-| PR-anchored review | [ADR-0002](decisions/0002-pr-anchored-review.md) | review を publish 済み draft PR へ繋留する判断 |
-| Review round 上限 | [ADR-0003](decisions/0003-review-round-limit.md) | 自動修正 loop の上限と escalation policy |
-| 文書の単一ルート | [ADR-0004](decisions/0004-single-documentation-root.md) | `docs/spec/` への正本集約と protocol path 移行 |
-| 自動 merge | [ADR-0005](decisions/0005-auto-merge.md) | 承認済み head の自動 merge、完了 terminal、merge gate |
-| Live context再構築 | [ADR-0006](decisions/0006-live-context-reconstruction.md) | Issue由来YAMLを保存せず、各Operationで再取得・再compileする判断 |
+| Compose 採用判断 | [ADR-0001](../../adr/0001-compose-runtime.md) | Compose を canonical runtime とする理由と再検討条件 |
+| PR-anchored review | [ADR-0002](../../adr/0002-pr-anchored-review.md) | review を publish 済み draft PR へ繋留する判断 |
+| Review round 上限 | [ADR-0003](../../adr/0003-review-round-limit.md) | 自動修正 loop の上限と escalation policy |
+| 文書の単一ルート | [ADR-0004](../../adr/0004-single-documentation-root.md) | `docs/spec/` への正本集約と protocol path 移行 |
+| 自動 merge | [ADR-0005](../../adr/0005-auto-merge.md) | 承認済み head の自動 merge、完了 terminal、merge gate |
+| Live context再構築 | [ADR-0006](../../adr/0006-live-context-reconstruction.md) | Issue由来YAMLを保存せず、各Operationで再取得・再compileする判断 |
 
 ```text
 05_design/
@@ -37,16 +37,12 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 │   ├── task-context-v1alpha1.md
 │   ├── operation-protocol-v1alpha1.md
 │   └── review-protocol-v1alpha1.md
-├── review-policies/
-│   ├── test-validity-v1alpha1.md
-│   └── final-implementation-v1alpha1.md
-└── decisions/
-    ├── 0001-compose-runtime.md
-    ├── 0002-pr-anchored-review.md
-    ├── 0003-review-round-limit.md
-    ├── 0004-single-documentation-root.md
-    └── 0005-auto-merge.md
+└── review-policies/
+    ├── test-validity-v1alpha1.md
+    └── final-implementation-v1alpha1.md
 ```
+
+ADR は [docs/adr/](../../adr/) に置く（[ADR-0004](../../adr/0004-single-documentation-root.md) の 2026-08-21 追記）。
 
 ## 機能設計との分担
 
@@ -57,7 +53,7 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 | 複数機能が共有する architecture、workflow、runtime、GitHub 規約 | `05_design/01`〜`04` |
 | machine-readable protocol と canonical encoding | `05_design/contracts/` |
 | Review Request が参照する versioned 品質基準 | `05_design/review-policies/` |
-| 新しい技術選択と採用理由 | `05_design/decisions/` |
+| 新しい技術選択と採用理由 | `docs/adr/` |
 
 迷う場合は、まず機能の `02_design.md` に責務を書き、同じ定義を複数機能が必要とすることが確認できた
 時点で共通設計へ抽出する。

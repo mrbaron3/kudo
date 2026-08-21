@@ -40,7 +40,7 @@ type ReviewRoundLimits struct {
 // の一部であり、変化が既存 Operation / review を stale にするためである。retry / round 上限は
 // Controller の自動継続判断だけに使い、Worker / reviewer の判断入力にはしない。値を変えただけで
 // 進行中 Run を supersede させてはならない。詳細は
-// docs/spec/05_design/decisions/0003-review-round-limit.md を参照する。
+// docs/adr/0003-review-round-limit.md を参照する。
 type EscalationPolicy struct {
 	Schema         string
 	AttemptRetries int

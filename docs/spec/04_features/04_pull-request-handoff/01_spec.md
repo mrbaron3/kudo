@@ -201,7 +201,7 @@ finalize gate、merge gate、Pull Request mutation、完了 projection の実現
 ## 参照する正本
 
 - [End-to-end workflow](../../05_design/02_workflow.md) §7–8
-- [ADR-0005](../../05_design/decisions/0005-auto-merge.md) — merge gate、failure routing、完了 terminal
+- [ADR-0005](../../../adr/0005-auto-merge.md) — merge gate、failure routing、完了 terminal
 - [GitHub routing policy](../../05_design/04_github-routing.md) — Merge completion
 - [Architecture](../../05_design/01_architecture.md) — Mutation authority
 - [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)

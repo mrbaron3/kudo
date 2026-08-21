@@ -46,7 +46,7 @@ createdAt: 2026-08-11T00:00:00Z
 - `test_validity`: test plan、test-only head、test patch、RED証跡がIssue Contractを正しく検証するか
 - `final_implementation`: approved testとIssue Contractに対し、final head、GREEN/refactor/check証跡が正しく、回帰や重大なriskがないか
 
-全review roundはpublish済みdraft Pull Requestへ繋留される（[ADR-0002](../decisions/0002-pr-anchored-review.md)）。`pullRequest`はTask Issueと同じrepositoryのPRでなければならず、別repositoryのPRを指すrequestは受理しない。
+全review roundはpublish済みdraft Pull Requestへ繋留される（[ADR-0002](../../../adr/0002-pr-anchored-review.md)）。`pullRequest`はTask Issueと同じrepositoryのPRでなければならず、別repositoryのPRを指すrequestは受理しない。
 
 Review Workerは`producerRunId`のstructured claim contextをPostgreSQLから読み、`issue`とauthorityをlive
 sourceから取得する。claim時と同じCompiler versionでTask ContextとContext Manifestを再生成し、Requestの
@@ -212,7 +212,7 @@ draft PRのpublish（`publish_head`）はreview approveをgateにしない。RED
 
 `final_implementation`のapproveが、publish済みPRのlive headと一致するfinal head、GREEN/refactor/check evidenceにbindされている場合だけ、Issue Workerは`finalize_pull_request`でrequired PR bodyを確定しdraftを解除できる。ready化とmergeがfinal approveをgateとする。finalize前後でheadが変わった場合はapproveをstaleにし、再publishと再reviewを要求する。PR bodyだけをartifactから決定論的に作成・更新してもsource headが変わらない場合、review bindingは維持できるが、required PR field validationは別途通さなければならない。
 
-Review approveはそれ自体がmergeではない。approveはmerge gateの品質側条件であり、mergeにはさらにlive headの一致、required status checkのsuccess、mergeable、branch protectionという外形条件が要る。外形条件はControllerとIssue Workerが判定し、reviewerへ問い合わせない（[ADR-0005](../decisions/0005-auto-merge.md)）。final approve後にready化と`merge_pull_request`がdurableに記録され、Task Issueがcloseされて`ai-merged`へ投影された時点でKudo workflowはterminalになる。
+Review approveはそれ自体がmergeではない。approveはmerge gateの品質側条件であり、mergeにはさらにlive headの一致、required status checkのsuccess、mergeable、branch protectionという外形条件が要る。外形条件はControllerとIssue Workerが判定し、reviewerへ問い合わせない（[ADR-0005](../../../adr/0005-auto-merge.md)）。final approve後にready化と`merge_pull_request`がdurableに記録され、Task Issueがcloseされて`ai-merged`へ投影された時点でKudo workflowはterminalになる。
 
 ## Failure and staleness
 

@@ -4,7 +4,7 @@
 - 関連Issue: 未起票（プロダクトゴールの見直しで決定）
 - 実装Task: [#62](https://github.com/mrbaron3/kudo/issues/62)（merge_pull_requestと完了投影）、[#60](https://github.com/mrbaron3/kudo/issues/60)（finalize / merge前のready化）
 - 関連ADR: [ADR-0002](0002-pr-anchored-review.md)（全review roundをPRへ繋留する判断を前提とする）、[ADR-0003](0003-review-round-limit.md)（自動loopの上限）
-- Supersede対象: ADR-0002 D1の「ready化と`ai-review-waiting`投影がhandoff terminalである」、[01. プロダクト設計](../../01_product-design/) §5の「Pull Requestのmerge、Issue close」除外
+- Supersede対象: ADR-0002 D1の「ready化と`ai-review-waiting`投影がhandoff terminalである」、[01. プロダクト設計](../spec/01_product-design/) §5の「Pull Requestのmerge、Issue close」除外
 
 ## Context
 
@@ -38,7 +38,7 @@ Controllerが`merge_pull_request`を発行できるのは次がすべて成立�
 
 Review Workerはこの判定に関与しない。reviewerが返すのは品質verdictだけであり、「mergeしてよいか」というrepository運用上の判断をmodelへ委譲しない。逆にControllerは、外形条件がすべて揃っても品質approveが無ければmergeしない。
 
-（2026-08-21追記）この評価はControllerがread-onlyのpull request / required status check観測で行う（[Runtime platform](../03_runtime-platform.md)のcredential表がpull requests read、checks readを与える）。`merge_pull_request`はfinalize完了後にenqueueし、外形条件が揃うまで`retry_wait`のまま待機させ、揃った時点でeligibleにする。Issue Workerは実行の開始時にlive contextを、mutation直前にlive PRを再照合し、API側の期待head照合と合わせて評価と実行の間の窓を閉じる。その窓でcheckやprotectionが変化してGitHubがmergeを拒否した場合、Issue Workerは品質verdictへ変換せず、拒否の観測をevidenceとした`needs_human` Resultで返し、Controllerが`merge_blocked`として扱う。
+（2026-08-21追記）この評価はControllerがread-onlyのpull request / required status check観測で行う（[Runtime platform](../spec/05_design/03_runtime-platform.md)のcredential表がpull requests read、checks readを与える）。`merge_pull_request`はfinalize完了後にenqueueし、外形条件が揃うまで`retry_wait`のまま待機させ、揃った時点でeligibleにする。Issue Workerは実行の開始時にlive contextを、mutation直前にlive PRを再照合し、API側の期待head照合と合わせて評価と実行の間の窓を閉じる。その窓でcheckやprotectionが変化してGitHubがmergeを拒否した場合、Issue Workerは品質verdictへ変換せず、拒否の観測をevidenceとした`needs_human` Resultで返し、Controllerが`merge_blocked`として扱う。
 
 ### D3. mergeは承認済みheadへ束縛したcompare-and-mergeで行う
 
@@ -111,15 +111,15 @@ merging_pull_request --> needs_human（merge_blocked / external_mutation_conflic
 
 ### 影響を受ける文書
 
-- [01. プロダクト設計](../../01_product-design/) — ゴール、責任、境界、完成条件
-- [03. システム仕様](../../03_system-spec/) — アクター、F-07、標準workflow
-- [End-to-end workflow](../02_workflow.md) — §7、durable state、外部干渉
-- [GitHub routing policy](../04_github-routing.md) — label、transition、escalation code
-- [Worker Operation Protocol](../contracts/operation-protocol-v1alpha1.md) — `merge_pull_request` kindとartifact要件
-- [Implementation–Review Protocol](../contracts/review-protocol-v1alpha1.md) — approveとmergeの関係、外部merge判定
-- [Architecture](../01_architecture.md) — Issue Workerの責務、retry policy
-- [Final Implementation Review Policy](../review-policies/final-implementation-v1alpha1.md) — approveの位置づけ
-- [4.4 Pull Request 確定・Merge](../../04_features/04_pull-request-handoff/) — 受け入れ要件と詳細設計
+- [01. プロダクト設計](../spec/01_product-design/) — ゴール、責任、境界、完成条件
+- [03. システム仕様](../spec/03_system-spec/) — アクター、F-07、標準workflow
+- [End-to-end workflow](../spec/05_design/02_workflow.md) — §7、durable state、外部干渉
+- [GitHub routing policy](../spec/05_design/04_github-routing.md) — label、transition、escalation code
+- [Worker Operation Protocol](../spec/05_design/contracts/operation-protocol-v1alpha1.md) — `merge_pull_request` kindとartifact要件
+- [Implementation–Review Protocol](../spec/05_design/contracts/review-protocol-v1alpha1.md) — approveとmergeの関係、外部merge判定
+- [Architecture](../spec/05_design/01_architecture.md) — Issue Workerの責務、retry policy
+- [Final Implementation Review Policy](../spec/05_design/review-policies/final-implementation-v1alpha1.md) — approveの位置づけ
+- [4.4 Pull Request 確定・Merge](../spec/04_features/04_pull-request-handoff/) — 受け入れ要件と詳細設計
 - [ADR-0002](0002-pr-anchored-review.md) — D1のterminal記述
 
 ### 利点
@@ -131,7 +131,7 @@ merging_pull_request --> needs_human（merge_blocked / external_mutation_conflic
 ### 代償・リスク
 
 - 人間のPR reviewがgateから外れる。誤りはbaseへ入ってから発見され、修正はrevertまたは新しいIssueになる。緩和策はbranch protectionとrequired check、review policyの観点、そしてbase branchをKudo専用に限定できる設定であり、いずれも人間が事前に置く。
-- baseが進んだ場合、reviewしたheadとmerge後のbase状態は同じではない。`Require branches to be up to date`を有効にすればprotectionが拒否して`merge_blocked`になるが、Kudoは自動でrebaseもbase mergeも行わない。取り込みは新しいheadを作る行為であり、再reviewを要求するためである。推奨設定と残余riskの正本は[GitHub routing policy](../04_github-routing.md)「Repository 設定の前提と推奨」に置く（2026-08-21追記）。
+- baseが進んだ場合、reviewしたheadとmerge後のbase状態は同じではない。`Require branches to be up to date`を有効にすればprotectionが拒否して`merge_blocked`になるが、Kudoは自動でrebaseもbase mergeも行わない。取り込みは新しいheadを作る行為であり、再reviewを要求するためである。推奨設定と残余riskの正本は[GitHub routing policy](../spec/05_design/04_github-routing.md)「Repository 設定の前提と推奨」に置く（2026-08-21追記）。
 - `merge_blocked`が新しい定常的な差し戻し理由になる。CIが不安定なrepositoryでは、review roundではなくmerge段階での停止が増える。
 
 ### 未決事項（deferred）
