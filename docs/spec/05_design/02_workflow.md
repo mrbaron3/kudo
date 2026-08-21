@@ -94,7 +94,7 @@ Reconciliation は live GitHub state で candidate 条件を確認する。条�
 
 Controller は IssueRef に対する短い claim lease を取得し、Issue Worker へ claim Operation を dispatch する。Issue Worker は GitHub から現在の Issue を直接取得し、Contract、native relationship、dependency、authority、base commit を検証する。
 
-claim 成功時は、Run、Issue Observation、Task Context、Context Manifest、Execution Policy、base SHA を一つの durable transition として確定する。その後、outbox から`ai-ready`と古い status label を外し、`ai-in-progress`を付ける。GitHub projection が一時的に失敗しても Run を巻き戻さない。
+claim 成功時は、Run、Issue Observation、Task Context、Context Manifest、Execution Policy、Escalation Policy、base SHA を一つの durable transition として確定する。その後、outbox から`ai-ready`と古い status label を外し、`ai-in-progress`を付ける。GitHub projection が一時的に失敗しても Run を巻き戻さない。
 
 ### 3. Test authoring and RED
 
@@ -130,6 +130,8 @@ implementation は次を順に満たす。
 4. Issue の Verification と repository の required checks を再実行する。
 5. test 変更が必要になった場合は implementation 中に書き換えず、test authoring/review gate へ戻す。
 
+`implement`または`repair_implementation`が承認済みtestの変更を必要とする場合、そのResultをGREEN完了として受理しない。Issue Workerは未承認のtest/production変更を最後に承認されたtest checkpointへrollbackし、Controllerは`revise_tests`をfresh sessionでdispatchする。変更後のtest head、RED evidence、Artifact Manifestを同一draft PRへpublishし、新しい`test_validity` approvalを得るまでimplementationへ戻らない。これにより、implementation laneがtest review gateを迂回して承認済みtestを書き換える経路を閉じる。
+
 GREEN と refactor の evidence が固定された後、Controller は`publish_head`で final head を同一 draft PR へ publish し、その後にだけ final review を開始する。
 
 ### 6. Final implementation review
@@ -164,6 +166,7 @@ stateDiagram-v2
     publishing_test_head --> awaiting_test_review: PR head published
     awaiting_test_review --> authoring_tests: request_changes（round 上限未満）/ fresh revise session
     awaiting_test_review --> implementing: approve
+    implementing --> authoring_tests: approved test mutation required / approved checkpointへrollback + revise_tests
     implementing --> publishing_final_head: GREEN + refactor checks fixed
     publishing_final_head --> awaiting_final_review: PR head published
     awaiting_final_review --> implementing: request_changes（round 上限未満）/ fresh repair session
@@ -178,9 +181,23 @@ stateDiagram-v2
     publishing_final_head --> needs_human
     awaiting_final_review --> needs_human: needs_human verdict / round 上限到達
     finalizing_pull_request --> needs_human
+    state resume_checkpoint <<choice>>
+    needs_human --> resume_checkpoint: ai-ready + ResumeIdentity一致
+    resume_checkpoint --> claimed: stoppedAt=claimed
+    resume_checkpoint --> authoring_tests: stoppedAt=authoring_tests
+    resume_checkpoint --> publishing_test_head: stoppedAt=publishing_test_head
+    resume_checkpoint --> awaiting_test_review: stoppedAt=awaiting_test_review
+    resume_checkpoint --> implementing: stoppedAt=implementing
+    resume_checkpoint --> publishing_final_head: stoppedAt=publishing_final_head
+    resume_checkpoint --> awaiting_final_review: stoppedAt=awaiting_final_review
+    resume_checkpoint --> finalizing_pull_request: stoppedAt=finalizing_pull_request
+    needs_human --> superseded: ai-ready + semantic input変更
+    superseded --> [*]
 ```
 
-上図は Run phase を表す。retry 可能な transport/execution failure は quality state ではなく Operation の`retry_wait`として記録し、backoff 後に同じ logical Operation を新しい execution attempt で実行する。provider session は retry ごとに新規作成する。
+上図はRun phaseを表す。`resume_checkpoint`は同一transaction内のchoiceでありdurable phaseではない。checkpoint identityが不一致、または外部close/merge等で安全に再構築できない場合は辺を進まず`needs_human`を維持する。
+
+retry可能なtransport/execution failureはquality stateではなくOperationの`retry_wait`として記録し、backoff後に同じlogical Operationを新しいexecution Attemptで実行する。provider sessionはAttemptごとに新規作成する。retry budgetはclaim時にEscalation Policyへ`attemptRetries`として固定し、既定`3`は初回後の追加Attemptを最大3回、すなわち既定で最大4 Attemptまで許す。retryable failureを確定して次のAttemptを作るたびに1を消費し、同じlogical Operation内のtimeout、rate limit、network、provider crash、GitHub transport、provider invalid responseで共有する。immutable inputに対するprotocol validation errorは同じinputで成功し得ないため、provider invalid responseへ読み替えない。Worker Result / AttemptFailureとして受理せず`ProtocolError`をdurableに記録し、retry budgetを消費せずOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ送る。
 
 ### Review round 上限
 
@@ -194,19 +211,35 @@ stateDiagram-v2
 
 ## Escalation and resumption
 
-`needs_human`では、Controller が理由、停止 phase、必要な対応、evidence reference を永続化してから`ai-needs-human`と日本語 comment を投影する。人間は Issue 本文または明示された authority を修正し、再度`ai-ready`を付ける。
+`needs_human`では、Controllerが理由、停止phase、必要な対応、evidence referenceと、停止時の`ResumeIdentity`を永続化してから`ai-needs-human`と日本語commentを投影する。人間はIssue本文または明示されたauthorityを修正し、再度`ai-ready`を付ける。
 
-再 reconciliation では入力 digest を比較する。入力が同じで単に外部設定が復旧した場合は安全な checkpoint から同じ Run を再開できる。Issue、authority、base、approved artifact が変わった場合は古い Run を superseded とし、新しい Run と review lineage を作る。古い approval を新しい入力へ移し替えない。
+`ResumeIdentity`は単一digestではなく、次の二層から成る複合identityである。
 
-review round の予算は無人区間ごとに与える。人間へ差し戻した時点で区間が終わるため、escalation の理由 code によらず counter は 0 へ戻る。
+| 層 | field |
+| --- | --- |
+| `InputIdentity` | `ContextManifestRef`、`ExecutionPolicyRef` |
+| `CheckpointIdentity` | 停止phase、phaseで有効なfixed/published/checks head、`ArtifactManifestRef`、ordered `policyRefs`、Pull Request ref、test/final approvalのReview Result binding |
+
+Issue ObservationとPull Request Observationはaudit lineageなので含めない。Escalation Policyと無人区間counterもsemantic inputではないため含めず、同じRunをresumeするときはclaim時にpinしたEscalation Policyを継続して使う。optionalなcheckpoint fieldは停止phaseで未作成なら欠落として固定し、「現在は値が無い」ことも比較対象にする。
+
+再reconciliationはlive Issueをcompileし、durable checkpointとlive PRを照合して現在のResume Identityを再構築する。
+
+- **resume**: 人間による`ai-ready`再付与があり、Resume Identity全体が同じ場合だけ、同一transactionで`needs_human`から保存済み停止phaseへ戻し、そのphaseのOperationまたはReviewをfresh Attemptで再dispatchする。`claimed`、`authoring_tests`、`implementing`では対応するWorker Operation、publish/finalize phaseではlive state照合を伴うidempotent mutation recovery、review待ちphaseでは同じimmutable inputに対するfresh review Attemptを発行する。
+- **supersede**: `ContextManifestRef`または`ExecutionPolicyRef`が変わり、validな新規inputを構築できる場合は古いRunをsupersededとし、新しいRunとreview lineageを作る。古いapprovalを新しい入力へ移し替えない。
+- **checkpoint不一致**: head、artifact manifest、policy ref、Pull Request ref、approval bindingのいずれかだけが変わった場合は以前のapprovalをstaleとし、同じRunをresumeしない。validな新規inputとして安全にclaimできる場合だけsupersedeし、PR close/merge等でできない場合は`needs_human`を維持する。
+- **observation-only差分**: Issue ObservationまたはPull Request Observationだけの差分はaudit lineageへ追記し、同じResume Identityとして扱う。
+
+resume / supersedeの選択、paused Runのversion確認、writer排他、次Operationのenqueueは一つのtransactionで確定する。
+
+attempt retryとreview roundの予算は無人区間ごとに与える。人間へ差し戻した時点で区間が終わるため、escalationの理由codeによらず区間counterは0へ戻る。Attempt lineage、gateごとの生涯round数、生涯Attempt数はresetしない。
 
 - **resume**（同じ Run の再開）: 満額の予算から始まる。counter を継続すると、人間が修正した後の review が予算 0 になり、次の`request_changes`で即座に再 escalate する。1 round で収束する修正にも automation が追従できず、round 上限が loop を「1 回だけ動く仕組み」へ退化させてしまう。
 - **supersede**（新しい Run）: 新しい Run identity なので当然 0 から始まる。
-- **生涯 counter**: reset しない。停止した Run が通算で何 round 費やし、何回差し戻されたかを保持する。差し戻しを繰り返す Run はこの数字で識別する。
+- **生涯 counter**: resetしない。停止したRunが通算で何round/Attemptを費やし、何回差し戻されたかを保持する。差し戻しを繰り返すRunはこの数字で識別する。
 
-`ai-ready`は人間所有の trigger であり、resume には人間の明示的な操作と escalation comment の確認が毎回必要になる。予算の再付与は無人の暴走ではなく、人間が状況を見て継続を選ぶ行為である。生涯 round 数に対する上限は置かない。人間が介入しても gate を通らないことは予算不足ではなく、Contract、authority、分割の粒度、Execution Policy のいずれかが誤っている signal であり、その判断は差し戻しのたびに人間が行う。
+`ai-ready`は人間所有のtriggerであり、resumeには人間の明示的な操作とescalation commentの確認が毎回必要になる。予算の再付与は無人の暴走ではなく、人間が状況を見て継続を選ぶ行為である。生涯round/Attempt数に対する上限は置かない。人間が介入してもgateを通らないことは予算不足ではなく、Contract、authority、分割の粒度、Execution Policy、外部環境のいずれかが誤っているsignalであり、その判断は差し戻しのたびに人間が行う。
 
-Escalation Policy は Run の semantic input identity に含めない。上限値の変更は既存の Review Request と approval を stale にせず、次の claim から有効になる。
+Escalation PolicyはRunのsemantic input identityに含めない。attempt retryまたはreview round上限値の変更は既存のOperation identity、Review Request、approvalをstaleにせず、次のclaimから有効になる。
 
 `needs_human`は実行を停止したpaused Runであり、同時実行中のRunとは数えないが、同じIssueに新しいRunを無条件で作れる状態でもない。再reconciliationは、同じRunのresumeまたは旧Runのsupersedeと新Run作成を一つのtransactionで決め、writerを同時に二つ存在させない。
 
@@ -215,10 +248,10 @@ Escalation Policy は Run の semantic input identity に含めない。上限�
 - GitHub delivery ID は inbox で一意にする。
 - polling と webhook は同じ IssueRef に対して同じ reconciliation rule を使う。
 - 1 IssueRef に active Run は最大一つとする。
-- Operation identity と execution attempt を分け、timeout 後の retry を追跡する。
+- Operation identityとexecution Attemptを分け、Escalation Policyの`attemptRetries`、無人区間counter、生涯Attempt lineageでtimeout後のretryを追跡する。
 - review round counter は無人区間ごとに reset し、生涯 counter は Run 単位で単調増加させる。同じ gate への再入では reset しない。
 - worktree/branch/PR mutation は Issue Worker の idempotency key で重複を防ぐ。
 - publish/finalize は期待 head と live branch/PR を照合し、外部干渉を blind mutation せず stale / needs_human へ分類する。
 - state transition と external projection intent は同じ database transaction に記録し、outbox が GitHub へ再送する。
 - process 停止で lease が失効した場合、別 worker が immutable checkpoint から Operation を再取得する。
-- Run 中に Context Manifest ref（base を含む）、Execution Policy ref、head、artifact manifest、policy ref、PR ref が変われば進行を止め、以前の review を stale にする。Issue Observation / PR observation だけの差分（PR body 編集、draft/ready 遷移を含む）は audit lineage へ追記し、Operation identity と approval を維持する。
+- Run中にContext Manifest ref（baseを含む）、Execution Policy ref、head、artifact manifest、policy ref、PR ref、approval bindingが変われば進行を止め、以前のreviewをstaleにする。Issue Observation / PR observationだけの差分（PR body編集、draft/ready遷移を含む）はaudit lineageへ追記し、Operation identityとapprovalを維持する。

@@ -1,0 +1,5 @@
+schema: "kudo.escalation-policy/v1alpha1"
+attemptRetries: "3"
+reviewRounds:
+  testValidity: "3"
+  finalImplementation: "3"

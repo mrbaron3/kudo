@@ -8,7 +8,8 @@ import (
 
 func sampleEscalationPolicy() EscalationPolicy {
 	return EscalationPolicy{
-		Schema: EscalationPolicySchemaV1Alpha1,
+		Schema:         EscalationPolicySchemaV1Alpha1,
+		AttemptRetries: DefaultAttemptRetries,
 		ReviewRounds: ReviewRoundLimits{
 			TestValidity:        3,
 			FinalImplementation: 3,
@@ -37,15 +38,23 @@ func TestEscalationPolicyCanonicalIdentity(t *testing.T) {
 	if err := firstPayload.Validate(); err != nil {
 		t.Fatalf("payload の自己検証: %v", err)
 	}
+	requireGolden(t, firstPayload.Data, "escalation-policy.yaml")
 
-	changed := sampleEscalationPolicy()
-	changed.ReviewRounds.FinalImplementation = 4
-	changedRef, _, err := EncodeEscalationPolicy(changed)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	if changedRef == first {
-		t.Fatal("上限を変えても ref が変わらない")
+	for name, mutate := range map[string]func(*EscalationPolicy){
+		"attempt retry": func(policy *EscalationPolicy) { policy.AttemptRetries++ },
+		"review round":  func(policy *EscalationPolicy) { policy.ReviewRounds.FinalImplementation++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := sampleEscalationPolicy()
+			mutate(&changed)
+			changedRef, _, err := EncodeEscalationPolicy(changed)
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			if changedRef == first {
+				t.Fatal("上限を変えても ref が変わらない")
+			}
+		})
 	}
 }
 
@@ -77,6 +86,9 @@ func TestEscalationPolicyValidation(t *testing.T) {
 	}{
 		"schema":      {func(p *EscalationPolicy) { p.Schema = "kudo.escalation-policy/v2" }, ProtocolSchemaUnknown},
 		"schema 空":    {func(p *EscalationPolicy) { p.Schema = "" }, ProtocolSchemaUnknown},
+		"retry 上限 0":  {func(p *EscalationPolicy) { p.AttemptRetries = 0 }, ProtocolFieldInvalid},
+		"retry 上限 負":  {func(p *EscalationPolicy) { p.AttemptRetries = -1 }, ProtocolFieldInvalid},
+		"retry 上限 超過": {func(p *EscalationPolicy) { p.AttemptRetries = MaxAttemptRetries + 1 }, ProtocolFieldInvalid},
 		"test 上限 0":   {func(p *EscalationPolicy) { p.ReviewRounds.TestValidity = 0 }, ProtocolFieldInvalid},
 		"test 上限 負":   {func(p *EscalationPolicy) { p.ReviewRounds.TestValidity = -1 }, ProtocolFieldInvalid},
 		"final 上限 0":  {func(p *EscalationPolicy) { p.ReviewRounds.FinalImplementation = 0 }, ProtocolFieldInvalid},
@@ -100,11 +112,18 @@ func TestEscalationPolicyValidation(t *testing.T) {
 
 // 上限ちょうどの値は受理する。canonical text の上限規則と同じ扱いにする。
 func TestEscalationPolicyAcceptsBoundaryLimits(t *testing.T) {
-	for _, rounds := range []int{MinReviewRounds, MaxReviewRounds} {
+	for _, limits := range []struct {
+		retries int
+		rounds  int
+	}{
+		{MinAttemptRetries, MinReviewRounds},
+		{MaxAttemptRetries, MaxReviewRounds},
+	} {
 		policy := sampleEscalationPolicy()
-		policy.ReviewRounds = ReviewRoundLimits{TestValidity: rounds, FinalImplementation: rounds}
+		policy.AttemptRetries = limits.retries
+		policy.ReviewRounds = ReviewRoundLimits{TestValidity: limits.rounds, FinalImplementation: limits.rounds}
 		if _, _, err := EncodeEscalationPolicy(policy); err != nil {
-			t.Fatalf("上限 %d を拒否した: %v", rounds, err)
+			t.Fatalf("retry=%d, review=%d の境界値を拒否した: %v", limits.retries, limits.rounds, err)
 		}
 	}
 }

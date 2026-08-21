@@ -74,6 +74,7 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
 
 - Production implementation が作られている。
 - 対象 test、Issue Verification、repository required checks が識別できる。
+- Task Contextまたはauthorityにperformance boundが宣言されているか判定でき、宣言時はTask固有の測定commandと実行条件が識別できる。
 
 **受け入れ基準**
 
@@ -92,6 +93,11 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
   - When Issue Verification と repository required checks を実行する。
   - Then すべての required command result が final head へ bind される。
 
+- **条件付き証跡: Performance Bound**
+  - Given Task Contextまたはauthorityにperformance boundが宣言されている。
+  - When final candidate headを検証する。
+  - Then Task固有の測定commandを固定した条件で実行し、command、条件、環境identity、複数回実行の要約、boundとの比較を`performance-evidence`としてfinal headへbindする。
+
 - **異常系: Test または Check Failure**
   - Given 対象 test、regression test、required checks のいずれかが失敗する。
   - When final review の前提を検証する。
@@ -107,11 +113,12 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
 - 再現性: evidence は command と environment identity を含む。
 - 完全性: final review に必要な evidence の欠落を許可しない。
 - 冪等性: final head の再 publish で Pull Request を重複作成しない。
+- 境界: performance boundが宣言されていないTaskに標準測定harnessを推測して必須化しない。
 
 **完了条件**
 
-- 自動テスト: GREEN / refactor後の再検証 / check failure / evidence不足を検証する。
-- 証跡: final head、GREEN、required checks が一つの Artifact Manifest へ bind される。
+- 自動テスト: GREEN / refactor後の再検証 / check failure / evidence不足に加え、bound宣言時の`performance-evidence`必須化を検証する。
+- 証跡: final head、GREEN、required checks、条件付き`performance-evidence`が一つの Artifact Manifest へ bind される。
 
 ## 4.3.3. Final Review
 

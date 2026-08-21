@@ -21,9 +21,11 @@ reaper が Operation を再度 eligible にする。
 | quality `request_changes` | 同じ gate の修正 Operation へ進める |
 | stale semantic input | 現在の identity に対する新しい評価を要求する |
 | authority conflict、安全判断、外部 close / merge | `needs_human` へ遷移する |
-| protocol validation error | quality verdict に変換せず terminal または明示的修復へ送る |
+| immutable inputに対するprotocol validation error | Worker Result / AttemptFailureとして受理せず、`ProtocolError`を記録してOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ送る |
 
-retry policy は error class ごとに定義し、同じ enum や自由文メッセージから推測しない。
+retry budgetはclaim時に`kudo.escalation-policy/v1alpha1`へ`attemptRetries`として固定する。既定`3`、許容範囲`1`〜`10`で、値は初回Attemptの後に許す追加Attempt数である。timeout、rate limit、network、provider crash、GitHub transport、provider invalid responseは一つのlogical Operation内で同じcounterを共有し、次のAttemptを作成するたびに1を消費する。quality verdict、stale input、protocol validation errorは消費しない。provider invalid responseとはproviderのraw出力をversioned Resultへdecodeできない失敗であり、既に構築されたimmutable envelope/refのvalidation違反とは区別する。
+
+counterはlogical Operationかつ無人区間単位で持つ。escalation時に区間counterを0へ戻す一方、Attempt numberと生涯Attempt数は巻き戻さない。retry対象か否かは固定された`FailureClass`から判定し、自由文messageから推測しない。
 
 ## Escalation
 
@@ -33,20 +35,28 @@ versioned Result を受理した後に gate ごとの counter を評価する。
 
 ## Resume と Supersede
 
-再 reconciliation は live input と保存済み digest を比較する。
+停止時にControllerは次の二層を`ResumeIdentity`として保存する。
 
-- Context Manifest、Execution Policy、base、head、artifact、policy ref が同じなら安全な checkpoint から resume する。
-- semantic input が変わった場合は旧 Run を superseded とし、新しい Run / review lineage を作る。
-- Issue Observation だけが変わり semantic input が同じ場合は audit lineage を追加して identity を維持する。
+- `InputIdentity`: `ContextManifestRef`と`ExecutionPolicyRef`
+- `CheckpointIdentity`: 停止phase、phaseで有効なfixed/published/checks head、`ArtifactManifestRef`、ordered `policyRefs`、Pull Request ref、test/final approvalのReview Result binding
 
-resume / supersede の選択と writer 排他は一つの transaction で決定する。
+Issue Observation、Pull Request Observation、Escalation Policy、無人区間counterはResume Identityに含めない。Observationはaudit lineageであり、Escalation Policyとcounterはreview判断のsemantic inputではないためである。進行中Runはclaim時にpinしたEscalation Policyを継続して使い、resume時のdeployment設定へ差し替えない。
+
+再reconciliationは人間による`ai-ready`再付与を確認し、live stateから同じ構成のidentityを再構築する。
+
+- Resume Identity全体が同じなら、`needs_human`から保存済み停止phaseへ戻し、そのphaseに対応するOperationまたはReviewをfresh Attemptとして再dispatchする。publish/finalizeはlive GitHub stateを照合するidempotent recoveryとして再実行する。
+- `InputIdentity`が変わった場合は旧Runをsupersededとし、新しいRun/review lineageを作る。以前のapprovalを移さない。
+- `CheckpointIdentity`だけが変わった場合は旧approvalをstaleとし、同じRunをresumeしない。validな新規inputとして安全にclaimできる場合だけsupersedeし、PR close/merge等でできない場合は`needs_human`を維持する。
+- Issue ObservationまたはPull Request Observationだけが変わった場合はaudit lineageを追加し、identityを維持する。
+
+resume / supersedeの選択、paused Runのversion確認、writer排他、次Operationのenqueueは一つのtransactionで決定する。
 
 ## 検証方針
 
 - fake clock と store で lease expiry、heartbeat、backoff、reaper を決定論的に検証する。
 - crash point を state commit 前後と external mutation 前後へ置き、再実行が収束することを検証する。
-- error class ごとの routing、retry budget、review round counter を table-driven test で検証する。
-- resume / supersede の digest 比較と concurrent resumption の排他を検証する。
+- error classごとのrouting、error classをまたぐretry budget、protocol violationのResult非受理・即時terminal routing、review round counterをtable-driven testで検証する。
+- composite Resume Identityによるresume / supersede / checkpoint不一致とconcurrent resumptionの排他を検証する。
 
 ## 参照
 

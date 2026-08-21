@@ -122,13 +122,14 @@ dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`�
 | `review_needs_human` | Review Result の verdict が`needs_human` |
 | `review_round_limit_exceeded` | review gate の round 上限に達しても blocking finding が解消しなかった。reviewer の判断ではなく Controller の予算切れである |
 | `retry_budget_exhausted` | bounded retry を超え、operator の診断が必要な execution failure |
+| `protocol_validation_failed` | immutable envelope、Result、ref等がversioned protocolを満たさず、同じinputのretryでは復旧できない |
 | `contract_authority_conflict` | Contract、Acceptance Criteria、authority の矛盾、不足、曖昧さ |
 | `external_mutation_conflict` | PR の外部 close/merge のように blind mutation できない外部干渉 |
 | `unsafe_mutation_unauthorized` | 危険な mutation に対する明示的許可不足 |
 | `specification_decision_required` | 自動選択できない仕様判断 |
 | `external_configuration_required` | 必須 credential または外部設定が人間の操作なしに復旧できない状態 |
 
-`review_needs_human`、`review_round_limit_exceeded`、`retry_budget_exhausted`は Controller が Run state から自ら導出する。Worker や adapter からの明示的 escalation 要求ではこれらを指定できない。指定できると、上限に達していない Run を「上限到達」として停止でき、code と Run の lineage が食い違う。
+`review_needs_human`、`review_round_limit_exceeded`、`retry_budget_exhausted`、`protocol_validation_failed`は Controller が Run state または機械可読な`ProtocolError`から自ら導出する。Worker や adapter からの明示的 escalation 要求ではこれらを指定できない。指定できると、上限に達していない Run を「上限到達」として停止したり、検証済みResultをprotocol違反として偽装したりでき、code と Run の lineage が食い違う。
 
 Context Manifest（Task Context、authority content、base）、Execution Policy、head、artifact の unexpected change は escalation ではなく stale として扱い、古い Run を superseded にして再 claim へ回す。再 claim が contract 不備で通らない場合だけ`contract_authority_conflict`として escalate する。
 

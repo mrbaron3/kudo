@@ -22,7 +22,7 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 **事前条件**
 
 - logical Operation の identity と immutable input が durable に保存されている。
-- error class ごとの retry policy が Execution Policy または runtime policy で確定している。
+- retry budget がclaim時のEscalation Policy snapshotで確定している。
 
 **受け入れ基準**
 
@@ -30,6 +30,12 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
   - Given timeout、rate limit、一時 network failure、または一時 provider failure が発生する。
   - When retry budget が残っている。
   - Then 同じ logical Operation に新しい Attempt が作られ、bounded backoff 後に再実行される。
+
+- **上限: Attempt Retry Budget**
+  - Given deployment configurationにretry上限の明示値がない。
+  - When claim時にEscalation Policyを固定する。
+  - Then `attemptRetries`は既定`3`となり、初回Attemptの後に同じlogical Operationへ作成する追加Attemptごとに1を消費する。
+  - And timeout、rate limit、一時network failure、provider crash、GitHub transport failure、providerのinvalid structured outputはerror classをまたいで同じ予算を共有する。
 
 - **隔離: Attempt ごとの Fresh Session**
   - Given model-bearing Operation の以前の Attempt が失敗している。
@@ -41,15 +47,22 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
   - When Controller が Result を処理する。
   - Then transport retry として再実行せず、対応する repair lane または escalation へ routing する。
 
-- **分類: Protocol Failure**
-  - Given unsupported version、missing required field、invalid structured output がある。
-  - When binding boundary で検証する。
-  - Then quality verdict に変換されず、policy に従った bounded retry または terminal execution failure になる。
+- **分類: Provider Invalid Output**
+  - Given providerがversioned Resultへdecodeできないinvalid structured outputを返す。
+  - When provider adapterがAttempt failureへ分類する。
+  - Then quality verdictへ変換せず、`provider_invalid_response`として同じbounded retry budgetを使う。
+
+- **分類: Immutable Protocol Violation**
+  - Given unsupported version、missing required field、unknown kind、ref/digest不一致等を、immutable inputのbinding boundaryで検出する。
+  - When protocol validation errorを処理する。
+  - Then provider invalid outputまたはtransport failureへ読み替えず、Worker Result / AttemptFailureとして受理しない。
+  - And `ProtocolError`をdurable evidenceとして記録し、retry budgetを消費せずOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ遷移させる。
 
 - **上限: Retry Budget 超過**
   - Given 同じ logical Operation が retry budget を使い切っている。
   - When 再び retryable failure が発生する。
   - Then 無限再試行せず、停止理由と attempts の evidence が durable に残る。
+  - And human escalationで無人区間counterを0へ戻しても、Attempt lineageと生涯Attempt数は保持する。
 
 **非機能要件**
 
@@ -123,13 +136,13 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 
 **事前条件**
 
-- 自動化の判断境界と Escalation Policy が claim 時に固定されている。
+- 自動化の判断境界と、attempt retry / review round上限を持つEscalation Policyがclaim時に固定されている。
 - Issue へ status と日本語 comment を投影できる。
 
 **受け入れ基準**
 
 - **停止系: Needs Human**
-  - Given authority conflict、安全判断、review round 上限、または外部干渉が発生する。
+  - Given authority conflict、安全判断、attempt retry / review round上限、immutable protocol validation failure、または外部干渉が発生する。
   - When Controller が自動継続不能と判断する。
   - Then 停止 phase、reason code、evidence、必要な human action が durable に保存され、`ai-needs-human` が投影される。
 
@@ -138,15 +151,17 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
   - When Controller が verdict を受理する。
   - Then reviewer の verdict は変更せず、次の repair Operation を発行しないで `needs_human` へ遷移する。
 
-- **再開: Semantic Input が同一**
-  - Given 人間が必要な対応を行い、semantic input を変えずに `ai-ready` を再付与する。
-  - When reconciliation が保存済み digest と live input を比較する。
-  - Then 安全な checkpoint から同じ Run を resume し、無人区間 round counter は満額から再開する。
+- **再開: Resume Identity が同一**
+  - Given 人間が必要な対応を行い、`ai-ready`を再付与する。
+  - When reconciliationが停止時の`ContextManifestRef`、`ExecutionPolicyRef`、停止phase、該当head、`ArtifactManifestRef`、ordered `policyRefs`、Pull Request ref、既存approval bindingから成るResume Identityを再構築し、live stateと比較する。
+  - Then 全fieldが同一の場合だけ、安全な停止phaseへ同じRunをresumeし、attempt retryとreview roundの無人区間counterは満額から再開する。
+  - And Issue ObservationまたはPull Request Observationだけの差分はaudit lineageへ追記し、Resume Identityを変えない。
 
-- **再開: Semantic Input が変更**
-  - Given Issue、authority、base、approved artifact のいずれかが変更されている。
+- **再開: Semantic Input または Checkpoint が変更**
+  - Given Context Manifest、Execution Policy、head、artifact manifest、policy ref、Pull Request ref、approval bindingのいずれかが変更されている。
   - When `ai-ready` 再付与後に reconciliation する。
-  - Then 旧 Run を superseded とし、新しい Run と review lineage を作り、以前の approval を移さない。
+  - Then semantic inputが変わり新しいvalid inputを構築できる場合は旧Runをsupersededとし、新しいRunとreview lineageを作り、以前のapprovalを移さない。
+  - And 外部close/merge等で安全なcheckpointを構築できない場合は同じRunをresumeせず、`needs_human`のまま停止する。
 
 - **排他: Concurrent Resumption**
   - Given 複数 trigger が paused Run の再開を同時に試みる。
@@ -166,7 +181,7 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 
 **完了条件**
 
-- 自動テスト: round上限 / resume / supersede / concurrent resumption / 明示操作なしを検証する。
+- 自動テスト: round上限 / composite Resume Identityのresume / supersede / checkpoint不一致 / concurrent resumption / 明示操作なしを検証する。
 - デモ: `ai-needs-human` comment の指示に従った修正と `ai-ready` 再付与から安全に再開できる。
 
 ## 参照する正本

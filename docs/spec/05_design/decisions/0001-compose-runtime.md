@@ -31,7 +31,7 @@ Compose は services、network、volume、health、dependency、restart lifecycl
 
 PostgreSQL を state と queue に併用することで、Run transition と次 Operation/outbox の記録を一つの transaction にできる。初期の単一 host 運用に Redis や message broker を加えずに、複数 Worker、lease、retry、recovery を実現できる。
 
-role container を分けることで、単一 binary を保ったまま、Issue Worker だけに workspace と GitHub write authority を与え、Review Worker を read-only にできる。
+role container を分けることで、単一 binary を保ったまま、implementation workspace と branch / commit / Pull Request の write authority を Issue Worker だけに与え、Review Worker を read-only にできる。Controller の GitHub write authority は durable state に基づく Issue label / comment の status projection に限定する。
 
 ## Alternatives
 

@@ -28,6 +28,7 @@ test 変更の必要性を検出した場合は implementation result として�
 ## Evidence と Publish
 
 Issue Worker は対象 test、必要な regression test、Issue Verification、repository required checks を実行する。
+Task Contextまたはauthorityにperformance boundが宣言されている場合は、Taskが指定する測定commandを固定した条件で複数回実行し、結果要約とbound比較を`performance-evidence`として生成する。bound宣言がない場合、標準harnessを推測して測定を必須化しない。
 各 evidence は command、result、environment、producer、final head とともに Artifact Manifest へ記録する。
 
 すべての required evidence が揃った後に `publish_head` を実行する。expected branch head と live state を
@@ -53,7 +54,7 @@ schema と freshness を検証するが、reviewer の品質判断を上書き�
 ## 検証方針
 
 - approval 前の `implement` dispatch と、approved test の暗黙変更を拒否する。
-- GREEN / required checks が不足した Result から final review を発行しない。
+- GREEN / required checks、またはbound宣言時の`performance-evidence`が不足した Result から final review を発行しない。
 - final head、artifact、policy の変更で approval が stale になることを検証する。
 - Issue Worker と Review Worker の credential、workspace、provider state が分離されることを境界 test で確認する。
 

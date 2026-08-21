@@ -39,8 +39,8 @@ workflow を一つの issue-to-PR runtime として提供することで解決�
 | Repository Maintainer | RED / GREEN / review の根拠を追跡できる PR をレビューする | 最終 review、merge、release |
 | Operator | 再起動や外部障害後も Run を診断し、安全に回復する | credential、capacity、運用 policy、人間への escalation 対応 |
 
-Kudo は曖昧な要求を補完するプロダクトではない。必要情報が不足または競合する場合は claim を拒否するか、
-根拠と必要な対応を示して人間へ差し戻す。
+Kudo は曖昧な要求を補完するプロダクトではない。必要情報が不足または競合する場合は claim を拒否し、
+rejection category と対象 section / field を示して人間へ差し戻す。
 
 ## 4. 提供価値
 

@@ -143,7 +143,7 @@ flowchart LR
 
 - transport / provider の一時障害は error class に応じて bounded retry する。
 - process crash や lease expiry 後は、確定済み input から fresh attempt を開始する。
-- human decision、authority conflict、外部干渉、review round 上限到達では `needs_human`へ遷移する。
+- human decision、authority conflict、外部干渉、attempt retry / review round 上限到達、immutable protocol validation failureでは `needs_human`へ遷移する。
 - 停止理由、evidence、必要な対応を日本語の status comment と durable record に残す。
 - 人間による `ai-ready`再付与後にだけ、安全な resume または supersede を行う。
 
@@ -182,7 +182,7 @@ retry、stale、transport failure は review verdict と別に扱う。規範的
 | Task Context | strict parse 済み Issue Contract の canonical representation |
 | Context Manifest | Task Context、base、dependency completion、authority content の解決結果 |
 | Execution Policy | provider、model、adapter version、tool / timeout policy の Run snapshot |
-| Escalation Policy | gate ごとの review round 上限を固定する Controller policy |
+| Escalation Policy | attempt retry と gate ごとの review round 上限を固定する Controller policy |
 | Artifact Manifest | test、patch、source snapshot、command evidence などの immutable reference |
 | Review Request / Result | review input identity と versioned verdict / finding の binding |
 | Pull Request Observation | live PR の head、base、open / draft state の監査 lineage |

@@ -9,7 +9,7 @@ Compose-deployed issue-to-PR runtime を完成させるための delivery order 
 
 ## Current status
 
-現在repositoryに実装済みなのは、`kudo help`/`kudo version`のCLI bootstrap、Milestone 0のCompose開発基盤（multi-stage Dockerfile、PostgreSQL 18.4付き開発用Compose、container内check/integration test入口）、`kudo.issue/v1alpha1`のstrict parser、Issue Observation・canonical Task Context・Context Manifest・Execution Policyを作るpure compiler core、およびWorker Operation/Review protocolのcanonical identity・binding・semantic staleness判定である。target architectureは文書化されているが、次は未実装である。
+現在repositoryに実装済みなのは、`kudo help`/`kudo version`のCLI bootstrap、Milestone 0のCompose開発基盤（multi-stage Dockerfile、PostgreSQL 18.4付き開発用Compose、container内check/integration test入口）、`kudo.issue/v1alpha1`のstrict parser、Issue Observation・canonical Task Context・Claim Requirementsを作るpure Issue Compiler、Context Manifest・Execution Policyのcanonical core、およびWorker Operation/Review protocolのcanonical identity・binding・semantic staleness判定である。target architectureは文書化されているが、次は未実装である。
 
 - PostgreSQL schema、Operation queue、lease、inbox/outbox
 - GitHub webhook/poller/reconciliation
@@ -86,13 +86,16 @@ PostgreSQL に authoritative Run state、Operation queue、lease、inbox/outbox 
 - Run version の optimistic concurrency control
 - 1 IssueRef に active Run 最大一つの database constraint
 - role/kind ごとの Operation queue、attempt、lease、heartbeat、reaper
+- terminal Result / AttemptFailure / ProtocolError recordの排他とfail-closed routing
 - delivery inbox と transactional status outbox
+- claim artifact と Execution / Escalation Policy を参照する artifact metadata / ref schema
 - retry class、backoff、jitter、clock injection
 - PostgreSQL integration test 用 disposable Compose profile
 
 ### Milestone 2 exit criteria
 
 - transition と次 Operation/outbox が一つの transaction で commit される。
+- Run と claim input / policy の artifact ref が同じ transaction で固定され、存在しない ref を受理しない。
 - duplicate event と concurrent claim が一つの active Run だけを作る。
 - Worker crash を模した lease expiry 後、別 attempt が同じ logical Operation を取得する。
 - dependency のない Run は並行に進み、repository global lock を使わない。
@@ -107,17 +110,25 @@ Webhook と必須 polling fallback を同じ`ReconcileIssue`へ接続し、実�
 - GitHub App authentication と role-scoped installation token
 - `POST /webhooks/github`の raw-body signature verification、payload limit、delivery inbox
 - startup reconciliation と既定60秒 polling、pagination、rate-limit handling
-- candidate filter: open、non-PR、assignee`mrbaron3`、label`ai-ready`
+- candidate filter: open、non-PR、configured target assignee / ready label（既定`mrbaron3` / `ai-ready`）
 - live Issue Reader、native relationship、dependency、repository content resolver
+- claim output（raw Issue body、Issue Observation、Task Context、Context Manifest）を保存する最小の
+  content-addressed Artifact Store pathとatomic write、digest / length / schema verification
+- ControllerがIssue / Review provider設定からimmutable Execution Policyを、attempt retry / review round設定から
+  Escalation Policyを固定するresolver
 - Issue/Run scoped claim lease と active Run validation
 - status outbox consumer と4 label lifecycle
-- `healthz`、`readyz`、structured log
+- `healthz`、`readyz`
+- 後続roleも再利用するstructured logging contract / adapterと、Controllerの
+  webhook / reconciliation / claim / outbox correlation field
 
 ### Milestone 3 exit criteria
 
 - webhook を意図的に捨てても、polling が Issue を発見して同じ Run を作る。
 - duplicate/遅延/順不同 webhook と poll overlap が二重 Run を作らない。
 - candidate 外、dependency/capacity 待ち、contract rejection、transport failure が仕様どおり区別される。
+- candidate のassignee / ready labelをconfigurationで上書きしても同じfilter ruleが適用される。
+- required claim artifactとExecution / Escalation Policy refが固定されるまでclaim successをcommitしない。
 - claim commit 後に projection process を停止・再開しても、最終 label set が一貫する。
 - live GitHub test がなくても fake API で pagination、rate limit、mutation retry を検証できる。
 
@@ -127,13 +138,14 @@ Worker が provider と repository command を安全に実行し、session 間�
 
 ### Milestone 4 deliverables
 
-- named volume 向け content-addressed Artifact Store
-- atomic write、digest/length verification、orphan detection
+- Milestone 3のclaim artifact pathをtest / implementation / review evidenceへ拡張する、named volume向け
+  content-addressed Artifact Store
+- 複数Workerのconcurrent append、corruption検出、orphan detection / cleanup
 - Run scoped clone/worktree/branch/checkpoint lifecycle
 - child process supervisor、process-group cancellation、timeout、bounded output、secret redaction
 - fresh session factory と operation-scoped temp/config directory
 - Codex headless adapter と Claude headless adapter
-- Issue/Review provider設定からimmutable Execution Policyを固定するresolver
+- Runに固定済みExecution Policyを各provider invocationへ適用するadapter boundary
 - provider structured output schema と invalid response handling
 - Issue/Review role ごとの credential/filesystem policy
 
@@ -166,7 +178,8 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 - reviewer はIssue ObservationとPR observationでlive freshness（Issue body digest、PR の open/draft・head・base）を検証し、canonical Task Context、artifact、read-only checkoutだけでverdictを返す。
 - `request_changes`後は同じ worktree の新しい provider session が修正し、新しい request digest で再 review する。
 - test approval なしに implementation Operation を enqueue できない。
-- Issue edit、test head change、artifact change が approval を stale にする。
+- Task Context / Context Manifestを変える意味的なIssue edit、test head change、artifact change が approval を
+  stale にする。Issue Observationだけの変化はaudit lineageへ追記し、approvalを維持する。
 
 ## Milestone 6 — GREEN, refactor, final review, and PR
 
@@ -176,6 +189,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 
 - `implement`と`repair_implementation` Issue Operation
 - GREEN、refactor 後 verification、repository required checks の evidence
+- performance bound宣言時のTask固有command実行と`performance-evidence`
 - test mutation detection と test review gate への rollback
 - `final_implementation` Review Request/Result handler
 - approved head binding と stale review prevention
@@ -187,6 +201,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 
 - implementation は approved test validity digest を入力に持つ。
 - refactor 後に同じ test/check を再実行し、evidence を最終 head に bind する。
+- performance bound宣言時は測定command、固定条件、環境identity、複数回実行の要約、bound比較を最終headへbindし、宣言がないTaskへ標準harnessを推測して要求しない。
 - final`request_changes`は fresh repair session に渡り、head change 後に必ず再 review する。
 - final approval と required checks がない head では PR を ready 化できない。draft の publish は approve を gate にしない。
 - crash が publish/finalize response の前後どちらで起きても PR は一つだけになり、Run は`awaiting_human_review`へ収束する。
@@ -206,6 +221,10 @@ Milestone 0のCompose基盤を、完成したController/Worker use caseを実行
 - healthcheck、dependency ordering、restart policy、resource limit、read-only root filesystem
 - Compose secrets、GitHub App/provider credential setup
 - PostgreSQL/artifact backup と restore command/runbook
+- versioned contract、queue payload、artifact / review protocol、database migration の
+  backward / forward compatibility policyとrelease boundary
+- Run / Operation / attempt / outboxを診断し、期待stateとidempotency identityを確認してから
+  retryするoperator runbook / command
 - graceful shutdown と lease drain
 - GHCR publish と pinned image update procedure
 
@@ -216,12 +235,24 @@ Milestone 0のCompose基盤を、完成したController/Worker use caseを実行
 - host に Kudo daemon または provider GUI/session を必要としない。
 - Controller/Review container から Issue workspace が見えず、Review credential で write API を実行できない。
 - PostgreSQL/application restart、Worker kill、volume restore の recovery test が通る。
+- 全roleのlogがMilestone 3のstructured logging contractに従い、Run / Operation / attempt / IssueRefで
+  相関できる。
+- compatibility policyをfixture / migration testで検証し、operator runbookのdiagnose / safe retryを
+  disposable Compose projectで実行して二重OperationやGitHub mutationを作らない。
 - Docker socket がどの service にも mount されていない。
 - pinned image と migration/rollback boundary が release note で追跡できる。
 
 ## Milestone 8 — Product acceptance and hardening
 
 個別 component の完成ではなく、実運用に近い failure matrix で product completion を確認する。
+
+### Milestone 8 deliverables
+
+- Product completion criteriaと自動test / artifact / live verificationを対応付けるacceptance evidence matrix
+- 下記failure matrixを決定論的に実行するheadless acceptance suite
+- dedicated repository / sandbox credential、課金・外部mutation・cleanup境界を明示したopt-in live suite
+- vendor / device boundaryに残るlive verificationと実行結果を記録するrelease checklist
+- Milestone 7が所有するcompatibility policyとoperator diagnose / safe-retry runbookのacceptance scenario
 
 ### Automated acceptance matrix
 
@@ -240,6 +271,19 @@ Milestone 0のCompose基盤を、完成したController/Worker use caseを実行
 dedicated test repository と provider sandbox credential を使う opt-in suite で、GitHub webhook、polling、branch/PR、Codex/Claude CLI の実 boundary を検証する。課金、外部 mutation、cleanup 対象を明示し、通常の`mise run check`には含めない。
 
 headless test で同等の confidence が得られる部分は先に headless で検証する。GitHub delivery、provider CLI lifecycle、macOS container runtime のような vendor boundary は fake だけを実機証明として扱わず、残る live verification を release checklist に記録する。
+
+### Milestone 8 exit criteria
+
+- automated acceptance matrixの全scenarioがdeterministic suiteで成功し、failure注入後も一つのRun、Pull
+  Request、status projectionへ収束する。
+- product completion criteriaの各項目がtest result、immutable artifact、runbook verification、または
+  residual live verificationのいずれかへ一意に対応付く。
+- opt-in live suiteがGitHub delivery / mutation、supported provider CLI lifecycle、reference macOS container
+  runtimeの実boundaryを検証し、実行しない環境では残項目、理由、実行手順をrelease checklistへ記録する。
+- compatibility fixture / migration testとoperator runbook scenarioが成功し、直前のsupported releaseからの
+  upgrade / recovery / safe retry boundaryを再現できる。
+- live verificationの外部mutationと課金対象が記録され、cleanup後にtest repository、credential、artifactの
+  残存状態を確認できる。
 
 ## Product-wide exit criteria
 

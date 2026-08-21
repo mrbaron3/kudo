@@ -156,16 +156,21 @@ Escalation PolicyはRun開始時に、Controllerが自動継続をやめて人�
 
 ```yaml
 schema: "kudo.escalation-policy/v1alpha1"
+attemptRetries: "3"
 reviewRounds:
   testValidity: "3"
   finalImplementation: "3"
 ```
 
-`reviewRounds`はreview gateごとに`request_changes`の自動修正loopを続けるround数の上限である。`test_validity`と`final_implementation`は独立した上限と独立したcounterを持ち、通算しない。各値は`1`以上`10`以下でなければならず、範囲はprotocol coreが固定してconfigurableにしない。`0`は「最初の`request_changes`で必ずescalate」、過大な値は事実上の無制限であり、どちらもgateとしての意味を失わせる。整数はArtifact Manifestの`length`と同じくdecimal stringとしてencodeする。
+`attemptRetries`は、一つのlogical Operationについて初回Attemptの後に作成できる追加Attempt数である。既定は`3`、許容範囲は`1`以上`10`以下で、既定では初回を含め最大4 Attemptになる。retryableなAttempt failureをdurableに確定して次のAttemptを作成するたびに1を消費し、timeout、rate limit、一時network failure、provider crash、GitHub transport failure、providerのinvalid structured outputで同じ予算を共有する。failure classが途中で変わってもcounterを分けない。quality verdict、stale input、immutableなprotocol validation errorは消費対象ではない。protocol validation errorはWorker Result / AttemptFailureとして受理せず`ProtocolError`を別記録し、同じinputをretryせずOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ送る。
+
+attempt retryのcounterはlogical Operationかつ無人区間ごとに独立して持つ。初回Attemptは予算を消費せず、escalation時に区間counterを0へ戻すが、Attempt lineageと生涯Attempt数は戻さない。人間が`ai-ready`を再付与して同じRunをresumeした場合は、新しい無人区間の初回Attemptから開始する。
+
+`reviewRounds`はreview gateごとに`request_changes`の自動修正loopを続けるround数の上限である。`test_validity`と`final_implementation`は独立した上限と独立したcounterを持ち、通算しない。各値は`1`以上`10`以下でなければならず、範囲はprotocol coreが固定してconfigurableにしない。`0`は「最初の`request_changes`で必ずescalate」、過大な値は事実上の無制限であり、どちらもgateとしての意味を失わせる。`attemptRetries`を含む整数はArtifact Manifestの`length`と同じくdecimal stringとしてencodeする。
 
 Escalation PolicyはControllerのdeployment configurationからだけ解決する。Task Issue本文、`authorityRefs`、変更対象repositoryの内容、Worker Resultからは読まない。gateされる側がgate条件を供給できる経路を作らない。
 
-`EscalationPolicyRef{schema,digest}`はRunへ記録するが、Runのsemantic input identityには含めない。上限はreviewerへ渡らず、review判断の入力ではないため、値の変更は既存のReview Requestとapprovalをstaleにしない。deployment configurationの変更は次のclaimから有効になり、進行中のRunはpin済みの値を使い切る。判断の背景は[ADR-0003](../decisions/0003-review-round-limit.md)を正とする。
+`EscalationPolicyRef{schema,digest}`はRunへ記録するが、Runのsemantic input identityには含めない。attempt retry上限とreview round上限はController側の自動継続判断だけに使い、Workerまたはreviewerの判断入力へ渡さないため、値の変更は既存のOperation identity、Review Request、approvalをstaleにしない。deployment configurationの変更は次のclaimから有効になり、進行中のRunはpin済みの値を使い切る。判断の背景は[ADR-0003](../decisions/0003-review-round-limit.md)を正とする。
 
 provider、model、adapter version、tool permission、timeout、credential、secret path、session IDをfieldとして持たない。実行境界はExecution Policyが固定し、両者の役割を重ねない。
 
@@ -191,13 +196,15 @@ Artifact Storeへ渡すpayloadは少なくとも次を持つ。
 
 | Field | Meaning |
 | --- | --- |
-| `kind` | `raw-issue-body`、`issue-observation`、`task-context`、`context-manifest`、`execution-policy`、`artifact-manifest` |
+| `kind` | `raw-issue-body`、`issue-observation`、`task-context`、`context-manifest`、`execution-policy`、`escalation-policy`、`artifact-manifest`、`pull-request-observation` |
 | `schema` | versioned YAML artifactのschema。raw bodyは空 |
 | `mediaType` | raw bodyは`text/markdown; charset=utf-8`、canonical artifactは`application/yaml; charset=utf-8` |
 | `digest` | `data`のSHA-256 |
 | `data` | write-onceで保存するexact bytes |
 
 store前とread時にdigest/data、kind、schema/refの一致を検証する。同じdigestへ異なるbytesを保存せず、既存payloadをin-place更新しない。
+
+Escalation Policy payloadのkindは`escalation-policy`、この版のschemaは`kudo.escalation-policy/v1alpha1`である。`execution-policy` kindへ保存したり、kindからschemaを推測してrefのschemaを省略したりしない。encoderはこの組を生成し、readerは`EscalationPolicyRef{schema,digest}`、payload kind、payload schema、payload digest、bytesをすべて照合する。Artifact kindは保存用途、schemaはversioned payloadの解釈を表す別の値空間である。
 
 ## Versioning and compatibility
 

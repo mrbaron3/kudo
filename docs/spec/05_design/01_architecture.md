@@ -183,7 +183,8 @@ Runtime transport は interface の method call を模倣する必要はない�
 | Outbox | projection identity。state commit と同じ transaction で作成する |
 | Review binding | request digest と result digest。入力変更時に stale と判定する |
 | Execution Policy | provider/model/adapter version、tool/timeout policyのdigest。Run途中で暗黙に変更しない |
-| Escalation Policy | review round 上限のdigest。claim時にRunへpinし、semantic inputには含めない。値の変更は既存reviewをstaleにせず次のclaimから有効になる |
+| Escalation Policy | attempt retry / review round上限のdigest。claim時にRunへpinし、semantic inputには含めない。値の変更は既存Operation / reviewをstaleにせず次のclaimから有効になる |
+| Attempt retry counter | Operation ID + 無人区間。追加Attempt作成時だけ増加し、区間counterはescalationでresetするがAttempt lineageと生涯counterは単調増加する |
 | Review round counter | Run ID + review gate。gateごとに独立し、quality verdictが確定したroundだけを数える。無人区間counterはescalationで0へ戻り、生涯counterは単調増加する |
 | Artifact metadata | digest、media type、length、producer、created time。bytes は volume に置く |
 
@@ -199,6 +200,7 @@ retry policy は error class ごとに決める。
 
 - timeout、rate limit、一時的な network/provider failure: exponential backoff と jitter で retry
 - invalid provider output: bounded retry 後に execution failure として記録し、品質 verdict には変換しない
+- immutable envelope / Result / refのprotocol validation error: ResultまたはAttemptFailureとして受理せず、`ProtocolError`を記録してOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ送る。同じinputをretryせず、retry budgetも消費しない
 - contract/authority conflict、安全判断: `needs_human`
 - review の blocking finding: `request_changes`として修正 Operation へ routing。ただし当該 gate の round 上限に達した場合は修正 Operation を発行せず、`review_round_limit_exceeded`として`needs_human`
 - changed Context Manifest/Execution Policy/head/artifact/policy/PR ref: stale。新しい identity で再評価し、古い approval は破棄
@@ -252,7 +254,7 @@ Implementation と Review が共有できるのは次だけである。
 - provider application の private state
 - Controller の application-private memory
 - Issue Worker の write credential
-- review round counter、round 上限、Escalation Policy（Controller の gate 予算であり、reviewer の判断入力ではない）
+- attempt retry / review round counterと上限、Escalation Policy（Controller の gate 予算であり、Worker / reviewer の判断入力ではない）
 
 ## Mutation authority
 
@@ -321,6 +323,6 @@ flowchart TD
 
 ## Telemetry
 
-Run ID、Operation ID、attempt、IssueRef、state transition、duration、provider、token/cost、artifact digest、verdict、gate ごとの無人区間 / 生涯 review round 数、escalation 回数、escalation reason code を structured log と trace/metric に出せるようにする。round 分布と escalation reason の内訳は Escalation Policy の既定値を実測から見直すための唯一の材料であり、欠けると上限値が勘のまま固定される。secret、Issue の非公開本文、provider transcript、source bytes を既定で telemetry へ送らない。
+Run ID、Operation ID、attempt、IssueRef、state transition、duration、provider、token/cost、artifact digest、verdict、logical Operationごとの無人区間 / 生涯Attempt数、gateごとの無人区間 / 生涯review round数、escalation回数、escalation reason codeをstructured logとtrace/metricに出せるようにする。Attempt / round分布とescalation reasonの内訳はEscalation Policyの既定値を実測から見直すための材料であり、欠けると上限値が勘のまま固定される。secret、Issueの非公開本文、provider transcript、source bytesを既定でtelemetryへ送らない。
 
 Telemetry backend の欠落や sampling は workflow correctness に影響させない。復旧に必要な state と lineage は PostgreSQL と Artifact Store に残す。

@@ -191,7 +191,7 @@ findings: []
 - model sessionへ渡す表現はYAML summary（metrics、実行条件、run数、median）とする。raw report（LighthouseのJSON/HTML等）はaudit用bytesとして保存してよいが、model inputにしない。
 - Task Contextまたはauthority（例: repositoryのperformance budget文書を`authorityRefs`で参照）にboundが宣言されている場合、bound充足は数値比較としてdeterministic prerequisiteで機械照合できる。reviewerが判定するのは測定方法の妥当性とresidual riskである。
 - chrome-devtools MCPのようなinteractive測定toolはruntime review pathに置かない。Issue Workerのprovider sessionが探索的に使うかはExecution Policyのtool policyの問題であり、evidenceとして固定されるのはharness実行結果だけである。
-- performance観点適用時の測定evidenceのlogical name必須化は#43で確定する。
+- performance boundが宣言されたTaskに限り、測定evidenceのlogical nameを`performance-evidence`として必須化する。bound宣言がなく実行surfaceだけでperformance観点が適用される場合、測定evidenceをdeterministic prerequisiteにはしない。
 
 session assemblyは次のとおり。
 

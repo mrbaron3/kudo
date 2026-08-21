@@ -168,10 +168,11 @@ configuration は command flag より environment / mounted config を基本と�
 | `KUDO_REVIEW_PROVIDER` | Review Requestに使うrequired provider。`codex`または`claude` |
 | `KUDO_MAX_CONCURRENCY` | role containerごとの同時Operation上限 |
 | `KUDO_OPERATION_TIMEOUT` | Operation kindごとのdeadline policy参照 |
+| `KUDO_ATTEMPT_RETRIES` | Controller専用。一つのlogical Operationで初回後に許す追加Attempt数。既定`3`、許容範囲`1`〜`10` |
 | `KUDO_REVIEW_ROUNDS_TEST_VALIDITY` | Controller専用。`test_validity` gateのreview round上限。既定`3`、許容範囲`1`〜`10` |
 | `KUDO_REVIEW_ROUNDS_FINAL_IMPLEMENTATION` | Controller専用。`final_implementation` gateのreview round上限。既定`3`、許容範囲`1`〜`10` |
 
-IssueとReviewに同じproviderを指定してもよいが、session、credential、filesystem、contextはroleごとに分離する。選択したprovider/model/adapter version/tool/timeout policyはRun開始時にExecution Policy artifactとして固定する。review round上限は同じくRun開始時にEscalation Policy artifactとして固定するが、semantic inputではないため値の変更は進行中Runをsupersedeせず、次のclaimから有効になる。
+IssueとReviewに同じproviderを指定してもよいが、session、credential、filesystem、contextはroleごとに分離する。選択したprovider/model/adapter version/tool/timeout policyはRun開始時にExecution Policy artifactとして固定する。attempt retry上限とreview round上限は同じくRun開始時にEscalation Policy artifactとして固定するが、semantic inputではないため値の変更は進行中Runをsupersedeせず、次のclaimから有効になる。
 
 secret-specific key と provider-specific setting は adapter 実装時に versioned configuration reference を追加する。unknown key、欠落した required key、不正 duration を warning だけで継続しない。
 
