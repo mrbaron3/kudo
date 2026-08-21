@@ -85,7 +85,7 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 
 **事前条件**
 
-- Run、Operation、Attempt、lease、commit、artifact reference が durable に記録されている。
+- Run、structured claim context、Operation、Attempt、lease、commit、artifact referenceがdurableに記録されている。
 - 外部 mutation に stable identity と expected state がある。
 
 **受け入れ基準**
@@ -98,7 +98,7 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 - **再構築: Immutable Checkpoint**
   - Given 以前の provider process と mutable memory が失われている。
   - When 新しい Attempt を開始する。
-  - Then commit、Context Manifest、Execution Policy、artifact reference だけから必要な入力を再構築する。
+  - Then structured claim context、live GitHub/source、commit、Execution Policy、artifact referenceから必要な入力を再構築し、期待digestとの一致を確認する。
 
 - **整合性: State Commit 後の停止**
   - Given durable transition は commit 済みだが、次の dispatch または GitHub projection 前に process が停止する。
@@ -147,9 +147,10 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
   - Then 停止 phase、reason code、evidence、必要な human action が durable に保存され、`ai-needs-human` が投影される。
 
 - **上限: Review Round Budget**
-  - Given 当該 gate の `request_changes` round が無人区間の上限に達する。
-  - When Controller が verdict を受理する。
-  - Then reviewer の verdict は変更せず、次の repair Operation を発行しないで `needs_human` へ遷移する。
+  - Given 当該 gate の無人 round 予算（`request_changes`、および `test_validity` では implement 発の
+    `test_revision_required` 差し戻しを含む）が上限に達する。
+  - When Controller が verdict または差し戻しを受理する。
+  - Then reviewer の verdict は変更せず、次の修正 Operation を発行しないで `needs_human` へ遷移する。
 
 - **再開: Resume Identity が同一**
   - Given 人間が必要な対応を行い、`ai-ready`を再付与する。

@@ -2,6 +2,7 @@ schema: "kudo.worker-result/v1alpha1"
 operationDigest: "sha256:37241c197d0256f21ea0b0e7b0342da428a471be11a41dd6254d25d3b0bd4c2e"
 outcome: "succeeded"
 headSha: "fedcba9876543210fedcba9876543210fedcba98"
+claimContext: null
 changedInputFields: []
 outputArtifacts:
   - name: "red-evidence"

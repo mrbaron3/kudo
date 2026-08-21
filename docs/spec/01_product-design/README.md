@@ -53,15 +53,18 @@ rejection category と対象 section / field を示して人間へ差し戻す�
 production code より先に test と RED evidence を作り、別の read-only session が Acceptance Criteria
 との対応を評価する。実装しやすい test へ都合よく寄せることを workflow の境界で防ぐ。
 
-### 4.2. 判断根拠を commit と artifact に固定する
+### 4.2. 判断根拠をdigest、commit、artifactに固定する
 
-Issue Observation、canonical Task Context、Context Manifest、test plan、command evidence、Review
-Result を digest 付きで残す。どの入力と head に対する approval かを再計算できるようにする。
+claim時のCompiler versionとIssue Observation / Task Context / Context Manifestのdigest、test plan、command
+evidence、Review Resultを残す。Issue由来contextは各Operationでlive GitHubから再生成し、承認時のidentity
+と一致するかを再計算・検証できるようにする。Issueが後から編集された場合に過去の本文そのものを復元する
+ことは保証しない（[ADR-0006](../05_design/decisions/0006-live-context-reconstruction.md)）。
 
 ### 4.3. 中断を前提に安全に回復する
 
-workflow state と queue を PostgreSQL に置き、外部 mutation は idempotency identity と live state
-照合を伴って行う。process が失われても、確定済み commit と artifact から新しい attempt を開始する。
+workflow stateとqueueをPostgreSQLに置き、外部mutationはidempotency identityとlive state照合を伴って
+行う。processが失われても、structured claim context、live GitHub/source、確定済みcommit、evidence
+artifactから新しいattemptを開始する。
 
 ### 4.4. 実装と review の独立性を保つ
 
@@ -94,9 +97,9 @@ Kudo が担当する範囲は、実行依頼の検出から、承認済み head 
 
 対象 Issue から作られた Pull Request には、少なくとも次の lineage が存在しなければならない。
 
-- GitHub から直接取得した exact body を固定する Issue Observation
-- strict parse 済み Issue を固定表現にした canonical Task Context
-- base commit、dependency completion、authority content を固定した Context Manifest
+- claim時と各Operationで観測したIssue Observation ref/body digest
+- strict parse済みIssueから各Operationで再生成し、期待digestと一致したcanonical Task Context
+- base commit、dependency completion、authority contentから再計算したContext Manifest identity
 - Issue の Acceptance Criteria に対応する test plan と test patch
 - 対象機能が未実装であることを示す RED command evidence
 - 実装と隔離された Review Worker による test validity approval
@@ -106,7 +109,7 @@ Kudo が担当する範囲は、実行依頼の検出から、承認済み head 
 - approved head と live head の一致、required check の結果、mergeable 状態を照合したうえで実行した
   merge の commit SHA
 
-artifact、Review Request、Review Result は immutable identity を持つ。Context Manifest、Execution Policy、
+claim context、artifact、Review Request、Review Resultはimmutable identityを持つ。Context Manifest、Execution Policy、
 head SHA、artifact digest、policy reference のいずれかが変われば、以前の review approval は再利用しない。
 Issue Observation だけの変化は audit lineage への追記であり、approval を stale にしない。
 

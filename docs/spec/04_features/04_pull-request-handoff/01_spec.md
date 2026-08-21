@@ -22,14 +22,20 @@ finalize gate、merge gate、Pull Request mutation、完了 projection の実現
 **事前条件**
 
 - Test Validity Review と Final Review がいずれも `approve` である。
-- final head、required checks、Pull Request reference が durable state に固定されている。
+- final head、required checks の evidence、Pull Request reference が durable state に固定されている。
 
 **受け入れ基準**
 
 - **正常系: Identity 一致**
-  - Given final approval、required checks、live Pull Request が同じ head / base / repository を指している。
+  - Given final approval、required checks の evidence、live Pull Request が同じ head / base / repository を指している。
   - When finalize gate を評価する。
   - Then `finalize_pull_request` を実行できる状態になる。
+
+- **鮮度: Issue の意味的変更**
+  - Given final approve 後に Task Issue が意味的に編集され、再生成した Context Manifest が claim 時の期待
+    digest と一致しない。
+  - When finalize または merge Operation が開始時に live context を再構築・照合する。
+  - Then mutation は行われず、stale として停止し、以前の approval は再利用されない。
 
 - **鮮度: Head の不一致**
   - Given final approval 後に Pull Request branch へ別の commit が push されている。
@@ -59,7 +65,7 @@ finalize gate、merge gate、Pull Request mutation、完了 projection の実現
 
 **完了条件**
 
-- 自動テスト: identity一致 / head不一致 / base不一致 / close / evidence不足を検証する。
+- 自動テスト: identity一致 / head不一致 / base不一致 / Issue意味的変更のstale / close / evidence不足を検証する。
 - 証跡: finalize decision と根拠にした live Pull Request observation が関連付けられている。
 
 ## 4.4.2. Pull Request 確定

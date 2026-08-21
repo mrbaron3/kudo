@@ -19,6 +19,7 @@ reaper が Operation を再度 eligible にする。
 | timeout、rate limit、一時 network / provider failure | retry budget 内で新しい Attempt を作る |
 | invalid provider output | bounded retry 後に execution failure とする |
 | quality `request_changes` | 同じ gate の修正 Operation へ進める |
+| implement 発の `test_revision_required` | `test_validity` の round 予算を1消費し、上限内なら `revise_tests` へ、上限到達で `needs_human` |
 | stale semantic input | 現在の identity に対する新しい評価を要求する |
 | authority conflict、安全判断、intent に紐付かない外部 close / merge、`merge_blocked` | `needs_human` へ遷移する |
 | immutable inputに対するprotocol validation error | Worker Result / AttemptFailureとして受理せず、`ProtocolError`を記録してOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ送る |
@@ -42,7 +43,8 @@ versioned Result を受理した後に gate ごとの counter を評価する。
 
 Issue Observation、Pull Request Observation、Escalation Policy、無人区間counterはResume Identityに含めない。Observationはaudit lineageであり、Escalation Policyとcounterはreview判断のsemantic inputではないためである。進行中Runはclaim時にpinしたEscalation Policyを継続して使い、resume時のdeployment設定へ差し替えない。
 
-再reconciliationは人間による`ai-ready`再付与を確認し、live stateから同じ構成のidentityを再構築する。
+再reconciliationは人間による`ai-ready`再付与を確認し、structured claim contextに固定したCompiler versionで
+live Issue/authorityを再取得・再compileして同じ構成のidentityを再構築する。
 
 - Resume Identity全体が同じなら、`needs_human`から保存済み停止phaseへ戻し、そのphaseに対応するOperationまたはReviewをfresh Attemptとして再dispatchする。publish/finalizeはlive GitHub stateを照合するidempotent recoveryとして再実行する。
 - `InputIdentity`が変わった場合は旧Runをsupersededとし、新しいRun/review lineageを作る。以前のapprovalを移さない。

@@ -21,7 +21,7 @@ Operation、artifact binding、review isolation の実現方法は [詳細設計
 
 **事前条件**
 
-- Claim が成功し、canonical Task Context、Context Manifest、base SHA が固定されている。
+- Claimが成功し、Task Context / Context Manifestの期待digest、Compiler version、base SHAがstructured claim contextへ固定されている。
 - Issue Worker が Run 専用 worktree を使用できる。
 
 **受け入れ基準**
@@ -45,6 +45,12 @@ Operation、artifact binding、review isolation の実現方法は [詳細設計
   - Given test validity review が versioned `request_changes` Result を返している。
   - When `revise_tests` を開始する。
   - Then finding と immutable artifact が新しい session に明示的に渡され、新しい test checkpoint が作られる。
+
+- **修正系: Implementation からの差し戻し**
+  - Given implement が `test_revision_required` で rollback 済み head と `test-revision-report` を返している。
+  - When `revise_tests` を開始する。
+  - Then report と immutable artifact が新しい session に渡され、新しい test checkpoint と RED evidence が
+    作られる。
 
 - **異常系: AC と Test の対応不足**
   - Given 一つ以上の Acceptance Criteria に対応する test case がない。

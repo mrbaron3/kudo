@@ -14,7 +14,7 @@ Acceptance Criteria、Verification、Constraints、Decision Authority、Stop Con
 - required input が欠落または曖昧なら推測しない。
 - parent は hierarchy、dependency は readiness gate として扱い、prose を暗黙に継承しない。
 - 実装入力にする参照だけを `authorityRefs` で明示する。
-- live Issue の exact body と、strict parse 後の canonical Task Context を分けて固定する。
+- live Issueのexact bodyは保存せず、Issue Observation ref/body digestとstrict parse後のTask Context digestを分けて固定する。
 
 これにより、GitHub 上の監査対象と model に渡す実行仕様を混同せず、同じ入力から同じ identity を
 再現できる。
@@ -32,6 +32,7 @@ Issue Contract
   -> GREEN + required checks
   -> final implementation review
   -> reviewable Pull Request
+  -> approved-head merge + Issue close
 ```
 
 RED は単なる command failure ではない。対象 behavior が未実装であることに起因する、期待どおりの
@@ -50,18 +51,21 @@ test validity が承認された後だけ implementation を開始する。実�
 - application-private memory
 - Issue Worker の write credential
 
-各 model-bearing Operation は fresh session で開始し、必要な context は canonical Task Context、
-commit、immutable artifact、versioned Review Result として明示的に渡す。Review Worker は disposable
+各model-bearing Operationはfresh sessionで開始し、必要なcontextはlive Issueから再生成して期待digestと
+一致したcanonical Task Context、commit、immutable evidence artifact、versioned Review Resultとして明示的に渡す。Review Workerはdisposable
 な read-only checkout から判定し、Controller や Issue Worker は verdict を上書きできない。
 
 ## 4. Immutable evidence と freshness
 
-主要な証跡は content-addressed artifact として保存し、Review Request を入力 digest へ bind する。
+期待input identityはPostgreSQLへ固定し、再取得できない主要な証跡だけをcontent-addressed artifactとして
+保存してReview Requestを入力digestへbindする。raw Issue body、Issue Observation、Task Context、Context
+ManifestのYAMLは保存しない。
 
 ```mermaid
 flowchart LR
-    IO[Issue Observation] --> TC[Task Context]
-    TC --> CM[Context Manifest]
+    GH[Live GitHub Issue] --> IC[Issue Compiler]
+    IC --> TC[In-memory Task Context]
+    TC --> CM[Context Manifest identity]
     CM --> TP[Test plan / patch]
     TP --> RED[RED evidence]
     RED --> TR[Test Review Result]
@@ -69,6 +73,7 @@ flowchart LR
     HEAD --> GREEN[GREEN / checks evidence]
     GREEN --> FR[Final Review Result]
     FR --> PR[Reviewable PR]
+    PR --> MG[Compare-and-merge + merged observation]
 ```
 
 Context Manifest、Execution Policy、head commit、Artifact Manifest、policy reference のいずれかが
@@ -85,7 +90,7 @@ workflow store とする。GitHub label と comment は durable state の投影�
 - logical Operation と execution attempt を分け、retry で provider session を再利用しない。
 - transition と次 Operation / projection intent を同一 transaction で記録する。
 - branch、commit、Pull Request の mutation 前後で期待値と live state を照合する。
-- lease 失効後は immutable checkpoint から別 attempt が再構築する。
+- lease失効後はstructured claim contextとlive GitHub/sourceから別attemptがcontextを再構築する。
 
 transport failure、protocol validation failure、quality verdict は別の結果として保持する。
 通信失敗を `request_changes` に変換せず、review finding を retry 対象の通信失敗として扱わない。

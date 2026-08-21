@@ -52,6 +52,12 @@ canonical encoding は versioned contract を正本とする。
   - When reconciliation が candidate 条件を評価する。
   - Then payload の古い本文や label ではなく live state が採用され、Run は開始されない。
 
+- **候補外: Merge 済み Issue の再依頼**
+  - Given `merged` terminal の Run を持つ Issue が reopen され、`ai-ready` が再付与されている。
+  - When reconciliation が claimable 条件を評価する。
+  - Then 新しい Run は開始されず、`ai-ready` が外れて `ai-merged` が再投影され、再実行には新しい Task Issue
+    または versioned command が必要である旨の comment が更新される。
+
 **非機能要件**
 
 - 回復性: webhook を唯一の検出経路にせず、polling で最終的に収束する。
@@ -60,7 +66,7 @@ canonical encoding は versioned contract を正本とする。
 
 **完了条件**
 
-- 自動テスト: webhook / polling / 重複通知 / 候補外 / stale payload を各1ケース以上検証する。
+- 自動テスト: webhook / polling / 重複通知 / 候補外 / merge済み再依頼 / stale payload を各1ケース以上検証する。
 - 証跡: 同一 IssueRef への重複 trigger が一つの reconciliation result に収束することを確認できる。
 
 ## 4.1.2. Contract 検証
@@ -119,8 +125,8 @@ canonical encoding は versioned contract を正本とする。
 **ユーザーストーリー**
 
 - 誰が: workflow を調停する Controller
-- 何を: 検証済み Task Issue の実行権と入力を一意の Run に固定したい
-- なぜ: 中断、retry、並行 trigger があっても同じ根拠から安全に実行を再構築できるから
+- 何を: 検証済みTask Issueの実行権と期待input digestを一意のRunに固定したい
+- なぜ: 中断、retry、並行triggerがあってもlive GitHubから入力を再構築して同一性を確認できるから
 
 **事前条件**
 
@@ -132,7 +138,7 @@ canonical encoding は versioned contract を正本とする。
 - **正常系: Claim 成功**
   - Given dependency が完了し、authority と base commit に競合がない。
   - When Issue Worker が live claim evidence を返す。
-  - Then Run、Issue Observation、Task Context、Context Manifest、Execution Policy、base SHA が durable に固定される。
+  - Then Run、Compiler version、Issue Observation / Task Context / Context Manifestのdigest、Execution Policy、base SHAがdurableに固定され、Issue由来のcanonical YAML本文は保存されない。
 
 - **待機系: Dependency 未完了**
   - Given `dependsOn` のいずれかが未完了である。
@@ -156,7 +162,7 @@ canonical encoding は versioned contract を正本とする。
 
 **非機能要件**
 
-- 永続性: claim success と Run input は process memory だけに保持しない。
+- 永続性: claim success、期待digest、base、policyはprocess memoryだけに保持しない。raw Issue bodyとcanonical YAML本文はlive sourceから再構築する。
 - 冪等性: 同じ IssueRef への再実行で writer-capable Run を増やさない。
 - 可観測性: claim identity、input digest、base SHA、blocked / conflict 理由を追跡できる。
 
@@ -164,6 +170,7 @@ canonical encoding は versioned contract を正本とする。
 
 - 自動テスト: claim success / dependency blocked / concurrent claim / projection retry / authority conflict を検証する。
 - 障害テスト: durable commit 後かつ GitHub projection 前の停止から同じ Run に収束する。
+- 自動テスト: 後続Operationがlive Issueを再compileし、同一digestなら継続、意味的変更ならstaleになることを検証する。
 
 ## 参照する正本
 

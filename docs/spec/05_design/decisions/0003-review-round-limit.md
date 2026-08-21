@@ -1,6 +1,6 @@
 # ADR-0003: Review round 上限と Escalation Policy
 
-- Status: accepted（2026-08-19、attempt retry / resume決定を2026-08-20追記）
+- Status: accepted（2026-08-19、attempt retry / resume決定を2026-08-20追記、`test_revision_required`のround消費と保存境界の修正を2026-08-21追記）
 - 関連Issue: 未起票（Kudoの概念設計レビューで発見）
 - 関連ADR: [ADR-0002](0002-pr-anchored-review.md)（全review roundをPRへ繋留する判断を前提とする）
 
@@ -32,7 +32,8 @@ Controllerが行うのは「reviewerが返した`request_changes`に対して修
 
 - `test_validity`と`final_implementation`は別々のcounterを持つ。2つのgateは失敗理由も修正Operation（`revise_tests` / `repair_implementation`）も異なる独立した収束過程であり、通算にすると片方のgateが荒れただけでもう片方の予算を食い潰す。
 - counterはRun aggregateが持ち、同じgateへ再入してもresetしない。
-- 数えるのはquality verdictが確定したroundだけである。attempt failure、stale input、transport failure、protocol validation errorはroundを消費しない。いずれもverdictではなく、attempt/transport failureはretry budget、protocol validation errorはResult非受理・即時terminal routingの別経路で扱う。
+- 数えるのはquality verdictが確定したroundである。attempt failure、stale input、transport failure、protocol validation errorはroundを消費しない。いずれもverdictではなく、attempt/transport failureはretry budget、protocol validation errorはResult非受理・即時terminal routingの別経路で扱う。
+- （2026-08-21追記）`test_validity`のcounterは、implement laneが「承認済みtestの変更が必要」と判断して返す`test_revision_required`（[operation-protocol-v1alpha1.md](../contracts/operation-protocol-v1alpha1.md)）の確定でも1を消費する。reviewerのverdictではないが、test gateを再び開いて無人loopを継続させる差し戻しであり、予算が縛る対象（無人区間のtest gate churn）は同じである。消費しないと、implement→revise→approve→implementの往復がどの予算にも数えられず、無人区間が有限にならない。
 
 ### D3. 予算の単位は無人区間であり、escalationごとにresetする
 
@@ -89,7 +90,9 @@ deployment configurationからControllerが解決し、claim時にRunへpinす�
 | 1 | `request_changes` | 1 < 3 なので修正Operationをdispatch |
 | 2 | `request_changes` | 2 < 3 なので修正Operationをdispatch |
 | 3 | `request_changes` | 3 >= 3 なので`needs_human`へescalate |
-| 3 | `approve` | 上限に達していても次のgateへ進む。上限は`request_changes`だけを止める |
+| 3 | `approve` | 上限に達していても次のgateへ進む。上限は差し戻しだけを止める |
+
+（2026-08-21追記）`test_validity`では`test_revision_required`の確定も1 roundとして加算する。加算後に上限以上なら`revise_tests`を発行せず、`review_round_limit_exceeded`で`needs_human`へ送る。`approve`が上限到達後でも次のgateへ進む規則は変わらない。
 
 ### D6. escalationは全roundを集約し、同一性の自動判定はしない
 
@@ -162,7 +165,8 @@ reviewRounds:
 
 - `attemptRetries`と`reviewRounds`の整数はArtifact Manifestの`length`と同じくdecimal stringとしてencodeする（[task-context-v1alpha1.md](../contracts/task-context-v1alpha1.md)のcanonical encoding規則を共有する）。
 - provider、credential、timeout、tool permissionのfieldを持たない。Execution Policyと役割を重ねない。
-- Artifact Store上のkindは`escalation-policy`、schemaは`kudo.escalation-policy/v1alpha1`とする。`execution-policy` kindへ格納せず、ref/payloadのkind、schema、digest、bytesをすべて照合する。
+- payloadのkindは`escalation-policy`、schemaは`kudo.escalation-policy/v1alpha1`とし、`execution-policy` kindへ紐付けない。ref/payloadのkind、schema、digest、bytesをすべて照合する。
+- （2026-08-21修正）bytesはArtifact Storeへ保存しない。producerのControllerはartifact volumeをmountしないためである。内容はstructured claim contextと同じくPostgreSQLのtyped dataとしてRunへ固定し、canonical encodeはidentity計算とbinding検証にだけ使う。保存境界の正本は[task-context-v1alpha1.md](../contracts/task-context-v1alpha1.md)のCanonical payload and persistence boundaryに置く。
 
 ### 2. Run aggregateの変更
 

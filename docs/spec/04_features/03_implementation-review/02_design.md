@@ -18,12 +18,15 @@ approved test validity result
 
 ## Implementation lane
 
-Controller は approved test result とその binding、canonical Task Context、Context Manifest、現在 head、
+Controllerはapproved test resultとそのbinding、Task Context / Context Manifestの期待digest、現在head、
 Execution Policy を `implement` input として固定する。Issue Worker は Run 専用 worktree で production code を
 変更し、承認済み test を書き換えない。
 
-test 変更の必要性を検出した場合は implementation result として明示し、Controller が test authoring gate へ
-戻す。implementation session が独自判断で test approval の対象を書き換えて進行してはならない。
+test 変更の必要性を検出した場合は、未承認の変更を最後に承認された test checkpoint へ rollback し、
+rollback 済み head と `test-revision-report` を持つ `test_revision_required` Result として返す。Controller は
+`test_validity` の無人 round 予算を1消費して `revise_tests` を dispatch し、上限到達時は
+`review_round_limit_exceeded` として `needs_human` へ送る。implementation session が独自判断で
+test approval の対象を書き換えて進行してはならない。
 
 ## Evidence と Publish
 
@@ -54,6 +57,7 @@ schema と freshness を検証するが、reviewer の品質判断を上書き�
 ## 検証方針
 
 - approval 前の `implement` dispatch と、approved test の暗黙変更を拒否する。
+- `test_revision_required` の round 消費と、上限到達時の escalation routing を検証する。
 - GREEN / required checks、またはbound宣言時の`performance-evidence`が不足した Result から final review を発行しない。
 - final head、artifact、policy の変更で approval が stale になることを検証する。
 - Issue Worker と Review Worker の credential、workspace、provider state が分離されることを境界 test で確認する。

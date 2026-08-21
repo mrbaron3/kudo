@@ -39,7 +39,13 @@ func NewArtifactEntry(name string, payload ArtifactPayload) (ArtifactEntry, erro
 	if !validArtifactName(name) {
 		return ArtifactEntry{}, protocolErr(ProtocolFieldInvalid, "name", "artifact の logical name が不正: %q", name)
 	}
-	if err := payload.Validate(); err != nil {
+	if reconstructibleIssueInputNames[name] {
+		return ArtifactEntry{}, protocolErr(ProtocolKindConstraint, "name",
+			"Issue由来の再構築可能なinputはArtifact Manifestへ追加できない: %q", name)
+	}
+	// Manifest entryはArtifact Storeの永続bytesを指す。logical nameのみで判定すると、
+	// Task Context payloadを別名で保存できるため、payload kindの永続化規則もここで強制する。
+	if err := ValidatePersistentArtifactPayload(payload); err != nil {
 		return ArtifactEntry{}, err
 	}
 	return ArtifactEntry{
@@ -78,6 +84,10 @@ func validateArtifactManifest(manifest ArtifactManifest) error {
 		field := func(name string) string { return fmt.Sprintf("entries[%d].%s", i, name) }
 		if !validArtifactName(entry.Name) {
 			return protocolErr(ProtocolFieldInvalid, field("name"), "logical name が不正: %q", entry.Name)
+		}
+		if reconstructibleIssueInputNames[entry.Name] {
+			return protocolErr(ProtocolKindConstraint, field("name"),
+				"Issue由来の再構築可能なinputはArtifact Manifestへ追加できない: %q", entry.Name)
 		}
 		if seen[entry.Name] {
 			return protocolErr(ProtocolFieldDuplicate, field("name"), "logical name が重複: %s", entry.Name)

@@ -12,7 +12,7 @@ executionPolicy:
   digest: "sha256:3b9f2163726f0420bc286602bea5ad9acb7085aba4a6bdc935138cd0d488feec"
 artifactManifest:
   schema: "kudo.artifact-manifest/v1alpha1"
-  digest: "sha256:af90b6f15b7068687f3e0e0a0f28be909b981e290c23b38026e9ebe9336538cd"
+  digest: "sha256:731d494480b2ecb3988612defb0927462f2445380c157f60099e435fcec9c4ce"
 policyRefs:
   - "docs/spec/05_design/contracts/issue-contract-v1alpha1.md"
   - "docs/spec/05_design/review-policies/test-validity-v1alpha1.md"

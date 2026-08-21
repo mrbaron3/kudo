@@ -32,6 +32,7 @@ var transitions = map[transitionKey]transition{
 	{PhasePublishingTestHead, KindHeadPublished}:           onTestHeadPublished,
 	{PhaseAwaitingTestReview, KindReviewCompleted}:         onTestReviewCompleted,
 	{PhaseImplementing, KindImplementationFixed}:           onImplementationFixed,
+	{PhaseImplementing, KindTestRevisionRequired}:          onTestRevisionRequired,
 	{PhasePublishingFinalHead, KindHeadPublished}:          onFinalHeadPublished,
 	{PhaseAwaitingFinalReview, KindReviewCompleted}:        onFinalReviewCompleted,
 	{PhaseFinalizingPullRequest, KindPullRequestFinalized}: onPullRequestFinalized,
@@ -114,6 +115,7 @@ func normalizeEvent(event Event) (Event, EventKind, bool) {
 		HeadPublished,
 		ReviewCompleted,
 		ImplementationFixed,
+		TestRevisionRequired,
 		PullRequestFinalized,
 		PullRequestMerged,
 		ObservationRecorded,
@@ -169,14 +171,22 @@ func gate(run Run, kind EventKind, format string, args ...any) (Decision, error)
 
 func onClaimSucceeded(run Run, event Event) (Decision, error) {
 	claimed := event.(ClaimSucceeded)
+	if err := contract.ValidateClaimContext(claimed.Context); err != nil {
+		return gate(run, claimed.EventKind(), "live再構築checkpointが不正: %v", err)
+	}
 	// 範囲外の上限を持つ Run を作らせない。claim で弾かないと、gate 予算が壊れた Run が
 	// 最初の request_changes で即 escalate する状態を後段まで持ち越す。
 	if err := validateRoundLimits(run, claimed); err != nil {
 		return Decision{}, err
 	}
 	run.Phase = PhaseClaimed
-	run.Input = claimed.Input
-	run.Observation = claimed.Observation
+	run.Input = InputIdentity{
+		ContextManifest: claimed.Context.ContextManifest,
+		ExecutionPolicy: claimed.ExecutionPolicy,
+	}
+	run.ClaimContext = claimed.Context
+	run.Observation = claimed.Context.Observation
+	run.ObservationBodyDigest = claimed.Context.BodyDigest
 	run.EscalationPolicy = claimed.EscalationPolicy
 	run.RoundLimits = claimed.RoundLimits
 	return decide(run,
@@ -369,6 +379,36 @@ func onImplementationFixed(run Run, event Event) (Decision, error) {
 	return decide(run, DispatchOperation{Kind: contract.OperationPublishHead})
 }
 
+// onTestRevisionRequired は implementation lane からの test 差し戻しを test gate へ戻す。
+//
+// quality verdict ではないが test_validity の round を消費する。消費しないと、
+// implement→revise→approve→implement の往復がどの予算にも数えられず、無人区間が
+// 有限にならない（ADR-0003 2026-08-21 追記）。rollback 先を承認済み test checkpoint へ
+// 束縛するのは、承認していない test 状態から revise_tests を始めさせないためである。
+func onTestRevisionRequired(run Run, event Event) (Decision, error) {
+	revision := event.(TestRevisionRequired)
+	if run.TestApproval == nil {
+		return gate(run, revision.EventKind(), "test validity approve が無い")
+	}
+	if revision.Head != run.TestApproval.Head {
+		return gate(run, revision.EventKind(),
+			"rollback 先が承認済み test checkpoint と一致しない: got %s, want %s",
+			revision.Head, run.TestApproval.Head)
+	}
+	run.Rounds.TestValidity++
+	run.TotalRounds.TestValidity++
+	if roundLimitReached(run.Rounds.TestValidity, run.RoundLimits.TestValidity) {
+		return escalate(run, EscalationReviewRoundLimitExceeded)
+	}
+	// 差し戻した時点で以前の approval を前提にしない。新しい test_validity approve を
+	// 得るまで implementation へ戻れないことを、後段の gate ではなく state で表す。
+	run.Phase = PhaseAuthoringTests
+	run.FixedHead = ""
+	run.ChecksHead = ""
+	run.TestApproval = nil
+	return decide(run, DispatchOperation{Kind: contract.OperationReviseTests})
+}
+
 func onPullRequestFinalized(run Run, event Event) (Decision, error) {
 	finalized := event.(PullRequestFinalized)
 	if run.FinalApproval == nil || finalized.Head != run.FinalApproval.Head {
@@ -404,6 +444,7 @@ func onPullRequestMerged(run Run, event Event) (Decision, error) {
 func onObservationRecorded(run Run, event Event) (Decision, error) {
 	recorded := event.(ObservationRecorded)
 	run.Observation = recorded.Observation
+	run.ObservationBodyDigest = recorded.BodyDigest
 	return decide(run)
 }
 

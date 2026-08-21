@@ -37,6 +37,8 @@ Controllerが`merge_pull_request`を発行できるのは次がすべて成立�
 
 Review Workerはこの判定に関与しない。reviewerが返すのは品質verdictだけであり、「mergeしてよいか」というrepository運用上の判断をmodelへ委譲しない。逆にControllerは、外形条件がすべて揃っても品質approveが無ければmergeしない。
 
+（2026-08-21追記）この評価はControllerがread-onlyのpull request / required status check観測で行う（[Runtime platform](../03_runtime-platform.md)のcredential表がpull requests read、checks readを与える）。`merge_pull_request`はfinalize完了後にenqueueし、外形条件が揃うまで`retry_wait`のまま待機させ、揃った時点でeligibleにする。Issue Workerは実行の開始時にlive contextを、mutation直前にlive PRを再照合し、API側の期待head照合と合わせて評価と実行の間の窓を閉じる。その窓でcheckやprotectionが変化してGitHubがmergeを拒否した場合、Issue Workerは品質verdictへ変換せず、拒否の観測をevidenceとした`needs_human` Resultで返し、Controllerが`merge_blocked`として扱う。
+
 ### D3. mergeは承認済みheadへ束縛したcompare-and-mergeで行う
 
 - Issue Workerはmerge要求に期待head SHAを明示的に渡し、GitHub側でheadが一致する場合だけmergeが成立するようにする。branchへのcompare-and-pushと同じ規律である。
@@ -75,6 +77,10 @@ Review Workerはこの判定に関与しない。reviewerが返すのは品質ve
 | intentの無いclosed / merged観測 | `external_mutation_conflict`で`needs_human` |
 
 required checkのfailureを`request_changes`へ読み替えない。reviewerは同じ判断を再実行するだけで、CI failureの原因がKudoの差分にあるとは限らないためである。逆にKudoが自動でrepository設定を緩めることもしない。
+
+### D8. finalize / merge は開始時に live context を再検証する（2026-08-21 追記）
+
+「Run 中に Context Manifest が変われば進行を止める」という不変条件は、live 再構築を行う Operation でしか enforce されない。final approve 後に Issue が意味的に編集される窓を検出できる最後の enforcement point は`finalize_pull_request`と`merge_pull_request`の開始時であり、merge は取り消せない mutation である。したがって両 Operation は model session を持たないが、開始時に [ADR-0006](0006-live-context-reconstruction.md) と同じ live 再構築・Context Manifest 照合を必須とする。不一致は`stale_input`として返し、mutation を行わない。完了時の照合は要求しない。mutation 確定後に stale を検出しても取り消せないためである。`publish_head`は対象外で、publish 後の staleness は次の Review Request の開始時照合が検出する。
 
 ## 設計詳細
 
@@ -124,7 +130,7 @@ merging_pull_request --> needs_human（merge_blocked / external_mutation_conflic
 ### 代償・リスク
 
 - 人間のPR reviewがgateから外れる。誤りはbaseへ入ってから発見され、修正はrevertまたは新しいIssueになる。緩和策はbranch protectionとrequired check、review policyの観点、そしてbase branchをKudo専用に限定できる設定であり、いずれも人間が事前に置く。
-- baseが進んだ場合、reviewしたheadとmerge後のbase状態は同じではない。`Require branches to be up to date`を有効にすればprotectionが拒否して`merge_blocked`になるが、Kudoは自動でrebaseもbase mergeも行わない。取り込みは新しいheadを作る行為であり、再reviewを要求するためである。
+- baseが進んだ場合、reviewしたheadとmerge後のbase状態は同じではない。`Require branches to be up to date`を有効にすればprotectionが拒否して`merge_blocked`になるが、Kudoは自動でrebaseもbase mergeも行わない。取り込みは新しいheadを作る行為であり、再reviewを要求するためである。推奨設定と残余riskの正本は[GitHub routing policy](../04_github-routing.md)「Repository 設定の前提と推奨」に置く（2026-08-21追記）。
 - `merge_blocked`が新しい定常的な差し戻し理由になる。CIが不安定なrepositoryでは、review roundではなくmerge段階での停止が増える。
 
 ### 未決事項（deferred）

@@ -1,0 +1,10 @@
+schema: "kudo.worker-result/v1alpha1"
+operationDigest: "sha256:b5b0d0c4fc536b5d8d578cbc57857b8083bbc0d3293c5aeb023b07cfe7e27b00"
+outcome: "test_revision_required"
+headSha: "89abcdef0123456789abcdef0123456789abcdef"
+claimContext: null
+changedInputFields: []
+outputArtifacts:
+  - name: "test-revision-report"
+    digest: "sha256:e5b492dc5fc719ff6c862cf048569feccbeddfebc2aeb02cf8b94c82bcedc3dc"
+externalRefs: []

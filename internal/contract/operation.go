@@ -52,6 +52,10 @@ type operationKindRule struct {
 	// 残さなければならない kind で true。非空判定だけでは PR identity を復元できず、
 	// retry 時の既存 PR 照合も durable handoff も成立しない。
 	pullRequestRef bool
+	// testRevision は「承認済み test の変更が必要」という差し戻しを返せる kind で true。
+	// test を所有する author/revise lane は自分の test に差し戻しを返せず、head を進めない
+	// publish 系と claim は test を評価しない。
+	testRevision bool
 }
 
 // operationKindRules は kind ごとの field 要件を固定する。succeeded が残さなければ
@@ -61,8 +65,8 @@ var operationKindRules = map[OperationKind]operationKindRule{
 	OperationClaim:                {},
 	OperationAuthorTests:          {resolvedContext: true},
 	OperationReviseTests:          {resolvedContext: true, priorArtifacts: true},
-	OperationImplement:            {resolvedContext: true, priorArtifacts: true},
-	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true},
+	OperationImplement:            {resolvedContext: true, priorArtifacts: true, testRevision: true},
+	OperationRepairImplementation: {resolvedContext: true, priorArtifacts: true, testRevision: true},
 	OperationPublishHead:          {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
 	OperationFinalizePullRequest:  {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
 	OperationMergePullRequest:     {resolvedContext: true, priorArtifacts: true, preservesHead: true, pullRequestRef: true},
@@ -220,17 +224,24 @@ func encodeOperationIdentity(op WorkerOperation) []byte {
 type OperationOutcome string
 
 const (
-	OutcomeSucceeded      OperationOutcome = "succeeded"
-	OutcomeStaleInput     OperationOutcome = "stale_input"
-	OutcomeNeedsHuman     OperationOutcome = "needs_human"
-	OutcomeFailedTerminal OperationOutcome = "failed_terminal"
+	OutcomeSucceeded  OperationOutcome = "succeeded"
+	OutcomeStaleInput OperationOutcome = "stale_input"
+	OutcomeNeedsHuman OperationOutcome = "needs_human"
+	// OutcomeTestRevisionRequired は implement / repair_implementation が「承認済み test の
+	// 変更が必要」と判断して停止した結末である。succeeded でも failure でもなく、
+	// needs_human でもない。head は最後に承認された test checkpoint へ rollback 済みで
+	// あることを表し、根拠は test-revision-report artifact が担う。差し戻し loop の予算は
+	// Controller が test_validity round counter で管理する（ADR-0003）。
+	OutcomeTestRevisionRequired OperationOutcome = "test_revision_required"
+	OutcomeFailedTerminal       OperationOutcome = "failed_terminal"
 )
 
 var operationOutcomes = map[OperationOutcome]bool{
-	OutcomeSucceeded:      true,
-	OutcomeStaleInput:     true,
-	OutcomeNeedsHuman:     true,
-	OutcomeFailedTerminal: true,
+	OutcomeSucceeded:            true,
+	OutcomeStaleInput:           true,
+	OutcomeNeedsHuman:           true,
+	OutcomeTestRevisionRequired: true,
+	OutcomeFailedTerminal:       true,
 }
 
 // OperationResult は Operation の terminal Result である。
@@ -247,10 +258,23 @@ type OperationResult struct {
 	AttemptID          string
 	Outcome            OperationOutcome
 	HeadSHA            string
+	ClaimContext       *ClaimContext
 	ChangedInputFields []string
 	OutputArtifacts    []NamedArtifact
 	ExternalRefs       []string
 	CompletedAt        time.Time
+}
+
+// ClaimContextは、GitHubから各Operationで実行入力を再構築するためにRunへ固定する
+// content identityである。Issue本文、Task Context、Context Manifestのcanonical bytesは
+// 保持せず、Compiler versionとdigest、pinしたbaseだけを持つ。
+type ClaimContext struct {
+	Compiler        string
+	Observation     IssueObservationRef
+	BodyDigest      Digest
+	TaskContext     TaskContextRef
+	ContextManifest ContextManifestRef
+	BaseSHA         string
 }
 
 // ValidateOperationResult は Result 単体の整合性を検証する。
@@ -274,6 +298,11 @@ func ValidateOperationResult(result OperationResult) error {
 	if result.CompletedAt.IsZero() {
 		return protocolErr(ProtocolFieldMissing, "completedAt", "完了時刻が空")
 	}
+	if result.ClaimContext != nil {
+		if err := ValidateClaimContext(*result.ClaimContext); err != nil {
+			return err
+		}
+	}
 	if err := validateChangedInputFields(result.Outcome, result.ChangedInputFields); err != nil {
 		return err
 	}
@@ -281,6 +310,36 @@ func ValidateOperationResult(result OperationResult) error {
 		return err
 	}
 	return validateLineSet("externalRefs", result.ExternalRefs)
+}
+
+// ValidateClaimContextはlive再構築checkpointのversion/ref/digest/baseが揃っていることを検証する。
+// Issue identityとObservationのbindingはclaim Operationを持つBindOperationResultが追加で検証する。
+func ValidateClaimContext(context ClaimContext) error {
+	if _, err := CompilerForVersion(context.Compiler); err != nil {
+		return protocolErr(ProtocolSchemaUnknown, "claimContext.compiler",
+			"未対応のcompiler version: %q", context.Compiler)
+	}
+	if err := validateVersionedRef("claimContext.issueObservation", context.Observation.Schema,
+		context.Observation.Digest, issueObservationSchemaPrefix); err != nil {
+		return err
+	}
+	if !context.BodyDigest.Valid() {
+		return protocolErr(ProtocolFieldInvalid, "claimContext.bodyDigest",
+			"body digestが不正: %q", context.BodyDigest)
+	}
+	if err := validateVersionedRef("claimContext.taskContext", context.TaskContext.Schema,
+		context.TaskContext.Digest, taskContextSchemaPrefix); err != nil {
+		return err
+	}
+	if err := validateVersionedRef("claimContext.contextManifest", context.ContextManifest.Schema,
+		context.ContextManifest.Digest, contextManifestSchemaPrefix); err != nil {
+		return err
+	}
+	if !validGitSHA(context.BaseSHA) {
+		return protocolErr(ProtocolFieldInvalid, "claimContext.baseSha",
+			"commit SHAが不正: %q", context.BaseSHA)
+	}
+	return nil
 }
 
 // validateChangedInputFields は stale_input の根拠が comparison と同じ語彙で記録されて
@@ -328,10 +387,25 @@ func encodeOperationResultIdentity(result OperationResult) []byte {
 	writeYAMLString(&b, 0, "operationDigest", string(result.OperationDigest))
 	writeYAMLString(&b, 0, "outcome", string(result.Outcome))
 	writeYAMLOptionalString(&b, 0, "headSha", result.HeadSHA)
+	writeYAMLClaimContext(&b, result.ClaimContext)
 	writeYAMLStringList(&b, 0, "changedInputFields", canonicalStringSet(result.ChangedInputFields))
 	writeYAMLNamedArtifacts(&b, 0, "outputArtifacts", result.OutputArtifacts)
 	writeYAMLStringList(&b, 0, "externalRefs", canonicalStringSet(result.ExternalRefs))
 	return []byte(b.String())
+}
+
+func writeYAMLClaimContext(b *strings.Builder, context *ClaimContext) {
+	if context == nil {
+		writeYAMLNull(b, 0, "claimContext")
+		return
+	}
+	b.WriteString("claimContext:\n")
+	writeYAMLString(b, 2, "compiler", context.Compiler)
+	writeYAMLRef(b, 2, "issueObservation", context.Observation.Schema, context.Observation.Digest)
+	writeYAMLString(b, 2, "bodyDigest", string(context.BodyDigest))
+	writeYAMLRef(b, 2, "taskContext", context.TaskContext.Schema, context.TaskContext.Digest)
+	writeYAMLRef(b, 2, "contextManifest", context.ContextManifest.Schema, context.ContextManifest.Digest)
+	writeYAMLString(b, 2, "baseSha", context.BaseSHA)
 }
 
 // BindOperationResult は Result が参照する Operation identity を再計算して照合する。
@@ -353,6 +427,9 @@ func BindOperationResult(op WorkerOperation, result OperationResult) error {
 			"result が別の Operation identity を参照している: got %s, want %s",
 			result.OperationDigest, digest)
 	}
+	if err := bindClaimContext(op, result); err != nil {
+		return err
+	}
 
 	rule := operationKindRules[op.Kind]
 	switch {
@@ -362,10 +439,60 @@ func BindOperationResult(op WorkerOperation, result OperationResult) error {
 		return protocolErr(ProtocolKindConstraint, "headSha",
 			"kind %q の succeeded Result は head を固定しなければならない", op.Kind)
 	}
+	if result.Outcome == OutcomeTestRevisionRequired {
+		return bindTestRevisionResult(op, result, rule)
+	}
 	if result.Outcome != OutcomeSucceeded {
 		return nil
 	}
 	return bindSucceededOutput(op, result, rule)
+}
+
+// bindTestRevisionResult は「承認済み test の変更が必要」という差し戻しを binding 境界で
+// 検証する。head の無い差し戻しは Controller が revise_tests の入力 head を選べず、
+// report の無い差し戻しは修正 session が根拠を失う。どちらも Result として受理しない。
+func bindTestRevisionResult(op WorkerOperation, result OperationResult, rule operationKindRule) error {
+	if !rule.testRevision {
+		return protocolErr(ProtocolKindConstraint, "outcome",
+			"kind %q は test_revision_required を返せない", op.Kind)
+	}
+	if result.HeadSHA == "" {
+		return protocolErr(ProtocolKindConstraint, "headSha",
+			"test_revision_required は rollback 済みの承認済み test checkpoint head を固定しなければならない")
+	}
+	return requireArtifactNames("outputArtifacts", "outcome \"test_revision_required\"",
+		requiredTestRevisionOutputs, namedArtifactSet(result.OutputArtifacts))
+}
+
+func bindClaimContext(op WorkerOperation, result OperationResult) error {
+	if op.Kind != OperationClaim || result.Outcome != OutcomeSucceeded {
+		if result.ClaimContext != nil {
+			return protocolErr(ProtocolKindConstraint, "claimContext",
+				"kind %qのoutcome %qはclaim contextを持てない", op.Kind, result.Outcome)
+		}
+		return nil
+	}
+	if result.ClaimContext == nil {
+		return protocolErr(ProtocolFieldMissing, "claimContext",
+			"succeeded claimは再構築用のclaim contextを持たなければならない")
+	}
+
+	context := result.ClaimContext
+	observation := IssueObservation{
+		Schema:     context.Observation.Schema,
+		Issue:      op.Issue.canonical(),
+		BodyDigest: context.BodyDigest,
+	}
+	want := IssueObservationRef{
+		Schema: context.Observation.Schema,
+		Digest: SHA256(encodeIssueObservation(observation)),
+	}
+	if context.Observation != want {
+		return protocolErr(ProtocolIdentityMismatch, "claimContext.issueObservation",
+			"Issue identityとbody digestから再計算したobservationと一致しない: got %s, want %s",
+			context.Observation.Digest, want.Digest)
+	}
+	return nil
 }
 
 // bindSucceededOutput は kind ごとの成功条件を binding 境界で検証する。

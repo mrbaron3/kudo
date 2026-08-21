@@ -20,7 +20,7 @@ author_tests
 
 ## Test Authoring と RED
 
-Controller は canonical Task Context、Context Manifest、base / head、Execution Policy を bind した
+ControllerはTask Context / Context Manifestの期待digest、base / head、Execution Policyをbindした
 `author_tests` を Issue Worker へ dispatch する。Issue Worker は test plan、test patch、test-only commit を
 作り、repository が規定する command を実行する。
 
@@ -46,6 +46,11 @@ provider session で [Test Validity Review Policy](../../05_design/review-polici
 - `needs_human`: 自動修正できない authority または安全判断として durable に停止する。
 - transport / protocol failure: quality verdict とせず、retry または terminal execution failure とする。
 - stale input: review を進めず、現在の identity に対する新しい Request を要求する。
+
+`revise_tests` は review の `request_changes` だけでなく、implementation lane の `test_revision_required`
+（[4.3 詳細設計](../03_implementation-review/02_design.md)）からも dispatch される。入力の finding が
+Review Result か `test-revision-report` かの違いだけで、publish と再 review の流れは同じである。
+どちらの差し戻しも `test_validity` gate の無人 round 予算を消費する。
 
 ## Isolation
 

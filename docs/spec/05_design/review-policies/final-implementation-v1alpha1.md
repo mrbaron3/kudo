@@ -16,7 +16,7 @@
 
 Reviewerは次の明示された入力だけを使う。
 
-- canonical Task ContextとContext Manifestが固定したauthority content
+- review開始時と完了時にlive sourceから再生成し、claim時の期待digestと一致したcanonical Task Contextとauthority content
 - approved test validity Review Resultとapproved test-only head
 - implementation patchまたはfinal source snapshot
 - final headを再構築できるimmutable source artifact
@@ -26,7 +26,7 @@ Reviewerは次の明示された入力だけを使う。
 - Pull Request用summary、risk、manual verificationのdraft artifact
 
 raw Issue body、Issue comment、親・依存Issueのprose、以前のprovider conversation、Issue Workerのmutable worktreeは評価根拠へ追加しない。
-live Issueの取得とIssue Observationとのdigest照合はfreshness検証にだけ使い、raw bodyの内容を評価根拠へ追加しない。
+live Issueの取得とTask Context / Context Manifest identityの照合はfreshness検証に使い、raw bodyの内容を評価根拠へ追加しない。
 
 ## Review order
 
@@ -35,7 +35,7 @@ live Issueの取得とIssue Observationとのdigest照合はfreshness検証に�
 Review handlerはsemantic reviewを開始する前に、少なくとも次を検証する。
 
 - Review Request、Context Manifest、Execution Policy、Artifact Manifest、final headのbindingが一致する。
-- live Issueのbody digestがIssue Observationと一致する。
+- live Issue/authorityから再生成したTask Context / Context Manifest identityがclaim時の期待digestと一致する。
 - approved test validity Resultが同じIssue context、test-only head、test artifactへbindされている。
 - approved test、fixture、helper、test commandに変更がある場合、その版に対するtest validity approvalが存在する。
 - GREEN、refactor後verification、Issue Verification、required checksがfinal headにbindされ、必要なcommandが成功している。

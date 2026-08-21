@@ -23,6 +23,7 @@ candidate と claimable は別である。Issue Worker は live GitHub API か�
 - Acceptance Criteria、native relationship、authority reference が整合する
 - `dependsOn`の全成果が完了し、選択した base へ統合済みである
 - 同じ IssueRef に active Run がない
+- 同じ IssueRef に`merged` terminal の Run が存在しない
 - 検証中にIssue Observationまたは参照contentが変わっていない
 
 結果は少なくとも次を区別する。
@@ -33,6 +34,7 @@ candidate と claimable は別である。Issue Worker は live GitHub API か�
 | `waiting_dependency` | contract は有効だが dependency 未完了 | `ai-ready`を残し、pollingで再評価 |
 | `waiting_capacity` | 実行 slot がない | `ai-ready`を残し、内部schedulerで再評価 |
 | `skipped_not_candidate` | state、assignee、label、Issue種別が対象外 | no-op |
+| `skipped_already_merged` | 同じIssueRefに`merged` terminalのRunが存在する。reopen後の`ai-ready`再付与を含む | `ai-ready`を外して`ai-merged`を再投影し、案内commentを更新 |
 | `claim_rejected` | 人間が直すべき contract/authority 不備 | `ai-needs-human`へ投影 |
 | `failed_transport` | GitHub timeout、rate limit、network failure | labelを変えずbackoff retry |
 
@@ -105,9 +107,14 @@ Kudo が認識する label は次の4種類に限定する。
 
 | Durable event | Remove | Add |
 | --- | --- | --- |
-| claim committed | `ai-ready`, `ai-needs-human`, `ai-merged` | `ai-in-progress` |
+| claim committed | `ai-ready`, `ai-needs-human` | `ai-in-progress` |
 | Run needs human | `ai-ready`, `ai-in-progress`, `ai-merged` | `ai-needs-human` |
 | merge completed | `ai-ready`, `ai-in-progress`, `ai-needs-human` | `ai-merged` |
+| already-merged 再依頼検出 | `ai-ready` | `ai-merged`（再投影） |
+
+`ai-merged`を持つ IssueRef は claimable 条件（`merged` terminal Run の不存在）で claim へ進まないため、
+claim committed の除去対象に`ai-merged`は現れない。label を手で外しても PostgreSQL の Run が正本であり、
+再依頼は`skipped_already_merged`として処理される。
 
 merge completion は label と同時に Task Issue の close intent を同じ transaction へ記録する。PR body の closing keyword で GitHub が先に close していた場合は観測して no-op にする。close は base が default branch のときだけ効く副作用に依存させない。
 
@@ -122,7 +129,7 @@ dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`�
 | code | 意味 |
 | --- | --- |
 | `review_needs_human` | Review Result の verdict が`needs_human` |
-| `review_round_limit_exceeded` | review gate の round 上限に達しても blocking finding が解消しなかった。reviewer の判断ではなく Controller の予算切れである |
+| `review_round_limit_exceeded` | review gate の無人 round 予算を使い切った。`test_validity`側は implement 発の`test_revision_required`差し戻しも予算を消費する。reviewer の判断ではなく Controller の予算切れである |
 | `retry_budget_exhausted` | bounded retry を超え、operator の診断が必要な execution failure |
 | `protocol_validation_failed` | immutable envelope、Result、ref等がversioned protocolを満たさず、同じinputのretryでは復旧できない |
 | `contract_authority_conflict` | Contract、Acceptance Criteria、authority の矛盾、不足、曖昧さ |
@@ -145,7 +152,7 @@ Controller は label と同時に、Run ID、停止 phase、理由 code、観測
 - 同じ finding が反復している = 実装が指摘を直せていない。実装能力、context、provider 選択の問題。
 - 毎回違う finding が出ている = 何を作るべきかが決まっていない。Issue Contract または authority の問題。
 
-ledger は Run の review lineage（各 round の Review Request / Result binding）から組み立てる。Run aggregate は counter と理由 code だけを持ち、finding 本文を保持しない。
+ledger は Run の review lineage（各 round の Review Request / Result binding）から組み立てる。`test_validity`側の ledger には、round を消費した`test_revision_required`の`test-revision-report`も round 順に含める。実装が test を差し戻し続けることも、人間が読むべき反復の材料である。Run aggregate は counter と理由 code だけを持ち、finding 本文を保持しない。
 
 各 finding には canonical fingerprint（`severity`、`summary`、`expected`、`observed`から計算する digest）を併記する。fingerprint の完全一致は「reviewer が字義どおり同じことを再度述べた」という曖昧さのない証拠である。**一致しないことは「違う指摘である」ことの証拠にはならない**片側の signal であり、その旨を ledger に明記する。Kudo は同一性の自動判定を行わない。model 由来の finding `id`は round をまたいで安定せず、前 round の finding を reviewer へ渡すと fresh session isolation を壊し、Controller が fuzzy 一致で判定すると control plane が review 判断を代行することになるためである。判断そのものは人間が行う。
 
@@ -163,8 +170,16 @@ Kudo が保証するのは「無人で回り続けないこと」と「区間の
 
 `ai-merged`は internal test review や final implementation review の結果ではなく、「approved head が base へ入った」という外形事実の投影である。この label が付いた Issue は close 済みであり、`open`を要求する candidate 条件を満たさないため polling で再発見されない。
 
-Issue を reopen して`ai-ready`を追加しても、同じ Issue の新しい implementation Run を暗黙に開始しない。再実装、cancel、revert、merge 後の PR review comment 対応は、この workflow に versioned command を追加する別 decision まで人間が扱う。
+Issue を reopen して`ai-ready`を追加しても、同じ Issue の新しい implementation Run を暗黙に開始しない。この防止は label の観測ではなく durable state で行う。claimable 条件が「同じ IssueRef に`merged` terminal の Run が存在しない」を要求するため、reconciliation は再依頼を`skipped_already_merged`として終了し、`ai-ready`を外して`ai-merged`を再投影する。同時に、再実行には新しい Task Issue の作成または versioned command の追加が必要である旨の日本語 comment を作成または更新する。再実装、cancel、revert、merge 後の PR review comment 対応は、この workflow に versioned command を追加する別 decision まで人間が扱う。
 
 `merge_blocked`で停止した Run は PR を open のまま残す。Kudo は required check、conflict、protection 設定を自動で回避しない。人間が原因を解消して`ai-ready`を付け直した時点で、reconciliation が安全な resume または supersede を判断する。
 
 `ai-reviewing`、`ai-completed`、`ai-failed`、`ai-blocked`は導入しない。詳細な phase、retry、dependency、failure は PostgreSQL と status comment/telemetry で追跡する。
+
+## Repository 設定の前提と推奨
+
+merge の可否は repository 設定として宣言的に表現し、Kudo は設定を変更も回避もしない（[ADR-0005](decisions/0005-auto-merge.md)）。本節を deployment 側 GitHub 設定の正本とする。
+
+- **前提**: 対象 base branch で merge commit が許可されている。squash / rebase のみの repository では`merge_pull_request`が`merge_blocked`になる。
+- **前提**: 人間が必須とする quality gate は required status check として宣言する。required でない CI は merge gate に影響しない。
+- **推奨**: `Require branches to be up to date before merging`を有効にする。無効の場合、並行 Run が互いの merge 結果を取り込まないまま、textual には mergeable な変更を同じ base へ重ねられるため、review した head と merge 後の base 合成状態が意味的に食い違う可能性が残る。この残余 risk は Kudo の review では検出できず、base 側の CI と人間の revert 判断が受け皿になる。有効にした場合は、他 Run の merge のたびに遅れた Run が`merge_blocked`で停止し、人間の`ai-ready`再付与と supersede による追従（全 test / review のやり直し）が必要になる。Kudo は自動 rebase / base merge を行わない（[ADR-0005](decisions/0005-auto-merge.md) 未決事項）。どちらを選ぶかは repository の並行度と安全要求に応じた deployment 判断である。

@@ -62,7 +62,7 @@ IssueRef から Task の execution context と review identity を決定論的�
 - `kudo.issue/v1alpha1`の fixed section と YAML block の strict parser
 - unknown/duplicate field、不正 enum、欠落/重複 AC、曖昧 authority の validation
 - Issue Observation、Task Context、Context Manifest の canonical encoding と SHA-256 identity
-- Execution Policy / Escalation Policy snapshot と Operation envelope/result の canonical identity
+- structured claim context、Execution Policy / Escalation Policy snapshot、Operation envelope/resultのcanonical identity
 - Review Request / Result / Artifact Manifest の validation と staleness rule
 - claim/review/transport error taxonomy
 - fixture corpus と canonicalization golden test
@@ -88,14 +88,14 @@ PostgreSQL に authoritative Run state、Operation queue、lease、inbox/outbox 
 - role/kind ごとの Operation queue、attempt、lease、heartbeat、reaper
 - terminal Result / AttemptFailure / ProtocolError recordの排他とfail-closed routing
 - delivery inbox と transactional status outbox
-- claim artifact と Execution / Escalation Policy を参照する artifact metadata / ref schema
+- Compiler/schema/digest/baseを持つstructured claim contextとExecution / Escalation Policyのdurable schema
 - retry class、backoff、jitter、clock injection
 - PostgreSQL integration test 用 disposable Compose profile
 
 ### Milestone 2 exit criteria
 
 - transition と次 Operation/outbox が一つの transaction で commit される。
-- Run と claim input / policy の artifact ref が同じ transaction で固定され、存在しない ref を受理しない。
+- Runとstructured claim context / policyが同じtransactionで固定され、欠落または不正なdigestを受理しない。
 - duplicate event と concurrent claim が一つの active Run だけを作る。
 - Worker crash を模した lease expiry 後、別 attempt が同じ logical Operation を取得する。
 - dependency のない Run は並行に進み、repository global lock を使わない。
@@ -112,11 +112,12 @@ Webhook と必須 polling fallback を同じ`ReconcileIssue`へ接続し、実�
 - startup reconciliation と既定60秒 polling、pagination、rate-limit handling
 - candidate filter: open、non-PR、configured target assignee / ready label（既定`mrbaron3` / `ai-ready`）
 - live Issue Reader、native relationship、dependency、repository content resolver
-- claim output（raw Issue body、Issue Observation、Task Context、Context Manifest）を保存する最小の
-  content-addressed Artifact Store pathとatomic write、digest / length / schema verification
+- claim時と各後続Operationでlive Issue/authorityを取得し、同じCompiler versionでTask Context / Context
+  Manifest identityを再計算するcontext reconstruction handler
+- raw Issue bodyとcanonical YAMLを保存せず、Compiler/schema/digest/baseをPostgreSQLへ固定するstructured claim context
 - ControllerがIssue / Review provider設定からimmutable Execution Policyを、attempt retry / review round設定から
   Escalation Policyを固定するresolver
-- Issue/Run scoped claim lease と active Run validation
+- Issue/Run scoped claim leaseとactive Run validation、`merged` terminal Runの再claim防止
 - status outbox consumer と4 label lifecycle
 - `healthz`、`readyz`
 - 後続roleも再利用するstructured logging contract / adapterと、Controllerの
@@ -128,7 +129,8 @@ Webhook と必須 polling fallback を同じ`ReconcileIssue`へ接続し、実�
 - duplicate/遅延/順不同 webhook と poll overlap が二重 Run を作らない。
 - candidate 外、dependency/capacity 待ち、contract rejection、transport failure が仕様どおり区別される。
 - candidate のassignee / ready labelをconfigurationで上書きしても同じfilter ruleが適用される。
-- required claim artifactとExecution / Escalation Policy refが固定されるまでclaim successをcommitしない。
+- required claim context fieldとExecution / Escalation Policy refが固定されるまでclaim successをcommitしない。
+- 後続Operationは開始時・完了時にlive contextを再構築し、意味的に同じなら継続、期待digestと異なればstaleになる。
 - claim commit 後に projection process を停止・再開しても、最終 label set が一貫する。
 - live GitHub test がなくても fake API で pagination、rate limit、mutation retry を検証できる。
 
@@ -138,8 +140,8 @@ Worker が provider と repository command を安全に実行し、session 間�
 
 ### Milestone 4 deliverables
 
-- Milestone 3のclaim artifact pathをtest / implementation / review evidenceへ拡張する、named volume向け
-  content-addressed Artifact Store
+- test / implementation / review evidence専用のnamed volume向けcontent-addressed Artifact Store。raw Issue
+  body、Issue Observation、Task Context、Context Manifestは保存対象にしない
 - 複数Workerのconcurrent append、corruption検出、orphan detection / cleanup
 - Run scoped clone/worktree/branch/checkpoint lifecycle
 - child process supervisor、process-group cancellation、timeout、bounded output、secret redaction
@@ -153,7 +155,7 @@ Worker が provider と repository command を安全に実行し、session 間�
 
 - 同一 digest の異なる bytes を拒否し、corrupt/missing artifact を検出する。
 - model Operation を連続実行しても session ID、transcript、private state が再利用されない。
-- timeout/crash 後の attempt が commit/artifact から再構築され、以前の process を resume しない。
+- timeout/crash後のattemptがstructured claim context、live GitHub/source、commit/evidence artifactから再構築され、以前のprocessをresumeしない。
 - Review runtime は Issue workspace path を受け取らず、head SHA から別 checkout を作る。
 - fake process/provider を使う deterministic test と、opt-in CLI smoke test の両方がある。
 
@@ -175,7 +177,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 ### Milestone 5 exit criteria
 
 - expected failure の RED が固定され、head が draft PR へ publish されるまで review request を作らない。
-- reviewer はIssue ObservationとPR observationでlive freshness（Issue body digest、PR の open/draft・head・base）を検証し、canonical Task Context、artifact、read-only checkoutだけでverdictを返す。
+- reviewerはlive Issue/authorityを再compileしてTask Context / Context Manifest identityを、live PRでopen/draft・head・baseを検証し、一致確認済みcanonical Task Context、evidence artifact、read-only checkoutだけでverdictを返す。
 - `request_changes`後は同じ worktree の新しい provider session が修正し、新しい request digest で再 review する。
 - test approval なしに implementation Operation を enqueue できない。
 - Task Context / Context Manifestを変える意味的なIssue edit、test head change、artifact change が approval を
@@ -190,7 +192,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 - `implement`と`repair_implementation` Issue Operation
 - GREEN、refactor 後 verification、repository required checks の evidence
 - performance bound宣言時のTask固有command実行と`performance-evidence`
-- test mutation detection と test review gate への rollback
+- test mutation detection、`test_revision_required`による rollback / 差し戻しと round 予算消費
 - `final_implementation` Review Request/Result handler
 - approved head binding と stale review prevention
 - `finalize_pull_request`による required PR body 確定と draft 解除
@@ -206,6 +208,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 - performance bound宣言時は測定command、固定条件、環境identity、複数回実行の要約、bound比較を最終headへbindし、宣言がないTaskへ標準harnessを推測して要求しない。
 - final`request_changes`は fresh repair session に渡り、head change 後に必ず再 review する。
 - final approval と required checks がない head では PR を ready 化できない。draft の publish は approve を gate にしない。
+- finalize / merge の開始時に live context を再構築し、final approve 後の Issue の意味的編集を stale として検出する。
 - crash が publish/finalize/merge response の前後どちらで起きても PR は一つだけになり、merge は一度だけ成立し、Run は`merged`へ収束する。
 - PR body が Issue、AC、RED/GREEN、二つの review、checks、risk、Run/base/head を参照する。
 

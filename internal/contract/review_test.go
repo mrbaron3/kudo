@@ -25,29 +25,7 @@ func sampleOpaqueArtifact(name ArtifactName, mediaType string, data []byte) Arti
 // sampleArtifactManifest は test_validity の必須 entry を満たす manifest を返す。
 func sampleArtifactManifest(t *testing.T) ArtifactManifest {
 	t.Helper()
-	compiled, _, _ := sampleResolvedInput(t)
-	_, manifestPayload, err := EncodeContextManifest(compiled.ClaimRequirements, sampleContextManifest(compiled))
-	if err != nil {
-		t.Fatalf("manifest encode error: %v", err)
-	}
-
-	named := []struct {
-		name    ArtifactName
-		payload ArtifactPayload
-	}{
-		{ArtifactNameTaskContext, compiled.TaskContextPayload},
-		{ArtifactNameIssueObservation, compiled.ObservationPayload},
-		{ArtifactNameRawIssueBody, compiled.RawBodyPayload},
-		{ArtifactNameContextManifest, manifestPayload},
-	}
-	entries := make([]ArtifactEntry, 0, len(named)+3)
-	for _, item := range named {
-		entry, err := NewArtifactEntry(string(item.name), item.payload)
-		if err != nil {
-			t.Fatalf("artifact entry %q: %v", item.name, err)
-		}
-		entries = append(entries, entry)
-	}
+	entries := make([]ArtifactEntry, 0, 4)
 	_, observationPayload, err := EncodePullRequestObservation(samplePullRequestObservation())
 	if err != nil {
 		t.Fatalf("pull request observation encode error: %v", err)
@@ -770,24 +748,27 @@ func TestArtifactManifestValidation(t *testing.T) {
 // entry の length/digest/media type を producer に自己申告させると、bytes と
 // manifest が食い違ったまま review へ渡る。payload から導出する経路を用意する。
 func TestNewArtifactEntryDerivesMetadataFromPayload(t *testing.T) {
-	compiled, _, _ := sampleResolvedInput(t)
-	entry, err := NewArtifactEntry("task-context", compiled.TaskContextPayload)
+	_, payload, err := EncodePullRequestObservation(samplePullRequestObservation())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.Digest != compiled.TaskContextPayload.Digest ||
-		entry.MediaType != compiled.TaskContextPayload.MediaType ||
-		entry.Length != int64(len(compiled.TaskContextPayload.Data)) {
+	entry, err := NewArtifactEntry(string(ArtifactNamePullRequestObservation), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Digest != payload.Digest ||
+		entry.MediaType != payload.MediaType ||
+		entry.Length != int64(len(payload.Data)) {
 		t.Fatalf("payload から導出されていない: %+v", entry)
 	}
 
-	tampered := compiled.TaskContextPayload
+	tampered := payload
 	tampered.Data = append([]byte(nil), tampered.Data...)
 	tampered.Data[0] = 'X'
-	if _, err := NewArtifactEntry("task-context", tampered); err == nil {
+	if _, err := NewArtifactEntry(string(ArtifactNamePullRequestObservation), tampered); err == nil {
 		t.Fatal("digest と bytes が一致しない payload から entry を作った")
 	}
-	if _, err := NewArtifactEntry("Task Context", compiled.TaskContextPayload); err == nil {
+	if _, err := NewArtifactEntry("Pull Request Observation", payload); err == nil {
 		t.Fatal("不正な logical name を受理した")
 	}
 }

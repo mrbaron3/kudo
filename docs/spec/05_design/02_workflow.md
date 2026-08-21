@@ -8,8 +8,8 @@
 
 - Human Author: Issue Contract を完成させ、`mrbaron3`を assign し、`ai-ready`で実行を依頼する。
 - Controller: 候補を reconcile し、状態遷移を検証し、Operation を dispatch し、GitHub status を投影する。model session は持たない。
-- Issue Worker: implementation 側の唯一の writer。専用 worktree、branch、test、source、commit、Pull Request を変更できる。
-- Review Worker: read-only checkout と immutable artifact から test validity と最終実装を判定する。live Issue と live PR は読み取りだけを行い、implementation の source、branch、PR を変更できない。
+- Issue Worker: implementation側の唯一のwriter。各Operationでlive Issueをcompileし、専用worktree、branch、test、source、commit、Pull Requestを変更できる。
+- Review Worker: 各Review Operationでlive Issueをcompileし、read-only checkoutとimmutable evidenceからtest validityと最終実装を判定する。implementationのsource、branch、PRは変更できない。
 - GitHub: live Issue、repository、Pull Request の source of truth。
 - PostgreSQL: Run、Operation、lease、inbox/outbox、projection intent の authoritative workflow store。
 
@@ -50,11 +50,13 @@ sequenceDiagram
     IW->>IC: compile(verified identity, raw body)
     IC-->>IW: Issue Observation + Task Context + Claim Requirements
     IW->>GH: relationship/dependency/authority/baseを解決
-    IW->>DB: Claim Result + versioned artifact refsを記録
+    IW->>DB: Claim Result + compiler/schema/digest/base checkpointを記録
     C->>DB: Result検証 + Run開始 + author_tests enqueue + status outbox
     C->>DB: status outboxをlease
     C->>GH: ai-in-progressを冪等に投影
     IW->>DB: author_testsをlease
+    IW->>GH: live Issue/authorityを再取得
+    IW->>IC: 再compileしてcheckpoint digestと照合
     IW->>DB: test plan/patch + RED evidence Resultを記録
     C->>DB: Result検証 + publish_head enqueue
     IW->>DB: publish_headをlease
@@ -62,7 +64,8 @@ sequenceDiagram
     IW->>DB: PR ref + PR observation Resultを記録
     C->>DB: Result検証 + test_validity Review Request enqueue
     RW->>DB: test_validity Review Requestをlease
-    RW->>GH: live Issue/PR照合
+    RW->>GH: live Issue/authority/PRを再取得
+    RW->>IC: 再compileしてcheckpoint digestと照合
     RW->>DB: Review Resultを記録
     C->>DB: Review Resultを取得・検証
     alt test request_changes
@@ -84,7 +87,8 @@ sequenceDiagram
         IW->>DB: PR observation Resultを記録
         C->>DB: Result検証 + final Review Request enqueue
         RW->>DB: final Review Requestをlease
-        RW->>GH: live Issue/PR照合
+        RW->>GH: live Issue/authority/PRを再取得
+        RW->>IC: 再compileしてcheckpoint digestと照合
         RW->>DB: Review Resultを記録
         C->>DB: Review Resultを取得・検証
         alt final request_changes
@@ -102,8 +106,10 @@ sequenceDiagram
             IW->>GH: PR body確定 + draft解除
             IW->>DB: finalized PR observation Resultを記録
             C->>DB: Result検証 + merge_pull_request enqueue
+            C->>GH: merge gateをread-onlyで照合
+            Note over C,DB: gate成立までmerge_pull_requestはretry_waitで待機
             IW->>DB: merge_pull_requestをlease
-            IW->>GH: required check照合 + compare-and-merge + branch削除
+            IW->>GH: live再照合 + compare-and-merge + branch削除
             IW->>DB: merged PR observation Resultを記録
             C->>DB: Result検証 + merged遷移 + status outbox
             C->>DB: status outboxをlease
@@ -142,18 +148,44 @@ claim handler は GitHub から現在の Issue を直接取得し、verified Iss
 Issue Compiler へ渡す。Issue Compiler だけが Contract、section、
 Acceptance Criteria を strict parse し、Issue Observation、canonical Task Context、Claim Requirements を
 返す。claim handler の Context Resolver は Claim Requirements に従って native relationship、dependency、
-authority、base commit を live source から解決し、Context Manifest と evidence を構築する。
+authority、base commitをlive sourceから解決し、Context Manifest identityを計算する。
 
-Controller は Claim Result の versioned schema、artifact ref、digest、binding を検証するが、raw Issue body
-または Task Context の prose を再解釈しない。claim 後の model-bearing Operation は canonical Task Context
-と Context Manifest が明示する immutable authority/source artifact を使い、raw GitHub API response を
-model input へ渡さない。
+Claim ResultはCompiler version、Issue Observation ref/body digest、Task Context ref、Context Manifest ref、
+base SHAからなるstructured claim contextを返す。raw Issue body、Issue Observation YAML、Task Context YAML、
+Context Manifest YAMLはArtifact StoreにもPostgreSQLにも保存しない。Controllerはschema、digest、bindingを
+検証するが、raw Issue bodyまたはTask Contextのproseを再解釈しない。
 
-claim 成功時は、Run、Issue Observation、Task Context、Context Manifest、Execution Policy、Escalation Policy、base SHA を一つの durable transition として確定する。その後、outbox から`ai-ready`と古い status label を外し、`ai-in-progress`を付ける。GitHub projection が一時的に失敗しても Run を巻き戻さない。
+claim成功時は、Run、structured claim context、Execution Policy、Escalation Policyを一つのdurable transition
+として確定する。その後、outboxから`ai-ready`と古いstatus labelを外し、`ai-in-progress`を付ける。
+GitHub projectionが一時的に失敗してもRunを巻き戻さない。
+workflowの`ClaimSucceeded` eventもstructured claim context全体を運び、Context Manifest refだけへ縮約しない。
+最新のIssue Observation audit lineageはschema付きrefとbody digestを組で保持する。
+
+### Live context reconstruction
+
+claim後にTask Contextを必要とするIssue Worker / Review Worker Operationは、開始時に次を行う。
+
+1. PostgreSQLからRunのstructured claim contextを読む。
+2. GitHubからlive Task Issueを取得し、claim時と同じCompiler versionでstrict parseする。
+3. pin済みbase SHAからrepository authorityを、GitHubからIssue authorityを取得し、Context Manifestを再計算する。
+4. Task Context refとContext Manifest refをclaim contextの期待値と比較する。
+5. 一致したcanonical Task Contextとauthority contentだけをin-memoryのmodel inputとして使う。
+
+Operation完了時にも同じ比較を行う。開始時または完了時にidentityが一致しなければResultやreview verdictを
+確定せず`stale_input`としてControllerへ返す。raw bodyだけの非意味的差分でTask Context/Context Manifestが
+一致する場合はbody digestのaudit lineageをPostgreSQLへ追記して継続する。canonical bytesはAttempt終了時に
+破棄し、次Operationへartifactとして渡さない。
+
+model sessionを持たない`finalize_pull_request`と`merge_pull_request`も、開始時に同じ再構築と照合を行う。
+final approve後にIssueが意味的に編集される窓を検出できる最後のenforcement pointであり、mergeは取り消せ
+ないmutationだからである。完了時の照合は要求しない。`publish_head`は対象外で、publish後のstalenessは
+次のReview Requestの開始時照合が検出する。
 
 ### 3. Test authoring and RED
 
-Issue Worker は fresh provider session で`author_tests`を実行する。session には live Issue Observationと一致するcanonical Task Context、Context Manifestが参照するauthority content、base/head SHA、明示されたpolicyだけを渡す。raw Issue bodyは監査・live変更検知用であり、model inputへ重ねて渡さない。
+Issue Workerはfresh provider sessionで`author_tests`を実行する。sessionには直前にlive sourceから再生成して
+期待digestと一致したcanonical Task Context、authority content、base/head SHA、明示されたpolicyだけを渡す。
+raw Issue bodyはcompile入力であり、canonical Task Contextと重ねてmodel inputへ渡さない。
 
 test plan は各 Acceptance Criteria と test case の対応を示す。テストを追加した head で規定 command を実行し、対象機能の欠如に起因する期待どおりの failure を RED evidence として固定する。環境故障、compile infrastructure failure、無関係な既存 failure を RED とみなさない。
 
@@ -163,7 +195,7 @@ RED 固定後、Controller は`publish_head`を発行する。Issue Worker は�
 
 ### 4. Test validity review
 
-Controller は immutable input から、publish 済み draft PR の head へ繋留された`test_validity` Review Request を作り、[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)を`policyRefs`へ含める。required policy refが欠落または未対応のRequestはbinding境界でrejectされ、reviewerの推測で補わない。policy取得のtransport failureもquality verdictへ変換しない。Review Worker は live Issue に加えて live PR（open/draft 状態、head/base の一致）を照合する。headまたはbaseの不一致は品質 verdict ではなく stale、Kudo 自身の merge intent に紐付かない close/merge は品質 verdict に変換せず、Run を`needs_human`phaseへ送るため人間へescalateし、PR body編集またはdraft/ready遷移だけの差分はaudit lineageへ追記する。そのうえで fresh session と別の read-only checkout を使い、canonical Task Context、Acceptance Criteria、test plan、test patch、RED evidence をpolicyの標準観点で評価する。
+Controllerは期待digest、evidence、publish済みdraft PRのheadへ繋留された`test_validity` Review Requestを作り、[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md)を`policyRefs`へ含める。required policy refが欠落または未対応のRequestはbinding境界でrejectされ、reviewerの推測で補わない。policy取得のtransport failureもquality verdictへ変換しない。Review Workerはlive Issueを再compileしてTask Context/Context Manifest identityを照合し、live PRのopen/draft状態・head/baseも照合する。context、head、baseの不一致は品質verdictではなくstale、Kudo自身のmerge intentに紐付かないclose/mergeは品質verdictに変換せず、Runを`needs_human`phaseへ送るため人間へescalateする。PR body編集またはdraft/ready遷移だけの差分はaudit lineageへ追記する。そのうえでfresh sessionと別のread-only checkoutを使い、再生成したcanonical Task Context、Acceptance Criteria、test plan、test patch、RED evidenceをpolicyの標準観点で評価する。
 
 - `approve`: 承認対象 digest を固定し、implementation へ進む。
 - `request_changes`: blocking finding を versioned Result として返す。Controller は同じ Run/worktree を所有する Issue Worker の新しい`revise_tests` session へ finding と artifact を渡す。
@@ -175,7 +207,9 @@ Controller は immutable input から、publish 済み draft PR の head へ繋�
 
 ### 5. GREEN and refactor
 
-test validity approval 後にだけ、Issue Worker は fresh`implement` session を開始する。入力はcanonical Task Context、approved test/result、現在head、Context Manifestであり、raw Issue body、test authorまたはreviewerのtranscriptではない。
+test validity approval後にだけ、Issue Workerはfresh`implement` sessionを開始する。入力はlive sourceから
+再生成して期待digestと一致したcanonical Task Context/authority、approved test/result、現在headであり、
+raw Issue body、test authorまたはreviewerのtranscriptではない。
 
 implementation は次を順に満たす。
 
@@ -185,7 +219,7 @@ implementation は次を順に満たす。
 4. Issue の Verification と repository の required checks を再実行する。
 5. test 変更が必要になった場合は implementation 中に書き換えず、test authoring/review gate へ戻す。
 
-`implement`または`repair_implementation`が承認済みtestの変更を必要とする場合、そのResultをGREEN完了として受理しない。Issue Workerは未承認のtest/production変更を最後に承認されたtest checkpointへrollbackし、Controllerは`revise_tests`をfresh sessionでdispatchする。変更後のtest head、RED evidence、Artifact Manifestを同一draft PRへpublishし、新しい`test_validity` approvalを得るまでimplementationへ戻らない。これにより、implementation laneがtest review gateを迂回して承認済みtestを書き換える経路を閉じる。
+`implement`または`repair_implementation`が承認済みtestの変更を必要とする場合、そのResultをGREEN完了として受理しない。Issue Workerは未承認のtest/production変更を最後に承認されたtest checkpointへrollbackし、rollback済みheadと根拠の`test-revision-report`を持つ`test_revision_required` Resultを返す（[Worker Operation Protocol](contracts/operation-protocol-v1alpha1.md)）。この差し戻しはquality verdictでもexecution failureでもなく、`test_validity` gateの無人round予算を1消費する。予算が残る場合、Controllerはreportとrollback済みheadを入力に`revise_tests`をfresh sessionでdispatchする。上限に達した場合は修正Operationを発行せず、`review_round_limit_exceeded`として`needs_human`へ送る。変更後のtest head、RED evidence、Artifact Manifestを同一draft PRへpublishし、新しい`test_validity` approvalを得るまでimplementationへ戻らない。これにより、implementation laneがtest review gateを迂回して承認済みtestを書き換える経路を閉じる。
 
 GREEN と refactor の evidence が固定された後、Controller は`publish_head`で final head を同一 draft PR へ publish し、その後にだけ final review を開始する。
 
@@ -209,9 +243,9 @@ Pull Request 自体は RED 固定後から draft として存在する。final a
 
 ### 8. Merge と完了投影
 
-ready 化が durable に記録された後、Controller は`merge_pull_request`を発行する。発行条件と失敗時の routing は [ADR-0005](decisions/0005-auto-merge.md) を正とし、少なくとも final approve の binding、live PR の open / base / head 一致、required status check の success、mergeable の4点が揃わなければ発行しない。required check の pending は品質 verdict でも execution failure でもなく、Operation の`retry_wait`として backoff 再照合する。
+ready 化が durable に記録された後、Controller は`merge_pull_request`を enqueue する。Operation を eligible にする条件と失敗時の routing は [ADR-0005](decisions/0005-auto-merge.md) を正とし、少なくとも final approve の binding、live PR の open / base / head 一致、required status check の success、mergeable の4点が揃うまで eligible にしない。この外形条件は Controller が read-only の pull request / check 観測で評価する（[Runtime platform](03_runtime-platform.md)の credential 表）。required check の pending は品質 verdict でも execution failure でもなく、Operation を`retry_wait`のまま backoff 再照合する待機であり、retry budget を消費しない。execution deadline を超えた pending、check failure、conflict、branch protection の拒否では、Operation を実行させずに cancel し、`merge_blocked`として`needs_human`へ送る。
 
-Issue Worker は期待 head SHA を明示した compare-and-merge で merge commit を作り、head branch を冪等に削除し、merge commit SHA と merged 状態を`pull-request-observation`へ固定する。merge method は merge commit に固定し、squash と rebase は承認済み commit lineage を base 側で失わせるため使わない。
+Issue Worker は lease した`merge_pull_request`の開始時に live context を再構築・照合し、mutation 直前にも live PR の open / base / head を再照合したうえで、期待 head SHA を明示した compare-and-merge で merge commit を作り、head branch を冪等に削除し、merge commit SHA と merged 状態を`pull-request-observation`へ固定する。Controller の gate 評価と Issue Worker の実行の間に required check や protection が変化して GitHub が merge を拒否した場合は、品質 verdict へ変換せず、拒否の観測を evidence とした`needs_human` Result として返し、Controller が`merge_blocked`として扱う。merge method は merge commit に固定し、squash と rebase は承認済み commit lineage を base 側で失わせるため使わない。
 
 merge completion が durable に記録された後、Controller は Task Issue を close し、`ai-in-progress`を外して`ai-merged`を付ける。これが Kudo の正常 terminal である。release、deploy、merge 後の revert 判断と、merge 後に付いた PR review comment への対応はこの workflow の外に置く。
 
@@ -227,7 +261,7 @@ stateDiagram-v2
     publishing_test_head --> awaiting_test_review: PR head published
     awaiting_test_review --> authoring_tests: request_changes（round 上限未満）/ fresh revise session
     awaiting_test_review --> implementing: approve
-    implementing --> authoring_tests: approved test mutation required / approved checkpointへrollback + revise_tests
+    implementing --> authoring_tests: test_revision_required（round 上限未満）/ rollback + fresh revise session
     implementing --> publishing_final_head: GREEN + refactor checks fixed
     publishing_final_head --> awaiting_final_review: PR head published
     awaiting_final_review --> implementing: request_changes（round 上限未満）/ fresh repair session
@@ -239,7 +273,7 @@ stateDiagram-v2
     authoring_tests --> needs_human
     publishing_test_head --> needs_human
     awaiting_test_review --> needs_human: needs_human verdict / round 上限到達
-    implementing --> needs_human
+    implementing --> needs_human: test_revision_required（round 上限到達）ほか
     publishing_final_head --> needs_human
     awaiting_final_review --> needs_human: needs_human verdict / round 上限到達
     finalizing_pull_request --> needs_human
@@ -268,7 +302,7 @@ retry可能なtransport/execution failureはquality stateではなくOperation�
 `request_changes`による自動修正 loop には gate ごとの round 上限がある（[ADR-0003](decisions/0003-review-round-limit.md)）。
 
 - 上限は claim 時に Escalation Policy から Run へ固定する。`test_validity`と`final_implementation`は独立した counter と独立した上限を持つ。
-- counter は quality verdict が確定した round だけを数える。attempt failure、stale input、transport failure、protocol validation error は round を消費しない。
+- counter は quality verdict が確定した round を数える。`test_validity`の counter はさらに、implement lane が返した`test_revision_required`の確定でも1を消費する。どちらも test gate を再び開く差し戻しであり、無人区間の churn を有限にするという予算の意図は同じである。attempt failure、stale input、transport failure、protocol validation error は round を消費しない。
 - 上限が縛るのは**無人区間**、すなわち人間が次にこの Run を見るまでの round 数である。Run の生涯合計ではない。人間へ差し戻した時点で区間が終わり counter は 0 に戻るため、再開した Run は満額の予算から始まる。Run の生涯 round 数は reset しない別の counter が保持し、ledger と telemetry が使う。
 - 上限に達した round の verdict が`request_changes`の場合、Controller は修正 Operation を発行せず、理由 code `review_round_limit_exceeded`で Run を`needs_human`phase へ送る。上限に達していても`approve`は次の gate へ進む。
 - 上限判定は Controller の gate 判断であり、review の品質基準ではない。reviewer へ round 数、上限、過去 round の結果を渡さない。reviewer に「上限だから`needs_human`を返せ」と判断させない。
@@ -286,7 +320,8 @@ retry可能なtransport/execution failureはquality stateではなくOperation�
 
 Issue ObservationとPull Request Observationはaudit lineageなので含めない。Escalation Policyと無人区間counterもsemantic inputではないため含めず、同じRunをresumeするときはclaim時にpinしたEscalation Policyを継続して使う。optionalなcheckpoint fieldは停止phaseで未作成なら欠落として固定し、「現在は値が無い」ことも比較対象にする。
 
-再reconciliationはlive Issueをcompileし、durable checkpointとlive PRを照合して現在のResume Identityを再構築する。
+再reconciliationはlive Issue/authorityを再取得して同じCompiler versionでTask Context/Context Manifest
+identityを再計算し、durable checkpointとlive PRを照合して現在のResume Identityを再構築する。
 
 - **resume**: 人間による`ai-ready`再付与があり、Resume Identity全体が同じ場合だけ、同一transactionで`needs_human`から保存済み停止phaseへ戻し、そのphaseのOperationまたはReviewをfresh Attemptで再dispatchする。`claimed`、`authoring_tests`、`implementing`では対応するWorker Operation、publish/finalize phaseではlive state照合を伴うidempotent mutation recovery、review待ちphaseでは同じimmutable inputに対するfresh review Attemptを発行する。
 - **supersede**: `ContextManifestRef`または`ExecutionPolicyRef`が変わり、validな新規inputを構築できる場合は古いRunをsupersededとし、新しいRunとreview lineageを作る。古いapprovalを新しい入力へ移し替えない。
@@ -317,5 +352,6 @@ Escalation PolicyはRunのsemantic input identityに含めない。attempt retry
 - worktree/branch/PR mutation は Issue Worker の idempotency key で重複を防ぐ。
 - publish/finalize は期待 head と live branch/PR を照合し、外部干渉を blind mutation せず stale / needs_human へ分類する。
 - state transition と external projection intent は同じ database transaction に記録し、outbox が GitHub へ再送する。
-- process 停止で lease が失効した場合、別 worker が immutable checkpoint から Operation を再取得する。
+- process停止でleaseが失効した場合、別workerがRun input checkpointとlive GitHub/sourceからcontextを
+  再構築してOperationを再取得する。期待digestと一致しなければ再開しない。
 - Run中にContext Manifest ref（baseを含む）、Execution Policy ref、head、artifact manifest、policy ref、PR ref、approval bindingが変われば進行を止め、以前のreviewをstaleにする。Issue Observation / PR observationだけの差分（PR body編集、draft/ready遷移を含む）はaudit lineageへ追記し、Operation identityとapprovalを維持する。

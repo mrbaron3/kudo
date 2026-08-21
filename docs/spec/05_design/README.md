@@ -23,6 +23,7 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 | Review round 上限 | [ADR-0003](decisions/0003-review-round-limit.md) | 自動修正 loop の上限と escalation policy |
 | 文書の単一ルート | [ADR-0004](decisions/0004-single-documentation-root.md) | `docs/spec/` への正本集約と protocol path 移行 |
 | 自動 merge | [ADR-0005](decisions/0005-auto-merge.md) | 承認済み head の自動 merge、完了 terminal、merge gate |
+| Live context再構築 | [ADR-0006](decisions/0006-live-context-reconstruction.md) | Issue由来YAMLを保存せず、各Operationで再取得・再compileする判断 |
 
 ```text
 05_design/

@@ -22,7 +22,7 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
 **事前条件**
 
 - Test Validity Review が exact test-only head を `approve` している。
-- approved Result、canonical Task Context、Context Manifest、current head が固定されている。
+- approved Result、Task Context / Context Manifestの期待digest、Compiler version、current headが固定されている。
 
 **受け入れ基準**
 
@@ -39,7 +39,9 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
 - **差し戻し: Test 変更が必要**
   - Given implementation 中に、承認済み test の誤りまたは不足が判明する。
   - When test を変更する必要性が報告される。
-  - Then implementation session では test を書き換えず、test authoring / review gate へ戻る。
+  - Then implementation session では test を書き換えず、rollback 済みの承認済み test checkpoint と差し戻し
+    根拠が `test_revision_required` として固定され、test authoring / review gate へ戻る。差し戻しは
+    `test_validity` の無人 round 予算を消費し、上限到達時は human escalation になる。
 
 - **隔離: Fresh Implementation Session**
   - Given test authoring と review が以前に完了している。

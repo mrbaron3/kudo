@@ -107,9 +107,16 @@ runtime に Docker socket を mount して、Issue Worker が sibling build cont
 | Review checkout | Review Worker containerのephemeral filesystem | head SHAから毎回再構築し、Operation終了時に破棄 |
 | operation temp | 各Workerのephemeral filesystem | provider session/state、command temp。handoffに使用しない |
 
-workspace は crash recovery のため named volume に置くが、唯一の checkpoint にはしない。重要な段階は commit、source bundle/snapshot artifact、Operation Result として固定する。workspace を失った場合に、immutable checkpoint artifactと、存在する場合はremote branchから安全に再構築できる状態を目指す。
+workspaceはcrash recoveryのためnamed volumeに置くが、唯一のcheckpointにはしない。重要な段階はcommit、
+source bundle/snapshot artifact、Operation Resultとして固定する。Issue由来contextは保存せず、PostgreSQLの
+structured claim contextとlive GitHub/sourceから再構築する。workspaceを失った場合に、固定commit、evidence
+artifact、remote branch、live contextから安全に再構築できる状態を目指す。
 
-Artifact Store は複数 Worker から append されるため、temporary file への書き込み、fsync、digest/length 検証、同一 filesystem 内の atomic rename を使う。metadata を PostgreSQL に登録する前に bytes の durability を確認し、orphan cleanup は digest reference を検証してから行う。
+Artifact Storeは複数Workerからappendされるため、temporary fileへの書き込み、fsync、digest/length検証、
+同一filesystem内のatomic renameを使う。対象はtest、patch/source snapshot、command/review evidenceなど
+live sourceから再取得できないbytesに限定し、raw Issue body、Issue Observation、Task Context、Context
+Manifestは保存しない。metadataをPostgreSQLへ登録する前にbytesのdurabilityを確認し、orphan cleanupは
+digest referenceを検証してから行う。
 
 ## Network
 
@@ -144,7 +151,7 @@ GitHub は PAT ではなく GitHub App を標準とする。installation token �
 
 | Role | GitHub authority |
 | --- | --- |
-| Controller | metadata read、Issues read/write。label/comment projectionとmerge完了時のIssue close用 |
+| Controller | metadata read、Issues read/write、pull requests read、checks read。label/comment projection、merge完了時のIssue close、merge / finalize gateの外形条件評価用。branch / PR / contentsへのwriteは持たない |
 | Issue Worker | metadata/issues read、contents write、pull requests write、required check read。PRのmergeとhead branch削除を含む |
 | Review Worker | metadata/issues/contents/pull requests read-only |
 

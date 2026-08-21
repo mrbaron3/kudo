@@ -16,6 +16,7 @@ const (
 	KindHeadPublished        EventKind = "head_published"
 	KindReviewCompleted      EventKind = "review_completed"
 	KindImplementationFixed  EventKind = "implementation_fixed"
+	KindTestRevisionRequired EventKind = "test_revision_required"
 	KindPullRequestFinalized EventKind = "pull_request_finalized"
 	KindPullRequestMerged    EventKind = "pull_request_merged"
 	KindObservationRecorded  EventKind = "observation_recorded"
@@ -31,6 +32,7 @@ var eventKinds = []EventKind{
 	KindHeadPublished,
 	KindReviewCompleted,
 	KindImplementationFixed,
+	KindTestRevisionRequired,
 	KindPullRequestFinalized,
 	KindPullRequestMerged,
 	KindObservationRecorded,
@@ -64,8 +66,10 @@ type InputIdentity struct {
 
 // ClaimSucceeded は claim が確定し Run の semantic input が固定されたことを表す。
 type ClaimSucceeded struct {
-	Input       InputIdentity
-	Observation contract.Digest
+	// Contextはlive sourceから各Operationの入力を再構築するためのcheckpointである。
+	// canonical bytesは持たず、claimで検証済みのversion/ref/digest/baseだけを運ぶ。
+	Context         contract.ClaimContext
+	ExecutionPolicy contract.ExecutionPolicyRef
 	// EscalationPolicy と RoundLimits は Run へ pin する Controller 側の gate 予算である。
 	// ref と解決済みの値の両方を運ぶのは、pure transition が artifact を decode できない
 	// 一方で、escalation の根拠としては digest が必要なためである。
@@ -109,6 +113,14 @@ type ImplementationFixed struct {
 	ChecksPassed bool
 }
 
+// TestRevisionRequired は implement lane が「承認済み test の変更が必要」と判断して
+// 停止したことを表す。Head は最後に承認された test checkpoint へ rollback 済みの head で
+// あり、根拠は test-revision-report artifact が担う。quality verdict でも failure でも
+// ないが、test gate を再び開く差し戻しとして test_validity の round を消費する。
+type TestRevisionRequired struct {
+	Head string
+}
+
 // PullRequestFinalized は required PR body の確定と draft 解除が durable になったことを表す。
 type PullRequestFinalized struct {
 	Head string
@@ -126,7 +138,8 @@ type PullRequestMerged struct {
 
 // ObservationRecorded は exact な観測だけが変わったことを表す audit event である。
 type ObservationRecorded struct {
-	Observation contract.Digest
+	Observation contract.IssueObservationRef
+	BodyDigest  contract.Digest
 }
 
 // SemanticInputChanged は semantic identity が変わったことを表す。
@@ -157,6 +170,7 @@ func (TestsAuthored) EventKind() EventKind        { return KindTestsAuthored }
 func (HeadPublished) EventKind() EventKind        { return KindHeadPublished }
 func (ReviewCompleted) EventKind() EventKind      { return KindReviewCompleted }
 func (ImplementationFixed) EventKind() EventKind  { return KindImplementationFixed }
+func (TestRevisionRequired) EventKind() EventKind { return KindTestRevisionRequired }
 func (PullRequestFinalized) EventKind() EventKind { return KindPullRequestFinalized }
 func (PullRequestMerged) EventKind() EventKind    { return KindPullRequestMerged }
 func (ObservationRecorded) EventKind() EventKind  { return KindObservationRecorded }

@@ -16,6 +16,11 @@ Controller は次の identity が一致する場合だけ `finalize_pull_request
 PR body や draft / ready 表示だけの差分は observation lineage として扱えるが、head、base、PR identity の
 差分は finalize を止める。
 
+加えて `finalize_pull_request` と `merge_pull_request` は Operation 開始時に live Issue / authority から
+Task Context / Context Manifest を再構築し、claim context の期待 digest と照合する
+（[ADR-0005](../../05_design/decisions/0005-auto-merge.md) D8）。final approve 後の Issue の意味的編集を
+検出できる最後の enforcement point であり、不一致は stale として mutation を行わない。
+
 ## Pull Request mutation
 
 Issue Worker は expected Pull Request observation を入力として live state を再取得し、compare-and-mutate で
@@ -42,9 +47,11 @@ Operation を発行する。
 - base branch の required status check が同じ head SHA に対して success
 - GitHub が mergeable を返す（conflict が無い）
 
-check が pending の間は Operation を `retry_wait` として backoff し、retry budget を消費しない。execution
-deadline を超えた pending、check failure、conflict、protection の拒否、merge commit 不許可は `merge_blocked`
-として `needs_human` へ routing する。
+この外形条件は Controller が read-only の pull request / check 観測で評価し、成立するまで Operation を
+eligible にしない（[Runtime platform](../../05_design/03_runtime-platform.md) の credential 表）。check が
+pending の間は Operation を `retry_wait` として backoff し、retry budget を消費しない。execution
+deadline を超えた pending、check failure、conflict、protection の拒否、merge commit 不許可は Operation を
+実行させずに `merge_blocked` として `needs_human` へ routing する。
 
 ## Merge mutation
 
@@ -55,7 +62,9 @@ Issue Worker は期待 head SHA を明示した compare-and-merge で merge comm
 merge の idempotency identity（repository、Run、Pull Request、期待 head、operation kind）を mutation 前に
 durable へ記録する。応答を受け取れなかった retry では、記録済み intent と live 観測を照合し、merge commit の親が
 期待 head であれば自分の mutation の再観測として成功へ収束させる。intent が無い merged / closed 観測は
-`external_mutation_conflict` とする。
+`external_mutation_conflict` とする。Controller の gate 評価と実行の間に check や protection が変化して
+GitHub が merge を拒否した場合は、品質 verdict にせず、拒否の観測を evidence とした `needs_human` Result と
+して返し、Controller が `merge_blocked` として扱う。
 
 ## Durable completion と Projection
 

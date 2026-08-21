@@ -5,6 +5,7 @@
 - 実装Task: [#49](https://github.com/mrbaron3/kudo/issues/49)（本ADRの確定とprotocol/workflow改訂）
 - Supersede対象: [migration-from-servo.md](../../06_project/03_migration-from-servo.md)「New Kudo decisions」の「PR作成前のfinal implementation review gate」、および[workflow.md](../02_workflow.md) §6–7のPR作成順序
 - Supersedeされた箇所: D1のterminal記述は[ADR-0005](0005-auto-merge.md)が置き換える。ready化はhandoff terminalではなくmergeの前提段階になった
+- Supersedeされた箇所: Issue freshnessの保存済みObservation照合は[ADR-0006](0006-live-context-reconstruction.md)がlive再compileへ置き換える
 
 ## Context
 
@@ -207,7 +208,7 @@ session assemblyは次のとおり。
 
 1. **Lease**: role=reviewのqueued Requestをleaseし、heartbeatを維持する。
 2. **Protocol validation**: strict parse。Request identityを構成するref群のschema+digest binding検証。
-3. **Live freshness**: Issue Observation digest照合（既存）に加え、live PRを取得しopen状態・head一致・base一致・draft状態を確認して`pull-request-observation` artifactを固定する。headまたはbaseの不一致はstale、close/mergeは品質verdictを返さず、Runを`needs_human`phaseへ送るため人間へescalateし、PR body編集またはdraft/ready遷移だけの差分はaudit lineageへ追記する。
+3. **Live freshness**: Issue側は[ADR-0006](0006-live-context-reconstruction.md)に従ってTask Context / Context Manifestをlive再構築し、PR側はlive PRを取得してopen状態・head一致・base一致・draft状態を確認して`pull-request-observation` artifactを固定する。headまたはbaseの不一致はstale、close/mergeは品質verdictを返さず、Runを`needs_human`phaseへ送るため人間へescalateし、PR body編集またはdraft/ready遷移だけの差分はaudit lineageへ追記する。
 4. **Artifact resolution**: manifestの全entryをdigest/length照合で取得し、immutable source snapshotから`headSha`検証済みdisposable checkoutを構築する。
 5. **Deterministic prerequisites**: policy §1の機械検証（binding整合、approved-test lineage、evidenceのhead binding、bound宣言時の測定evidenceの数値照合）。
 6. **Session**: fresh provider processへ組み立てたcontextを渡す。structured output（YAML applicability宣言とfindings）をstrict parseし、不正outputはbounded retry後にexecution failureとする。

@@ -18,8 +18,8 @@
 
 Reviewerは次の明示された入力だけを使う。
 
-- canonical Task ContextのOutcome、Scope、Deliverables、Acceptance Criteria、Verification、Constraints、Decision Authority、Stop conditions
-- Context Manifestが固定したauthority content
+- review開始時と完了時にlive sourceから再生成し、claim時の期待digestと一致したcanonical Task ContextのOutcome、Scope、Deliverables、Acceptance Criteria、Verification、Constraints、Decision Authority、Stop conditions
+- Context Manifest identityと一致することを確認したlive authority content
 - implementation briefとAcceptance Criteria mapping
 - test plan、test patchまたはtest-only source snapshot
 - test-only headを再構築できるimmutable source artifact
@@ -32,7 +32,9 @@ raw Issue body、Issue comment、親・依存Issueのprose、以前のprovider c
 
 ### 1. Deterministic prerequisites
 
-Review handlerはsemantic reviewを開始する前に、Request binding、artifactのdigest・length、head、live Issue freshnessを検証する。欠落、破損、別head、stale inputはfindingで補わず、protocol、staleness、execution上の失敗を区別して返す。
+Review handlerはsemantic reviewの開始時と完了時に、Request binding、artifactのdigest・length、head、live
+Issue/authorityの再compile結果を検証する。欠落、破損、別head、stale inputはfindingで補わず、protocol、
+staleness、execution上の失敗を区別して返す。
 
 保存されたRED evidenceの内容が期待するREDを示すかは品質判断である。commandが実行済みというmetadataだけを理由にapproveしない。
 

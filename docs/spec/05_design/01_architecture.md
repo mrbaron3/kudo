@@ -9,7 +9,8 @@ Kudo は一つの Go module と一つの deployable binary を持つ modular mon
 - Go package と consumer-owned interface が compile-time の責務境界を作る。
 - PostgreSQL 上の versioned Operation / Result が runtime の通信境界を作る。
 - Compose service が process、filesystem、credential、resource の権限境界を作る。
-- Task Issue、immutable artifact、commit SHA が model session 間の context 境界を作る。
+- Task Issueから再生成したcanonical context、DBに固定したdigest、immutable evidence、commit SHAが
+  model session間のcontext境界を作る。
 
 Controller が Codex や Claude を直接操作するのではない。Controller は versioned Execution Policy を Run に固定し、次に許可された [Worker Operation](contracts/operation-protocol-v1alpha1.md) を durable queue へ記録する。該当 Worker が Operation を lease し、policy が指定する provider process を起動する。
 
@@ -23,6 +24,8 @@ flowchart LR
     C <--> DB[(PostgreSQL)]
     IW[Issue Worker] <--> DB
     RW[Review Worker] <--> DB
+    IW -.->|in-process call| LC[Issue Compiler + Context Resolver<br/>shared Go module]
+    RW -.->|in-process call| LC
     C -->|label/comment projection| GH
     IW -->|Issue read, branch/PR write| GH
     RW -->|Issue/PR/source read| GH
@@ -33,11 +36,14 @@ flowchart LR
     IW --> WS[(Issue workspaces)]
 ```
 
-PostgreSQL は workflow state の正本、GitHub は live Issue/repository/PR の正本である。artifact volume は immutable evidence の bytes を保持する。OTel や log backend は観測用であり、いずれの正本も代替しない。
+PostgreSQLはworkflow stateと期待input digestの正本、GitHubはlive Issue/repository/PRの正本である。
+artifact volumeはGitHubから再取得できないimmutable evidenceのbytesだけを保持する。Task Context系の
+canonical YAMLやraw Issue bodyは保存しない。OTelやlog backendは観測用であり、いずれの正本も代替しない。
 
-上図は process / deployment boundary を示す。Issue Contract の意味解析を所有する Issue Compiler は
-独立 service ではなく、Issue Worker の claim handler から呼ばれる pure component である。component
-boundary と claim 時のデータフローは次のとおりである。
+上図は process / deployment boundary と共通のcompile-time componentを重ねて示す。Issue Compiler +
+Context Resolverは通信先serviceではなく、同じGo moduleがIssue Worker / Review Workerの各processへ
+compileされることを表す。Issue Contractの意味解析を所有するIssue Compilerは外部I/Oを持たないpure
+componentである。component boundaryとclaim時のデータフローは次のとおりである。
 
 ```mermaid
 flowchart LR
@@ -54,36 +60,41 @@ flowchart LR
 
     GA --> GH[GitHub]
     GA --> BS[Fixed base source]
-    CH -->|raw body + versioned YAML| AS[(Artifact Store)]
     C[Controller] -->|enqueue claim Operation| DB[(PostgreSQL)]
     CH -->|lease claim Operation| DB
-    CH -->|Claim Result<br/>artifact refs only| DB
+    CH -->|Claim Result<br/>compiler/schema/digest/base only| DB
     DB -->|terminal Result| C
 ```
 
 GitHub Reader Adapter は API response の transport 表現を typed data へ変換するが、Issue Contract の
 section や Acceptance Criteria を解釈しない。Issue Compiler は verified Issue identity と raw body
 だけを入力とし、外部 I/O を行わない。Context Resolver は Compiler が返した`ClaimRequirements`に
-従い、relationship、dependency、authority、base を live source から解決する。claim 成功後の
-Controller、Issue Worker、Review Worker は raw Issue を再解釈せず、versioned artifact/ref を使う。
+従い、relationship、dependency、authority、baseをlive sourceから解決する。claim成功時はcanonical bytes
+そのものではなくCompiler/schema/digest/baseをstructured checkpointとしてPostgreSQLへ固定する。後続の
+Issue WorkerとReview Workerは各Operationでlive Issueを再取得し、同じCompilerで再compileしてcheckpointと
+比較する。Controllerはraw Issueを解釈せず、Resultが示すversioned identityとbindingだけを検証する。
 
 ## Component responsibilities
 
 ### Issue Compiler と Context Resolver
 
-Issue Compiler は Issue Contract を意味解析する唯一の application-facing component である。同じ raw
-body、verified Issue identity、Compiler version から、byte 単位で同じ Issue Observation、canonical
-Task Context、Claim Requirements を生成する。GitHub、repository、filesystem、clock、provider、
-Artifact Store へ接続せず、不正または曖昧な入力を構造化 validation error として拒否する。
+Issue CompilerはIssue Contractを意味解析する唯一のapplication-facing componentである。同じraw body、
+verified Issue identity、Compiler versionから、byte単位で同じIssue Observation、canonical Task Context、
+Claim Requirementsを生成する。GitHub、repository、filesystem、clock、provider、Artifact Storeへ接続せず、
+不正または曖昧な入力を構造化validation errorとして拒否する。生成したcanonical YAMLはdigest計算とその
+Operationのmodel入力にだけ使い、Artifact StoreまたはPostgreSQLへbytesとして保存しない。
 
 Context Resolver は Issue Worker の claim handler 内で`ClaimRequirements`を受け取り、native
 relationship、dependency completion、authority content、base commit を live source から解決して
-Context Manifest と claim evidence を構築する。source や authority content を YAML の要約へ置換せず、
-exact bytes を immutable artifact として固定し、Context Manifest にはその digest を記録する。
+Context Manifestとclaim evidenceを構築する。sourceやauthority contentをYAMLの要約へ置換せず、claimでは
+そのdigestをRun input checkpointへ固定する。後続Operationは固定baseからrepository contentを、GitHubから
+Issue authorityを再取得し、exact bytesのdigestとContext Manifest identityを再計算する。
 
 Issue Compiler は単一 Go module 内の component であり、Compose service や別の`go.mod`には分割しない。
-現在の実装上の所有 package は`internal/contract`である。I/O を伴う Context Resolver と claim orchestration
-は`internal/issueworker`が所有する。
+現在の実装上の所有 package は`internal/contract`である。I/O を伴う Context Resolver と live context
+reconstructionの共通orchestrationは`internal/livecontext`が所有し、claim固有の候補判定とResult構築は
+`internal/issueworker`が所有する。これによりReview WorkerがIssue Workerのconcrete packageに依存せず、
+同じ再構築手順を利用できる。
 
 ### Controller
 
@@ -96,14 +107,15 @@ Controller は control plane であり、次を所有する。
 - Issue/Run scoped lease と concurrent capacity の調停
 - versioned Worker Operation と Review Request の dispatch
 - timeout、retry、review round 予算、stale input、escalation の routing
+- merge / finalize gate の外形条件（live PR の open / base / head、required status check、mergeable）の read-only 評価
 - transactional outbox による GitHub label/comment projection と merge 完了時の Task Issue close
 
 Controller は model/provider session を持たず、Issue Compiler を呼び出して Issue 本文を解釈しない。
-Issue の不足情報を補う prompt も作らない。Worker が返した versioned Result、artifact ref、schema、digest、
-request binding、staleness は検証するが、Task Context を再構成せず、reviewer の品質 verdict を approve に
+Issue の不足情報を補う prompt も作らない。Worker が返した versioned Result、Run input checkpoint、
+artifact ref、schema、digest、request binding、staleness は検証するが、Task Context を再構成せず、reviewer の品質 verdict を approve に
 変更しない。
 
-Controller が行える GitHub mutation は、durable state を正本にした Issue label/comment の status projection と、merge completion に伴う Task Issue の close に限る。worktree、branch、commit、Pull Request は変更しない。merge を実行できるのは Issue Worker credential だけである。
+Controller が行える GitHub mutation は、durable state を正本にした Issue label/comment の status projection と、merge completion に伴う Task Issue の close に限る。worktree、branch、commit、Pull Request は変更しない。merge / finalize gate の評価のために pull request と required status check を read-only で観測するが、merge を実行できるのは Issue Worker credential だけである。
 
 ### Issue Worker
 
@@ -111,6 +123,8 @@ Issue Worker は deterministic な claim handler と model-bearing handler を�
 であり、実装側の唯一の writer role である。
 
 - claim handler で live Issue を取得し、Issue Compiler と Context Resolver から claim evidence を作る
+- model-bearing Operationの開始時と完了時にlive Issue/authorityを再取得し、CompilerとContext Resolverで
+  canonical inputを再生成してRun input checkpointのdigestと比較する
 - Run 専用 workspace、worktree、branch、checkpoint commit を管理する
 - test authoring/revision、RED command、implementation/repair、GREEN/refactor checks を実行する
 - model-bearing Operation ごとに fresh Codex/Claude process を supervision する
@@ -126,10 +140,12 @@ Issue Worker は deterministic な claim handler と model-bearing handler を�
 Review Worker は read-only evaluator である。
 
 - `test_validity`と`final_implementation`の Review Request を処理する
-- request が指す Issue Observation と live Issue のexact body digestを照合する
+- live Issueを同じIssue Compilerで再compileし、Task Context/Context Manifest identityをRun input
+  checkpointと照合する。開始時と完了時の不一致では品質verdictを返さずstaleとして返す
 - request が指す live PR の open/draft 状態・head・base を照合し、観測を lineage へ追記する
 - head SHAとimmutable source bundle/snapshot artifactからdisposable checkoutを構築する。既にread-only remoteで取得可能な同一commitは再利用してよい
-- immutable artifact と明示された policy だけを fresh provider session へ渡す
+- 一致確認済みのin-memory canonical Task Context、固定baseから取得したauthority/source、immutable
+  evidence artifact、明示されたpolicyだけをfresh provider sessionへ渡す
 - 条件付き観点の applicability 宣言を含む versioned`approve`、`request_changes`、`needs_human` Result を返し、宣言の完全性を binding 境界で検証する
 
 Review Worker は implementation workspace volume を mount せず、GitHub write credential を持たない。Review Result artifact の新規追加と Operation Result の記録はできるが、受け取った artifact、source、branch、PR は変更できない。
@@ -161,7 +177,11 @@ provider を呼ぶたびに新しい process と operation-scoped state director
 
 PostgreSQL adapter は Run、Operation、lease、inbox、outbox、review binding、projection を transaction と constraint で保護する。queue は PostgreSQL 内に置き、Redis、NATS、RabbitMQ を追加しない。
 
-Artifact Store は logical metadata と bytes を分ける。bytes は SHA-256 を key にした write-once layout へ保存し、同じ digest への異なる bytes を拒否する。Issue Worker と Review Worker は新しい artifact を追加できるが、既存 artifact を上書きまたは削除できない。
+Artifact Storeはlogical metadataとbytesを分ける。bytesはSHA-256をkeyにしたwrite-once layoutへ保存し、
+同じdigestへの異なるbytesを拒否する。保存対象はtest plan、patch/source snapshot、command evidence、review
+resultなどlive sourceから再取得できない成果物に限定する。raw Issue body、Issue Observation、Task Context、
+Context Manifestは保存対象にしない。Issue WorkerとReview Workerは新しいevidence artifactを追加できるが、
+既存artifactを上書きまたは削除できない。
 
 ## Application boundaries
 
@@ -237,10 +257,11 @@ Runtime transport は interface の method call を模倣する必要はない�
 | Inbox | GitHub delivery ID または poll trigger identity。重複 event を吸収する |
 | Outbox | projection identity。state commit と同じ transaction で作成する |
 | Review binding | request digest と result digest。入力変更時に stale と判定する |
+| Run input checkpoint | IssueRef、Compiler version、Issue Observation / Task Context / Context Manifestのschemaとdigest、body digest、base SHA。canonical YAML本文は持たない |
 | Execution Policy | provider/model/adapter version、tool/timeout policyのdigest。Run途中で暗黙に変更しない |
 | Escalation Policy | attempt retry / review round上限のdigest。claim時にRunへpinし、semantic inputには含めない。値の変更は既存Operation / reviewをstaleにせず次のclaimから有効になる |
 | Attempt retry counter | Operation ID + 無人区間。追加Attempt作成時だけ増加し、区間counterはescalationでresetするがAttempt lineageと生涯counterは単調増加する |
-| Review round counter | Run ID + review gate。gateごとに独立し、quality verdictが確定したroundだけを数える。無人区間counterはescalationで0へ戻り、生涯counterは単調増加する |
+| Review round counter | Run ID + review gate。gateごとに独立し、quality verdictが確定したroundを数える。`test_validity`側は`test_revision_required`の確定でも消費する。無人区間counterはescalationで0へ戻り、生涯counterは単調増加する |
 | Artifact metadata | digest、media type、length、producer、created time。bytes は volume に置く |
 
 Operation は少なくとも`queued`、`leased`、`succeeded`、`retry_wait`、`failed_terminal`を区別する。Run phase と transport failure を同じ enum に押し込まない。
@@ -249,7 +270,11 @@ Operation は少なくとも`queued`、`leased`、`succeeded`、`retry_wait`、`
 
 Controller は transition と次 Operation の enqueue を同じ transaction で確定する。Worker は対象 role の queued Operation を transaction 内で lease し、heartbeat を更新する。正常終了時は Result digest と terminal status を一度だけ記録する。
 
-process crash または network partition で lease が失効した場合、reaper が Operation を再度 eligible にする。新しい attempt は以前の provider process を resume せず、確定済み input artifact から fresh session を作る。外部 mutation の前後には idempotency identity を保存し、GitHub の現在値を照合して二重 branch/PR/comment を防ぐ。
+process crashまたはnetwork partitionでleaseが失効した場合、reaperがOperationを再度eligibleにする。
+新しいattemptは以前のprovider processをresumeせず、Run input checkpointを読み、live GitHub/sourceを
+再取得・再compileしてfresh sessionを作る。再生成したTask Context/Context Manifest identityがcheckpointと
+一致しなければ`stale_input`として停止する。外部mutationの前後にはidempotency identityを保存し、GitHubの
+現在値を照合して二重branch/PR/commentを防ぐ。
 
 retry policy は error class ごとに決める。
 
@@ -258,6 +283,7 @@ retry policy は error class ごとに決める。
 - immutable envelope / Result / refのprotocol validation error: ResultまたはAttemptFailureとして受理せず、`ProtocolError`を記録してOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ送る。同じinputをretryせず、retry budgetも消費しない
 - contract/authority conflict、安全判断: `needs_human`
 - review の blocking finding: `request_changes`として修正 Operation へ routing。ただし当該 gate の round 上限に達した場合は修正 Operation を発行せず、`review_round_limit_exceeded`として`needs_human`
+- implement / repair が承認済み test の変更を要すると判断: `test_revision_required`。rollback 済み head と`test-revision-report`を固定し、`test_validity`の round 予算を1消費して`revise_tests`へ routing。上限到達時は修正 Operation を発行せず`review_round_limit_exceeded`として`needs_human`
 - changed Context Manifest/Execution Policy/head/artifact/policy/PR ref: stale。新しい identity で再評価し、古い approval は破棄
 - changed Issue Observation / PR observation のみ（Task Context と Context Manifest が同じ）: audit lineage へ追記し、identity と approval は維持
 - PR の head 不一致（branch への外部 push を含む）またはbase 不一致: blind mutation せず stale
@@ -282,7 +308,8 @@ Controller replica、Issue Worker replica、Review Worker replica を増やし�
 
 ## Context and session isolation
 
-Task Issue が execution-context rootであり、Issue Compilerがcanonical Task Contextへ一度だけ解釈する。
+Task Issueがexecution-context rootである。Issue Compilerは各Operationでlive Task Issueを同じ規則により
+canonical Task Contextへ解釈し、claim時に固定したdigestとの一致を検証する。
 
 ```text
 Task Issue
@@ -292,15 +319,20 @@ Task Issue
 └─ authorityRefs                   明示された実装入力
 ```
 
-parent、dependency、Issue comment、Project field、provider conversation は、Task が authority として明示しない限り session context に入れない。Context Manifest はTask Contextへのversioned refと解決結果の一覧であり、Issue Observation/raw bodyを含めず、Controller が作る自然言語要約でもない。
+parent、dependency、Issue comment、Project field、provider conversationは、Taskがauthorityとして明示しない限り
+session contextに入れない。Context ManifestはTask Context identityと解決結果の一覧をcanonical化してdigestを
+計算するための一時表現であり、Issue Observation/raw bodyを含めず、Controllerが作る自然言語要約でもない。
+期待するContext Manifest refと再計算に必要なbase SHAはRun input checkpointへ保存するが、
+Context Manifestの各fieldやcanonical YAML自体は保存しない。
 
 Implementation と Review が共有できるのは次だけである。
 
 - versioned Operation / Review protocol
-- IssueRef、期待Issue Observation、canonical Task Context
+- IssueRef、Compiler version、期待Task Context / Context Manifest digest
+- 各Operationでlive Issueから再生成し、一致確認したin-memory canonical Task Context
 - base/head commit SHA
 - 対象 Pull Request reference と exact PR observation
-- Context Manifest と immutable artifact reference
+- Context Manifest refとimmutable evidence artifact reference
 - versioned Review Result と明示された policy
 
 次は共有しない。
@@ -322,7 +354,8 @@ Implementation と Review が共有できるのは次だけである。
 | implementation worktree | no | read/write | no mount |
 | branch/commit | no | read/write | read-only checkout |
 | Pull Request | no | create/update | read-only |
-| input artifact | no overwrite | read | read |
+| live Issue由来context | digest/bindingのみ | 再取得・再compile | 再取得・再compile |
+| evidence artifact | no overwrite | read | read |
 | new evidence/result artifact | metadataをroute | append | append |
 | review verdict | no override | no | create |
 
@@ -339,7 +372,8 @@ internal/
 ├─ contract/                 Issue Compiler、Issue/Review/Operation schema、canonical encoding / digest
 ├─ workflow/                 Run aggregate、pure transition、error/result taxonomy
 ├─ controller/               reconcile、dispatch、retry、projection use caseと利用側interface
-├─ issueworker/              claim orchestration / context resolution、test、implement、workspace/PR use case
+├─ livecontext/              Context Resolver、live再取得・再compile、freshness guard
+├─ issueworker/              claim、test、implement、workspace/PR use case
 ├─ reviewworker/             read-only review use case
 ├─ artifact/                 content-addressed store contract
 ├─ adapter/
@@ -363,7 +397,10 @@ flowchart TD
     C --> WF[workflow]
     IW --> WF
     RW --> WF
-    C --> CT[contract / Issue Compiler]
+    IW --> LC[livecontext]
+    RW --> LC
+    LC --> CT[contract protocol / validators]
+    C --> CT[contract protocol / validators]
     IW --> CT
     RW --> CT
     AD --> CT
@@ -372,6 +409,8 @@ flowchart TD
 
 - `cmd/kudo`だけが concrete adapter を組み立てる。
 - `controller`は`issueworker`、`reviewworker`、provider の concrete package を import しない。
+- `controller`は`contract`のprotocol validatorを使うがIssue Compilerを呼び出さない。Issue WorkerとReview
+  Workerだけが`livecontext`を介して同じCompiler / Resolverを使う。
 - adapter は application/domain package が定義した小さい interface を実装する。
 - interface は mock のために先回りせず、利用側で複数実装または fake が必要になった時点で定義する。
 - test fake は原則として利用側の`_test.go`に置き、production package に汎用`memory.go`を増やさない。
@@ -381,4 +420,5 @@ flowchart TD
 
 Run ID、Operation ID、attempt、IssueRef、state transition、duration、provider、token/cost、artifact digest、verdict、logical Operationごとの無人区間 / 生涯Attempt数、gateごとの無人区間 / 生涯review round数、escalation回数、escalation reason codeをstructured logとtrace/metricに出せるようにする。Attempt / round分布とescalation reasonの内訳はEscalation Policyの既定値を実測から見直すための材料であり、欠けると上限値が勘のまま固定される。secret、Issueの非公開本文、provider transcript、source bytesを既定でtelemetryへ送らない。
 
-Telemetry backend の欠落や sampling は workflow correctness に影響させない。復旧に必要な state と lineage は PostgreSQL と Artifact Store に残す。
+Telemetry backendの欠落やsamplingはworkflow correctnessに影響させない。復旧に必要なworkflow stateと
+期待digestはPostgreSQL、再取得可能なlive contentはGitHub、再取得できないevidenceはArtifact Storeに残す。
