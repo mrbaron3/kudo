@@ -12,6 +12,7 @@ Compose-deployed issue-to-PR runtime を完成させるための delivery order 
 現在repositoryに実装済みなのは、`kudo help`/`kudo version`のCLI bootstrap、Milestone 0のCompose開発基盤（multi-stage Dockerfile、PostgreSQL 18.4付き開発用Compose、container内check/integration test入口）、`kudo.issue/v1alpha1`のstrict parser、Issue Observation・canonical Task Context・Claim Requirementsを作るpure Issue Compiler、Context Manifest・Execution Policyのcanonical core、Worker Operation/Review protocolのcanonical identity・binding・semantic staleness判定、およびReview Result binding lineageを含むversioned PostgreSQL schemaとRunStoreである。target architectureは文書化されているが、次は未実装である。
 
 - Operation queue、lease、inbox/outbox
+- structured claim contextのdurable schema（RunStoreは保存先が無い間、値を持つRunを受理せず拒否する）
 - GitHub webhook/poller/reconciliation
 - Artifact Store と Run workspace
 - Codex/Claude provider adapter
