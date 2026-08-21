@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1372,5 +1374,62 @@ func TestRunStoreAcceptsTestRevisionRequiredRoundConsumption(t *testing.T) {
 		Run:             drifting,
 	}); !errors.Is(err, postgresadapter.ErrInvalidRun) {
 		t.Fatalf("round を消費しない event の counter 変更 error = %v, want ErrInvalidRun", err)
+	}
+}
+
+// TestRunStoreRejectsTestRevisionRoundDrift は、implement lane 発の test 差し戻しが
+// 対象 gate の counter だけをちょうど 1 進めることを Store が強制するのを検証する。
+//
+// reviewer の verdict は以前から幅と gate を検証していたが、round を消費する経路が
+// 2 つになった以上、緩い側が残ると counter を好きに動かせる裏口になる。予算が縛る
+// のは無人区間の有限性なので、消費経路ごとに強さが違ってはならない。
+func TestRunStoreRejectsTestRevisionRoundDrift(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	drifts := map[string]func(run *workflow.Run){
+		"別 gate の counter を進める": func(run *workflow.Run) {
+			run.Rounds.FinalImplementation++
+			run.TotalRounds.FinalImplementation++
+		},
+		"counter を 1 以外の幅で進める": func(run *workflow.Run) {
+			run.Rounds.TestValidity += 5
+			run.TotalRounds.TestValidity += 5
+		},
+		"生涯 counter だけ進めて無人区間 counter を据え置く": func(run *workflow.Run) {
+			run.TotalRounds.TestValidity++
+		},
+	}
+
+	// writer-capable Run は 1 Issue に 1 つしか置けないので、case ごとに別 Issue を使う。
+	issueNumber := 1391
+	for _, name := range slices.Sorted(maps.Keys(drifts)) {
+		drift := drifts[name]
+		issueNumber++
+		runID := fmt.Sprintf("run-round-drift-%d", issueNumber)
+		t.Run(name, func(t *testing.T) {
+			observation := contract.IssueObservationRef{
+				Schema: contract.IssueObservationSchemaV1Alpha1,
+				Digest: contract.SHA256([]byte(runID)),
+			}
+			created, err := store.Create(ctx,
+				claimedRun(runID, issueNumber, observation), observation)
+			if err != nil {
+				t.Fatalf("Run を作成できない: %v", err)
+			}
+
+			next := created
+			next.Phase = workflow.PhaseAuthoringTests
+			drift(&next)
+			if _, err := store.Transition(ctx, postgresadapter.Transition{
+				ExpectedVersion: next.Version,
+				Event:           workflow.KindTestRevisionRequired,
+				Run:             next,
+			}); !errors.Is(err, postgresadapter.ErrInvalidRun) {
+				t.Fatalf("counter drift の error = %v, want ErrInvalidRun", err)
+			}
+		})
 	}
 }

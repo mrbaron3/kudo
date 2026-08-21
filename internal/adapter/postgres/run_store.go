@@ -231,6 +231,10 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 		if err != nil {
 			return workflow.Run{}, err
 		}
+	} else if transition.Event == workflow.KindTestRevisionRequired {
+		if _, err := validateRoundConsumption(current, next, contract.ReviewTestValidity); err != nil {
+			return workflow.Run{}, err
+		}
 	}
 
 	if appendObservation {
@@ -805,6 +809,52 @@ func validateReview(review workflow.ReviewCompleted) error {
 	return nil
 }
 
+// validateRoundConsumption は round 予算を消費する transition が、対象 gate の counter
+// だけをちょうど 1 進めていることを検証する。escalation で停止する場合は無人区間
+// counter が reset されていることも要求する。
+//
+// reviewer の verdict と implement lane 発の test 差し戻しは、どちらも同じ予算を
+// 消費する（ADR-0003 D2）。両者で検証の強さを変えると、緩い側の経路から counter を
+// 好きに動かせてしまい、予算が縛る「無人区間の有限性」が成立しなくなる。
+func validateRoundConsumption(current, next workflow.Run, gate contract.ReviewKind) (int, error) {
+	var round int
+	switch gate {
+	case contract.ReviewTestValidity:
+		if next.TotalRounds.TestValidity != current.TotalRounds.TestValidity+1 ||
+			next.TotalRounds.FinalImplementation != current.TotalRounds.FinalImplementation {
+			return 0, invalidRun("test validity の生涯 counter が1だけ進んでいない")
+		}
+		round = next.TotalRounds.TestValidity
+	case contract.ReviewFinalImplementation:
+		if next.TotalRounds.FinalImplementation != current.TotalRounds.FinalImplementation+1 ||
+			next.TotalRounds.TestValidity != current.TotalRounds.TestValidity {
+			return 0, invalidRun("final implementation の生涯 counter が1だけ進んでいない")
+		}
+		round = next.TotalRounds.FinalImplementation
+	default:
+		return 0, invalidRun("round を消費する gate が不正: %q", gate)
+	}
+
+	if next.Phase == workflow.PhaseNeedsHuman {
+		if next.Rounds != (workflow.ReviewRounds{}) {
+			return 0, invalidRun("needs_human へ進んだ round は無人区間 counter を reset しなければならない")
+		}
+		return round, nil
+	}
+	if gate == contract.ReviewTestValidity {
+		if next.Rounds.TestValidity != current.Rounds.TestValidity+1 ||
+			next.Rounds.FinalImplementation != current.Rounds.FinalImplementation {
+			return 0, invalidRun("test validity の無人区間 counter が1だけ進んでいない")
+		}
+		return round, nil
+	}
+	if next.Rounds.FinalImplementation != current.Rounds.FinalImplementation+1 ||
+		next.Rounds.TestValidity != current.Rounds.TestValidity {
+		return 0, invalidRun("final implementation の無人区間 counter が1だけ進んでいない")
+	}
+	return round, nil
+}
+
 func validateReviewProgress(
 	current workflow.Run,
 	next workflow.Run,
@@ -817,33 +867,9 @@ func validateReviewProgress(
 		)
 	}
 
-	var round int
-	switch review.Kind {
-	case contract.ReviewTestValidity:
-		if next.TotalRounds.TestValidity != current.TotalRounds.TestValidity+1 ||
-			next.TotalRounds.FinalImplementation != current.TotalRounds.FinalImplementation {
-			return 0, invalidRun("test validity review counter が1だけ進んでいない")
-		}
-		round = next.TotalRounds.TestValidity
-	case contract.ReviewFinalImplementation:
-		if next.TotalRounds.FinalImplementation != current.TotalRounds.FinalImplementation+1 ||
-			next.TotalRounds.TestValidity != current.TotalRounds.TestValidity {
-			return 0, invalidRun("final implementation review counter が1だけ進んでいない")
-		}
-		round = next.TotalRounds.FinalImplementation
-	}
-	if next.Phase == workflow.PhaseNeedsHuman {
-		if next.Rounds != (workflow.ReviewRounds{}) {
-			return 0, invalidRun("needs_human へ進んだ review は無人区間 counter を reset しなければならない")
-		}
-	} else if review.Kind == contract.ReviewTestValidity {
-		if next.Rounds.TestValidity != current.Rounds.TestValidity+1 ||
-			next.Rounds.FinalImplementation != current.Rounds.FinalImplementation {
-			return 0, invalidRun("test validity の無人区間 counter が1だけ進んでいない")
-		}
-	} else if next.Rounds.FinalImplementation != current.Rounds.FinalImplementation+1 ||
-		next.Rounds.TestValidity != current.Rounds.TestValidity {
-		return 0, invalidRun("final implementation の無人区間 counter が1だけ進んでいない")
+	round, err := validateRoundConsumption(current, next, review.Kind)
+	if err != nil {
+		return 0, err
 	}
 
 	if review.Verdict != contract.VerdictApprove {
