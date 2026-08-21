@@ -1315,3 +1315,62 @@ func (tx *cancelAfterObservationTx) Exec(
 	}
 	return tag, err
 }
+
+// TestRunStoreAcceptsTestRevisionRequiredRoundConsumption は、implement lane 発の
+// test 差し戻しが test_validity の round 予算を消費できることを検証する。
+//
+// この差し戻しは reviewer の verdict ではないため Review binding を持たないが、
+// test gate を再び開いて無人 loop を継続させる以上、予算は消費する（ADR-0003 D2
+// 2026-08-21 追記）。Store が「Review event 以外は counter を動かせない」と拒むと、
+// implement→revise→approve→implement の往復がどの予算にも数えられなくなる。
+func TestRunStoreAcceptsTestRevisionRequiredRoundConsumption(t *testing.T) {
+	pool := migrateTestDatabase(t)
+	store := postgresadapter.NewRunStore(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	observation := contract.IssueObservationRef{
+		Schema: contract.IssueObservationSchemaV1Alpha1,
+		Digest: contract.SHA256([]byte("test-revision-observation")),
+	}
+	created, err := store.Create(ctx, claimedRun("run-test-revision", 1380, observation), observation)
+	if err != nil {
+		t.Fatalf("Run を作成できない: %v", err)
+	}
+
+	next := created
+	next.Phase = workflow.PhaseAuthoringTests
+	next.Rounds.TestValidity++
+	next.TotalRounds.TestValidity++
+	stored, err := store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: next.Version,
+		Event:           workflow.KindTestRevisionRequired,
+		Run:             next,
+	})
+	if err != nil {
+		t.Fatalf("test_revision_required の round 消費を保存できない: %v", err)
+	}
+
+	restored, err := postgresadapter.NewRunStore(pool).Load(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Run を復元できない: %v", err)
+	}
+	if restored.Rounds != stored.Rounds || restored.TotalRounds != stored.TotalRounds {
+		t.Fatalf("復元した counter = %+v / %+v, want %+v / %+v",
+			restored.Rounds, restored.TotalRounds, stored.Rounds, stored.TotalRounds)
+	}
+	if restored.TotalRounds.TestValidity != 1 {
+		t.Fatalf("生涯 test_validity counter = %d, want 1", restored.TotalRounds.TestValidity)
+	}
+
+	// round を消費しない event は counter を動かせない、という規律自体は保つ。
+	drifting := restored
+	drifting.TotalRounds.TestValidity++
+	if _, err := store.Transition(ctx, postgresadapter.Transition{
+		ExpectedVersion: restored.Version,
+		Event:           workflow.KindOperationStarted,
+		Run:             drifting,
+	}); !errors.Is(err, postgresadapter.ErrInvalidRun) {
+		t.Fatalf("round を消費しない event の counter 変更 error = %v, want ErrInvalidRun", err)
+	}
+}

@@ -169,8 +169,8 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 			transition.Run.TotalRounds, current.TotalRounds,
 		)
 	}
-	if transition.Review == nil && transition.Run.TotalRounds != current.TotalRounds {
-		return workflow.Run{}, invalidRun("Review event 以外は生涯 review round counter を変更できない")
+	if !consumesReviewRound(transition.Event) && transition.Run.TotalRounds != current.TotalRounds {
+		return workflow.Run{}, invalidRun("review round を消費しない event は生涯 review round counter を変更できない")
 	}
 
 	observationRecorded := transition.Event == workflow.KindObservationRecorded
@@ -726,6 +726,15 @@ func insertReviewBinding(
 	`, runID, version, round, review.Kind, review.Head,
 		review.RequestDigest, review.ResultDigest, review.Verdict)
 	return err
+}
+
+// consumesReviewRound は round 予算を消費しうる event かを返す。
+//
+// reviewer の verdict 確定に加えて、implement lane 発の test 差し戻しも消費する。
+// 後者は verdict ではないが、test gate を再び開いて無人 loop を継続させるため、
+// 予算が縛る対象は同じである（ADR-0003 D2 の 2026-08-21 追記）。
+func consumesReviewRound(kind workflow.EventKind) bool {
+	return kind == workflow.KindReviewCompleted || kind == workflow.KindTestRevisionRequired
 }
 
 func validateCreate(run workflow.Run, observation contract.IssueObservationRef) error {
