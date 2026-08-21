@@ -1,6 +1,6 @@
 # ADR-0007: 縦の貫通sliceをdelivery orderの単位とする
 
-- Status: accepted（2026-08-19）
+- Status: accepted（2026-08-19、Epic構成への反映を2026-08-21追記）
 - 関連Issue: [#13](https://github.com/mrbaron3/kudo/issues/13)、[#14](https://github.com/mrbaron3/kudo/issues/14)、[#15](https://github.com/mrbaron3/kudo/issues/15)、[#16](https://github.com/mrbaron3/kudo/issues/16)、[#17](https://github.com/mrbaron3/kudo/issues/17)、[#20](https://github.com/mrbaron3/kudo/issues/20)、[#21](https://github.com/mrbaron3/kudo/issues/21)、[#22](https://github.com/mrbaron3/kudo/issues/22)、[#24](https://github.com/mrbaron3/kudo/issues/24)、[#29](https://github.com/mrbaron3/kudo/issues/29)
 - Supersede対象: なし。[implementation-plan.md](../spec/06_project/01_implementation-plan.md)のMilestone 3〜6を**完成の定義としては維持し、実行順序の単位としては置き換える**（「Milestone計画との関係」節）。
 - 前提となるADR: [ADR-0001](0001-compose-runtime.md)（Compose runtime）、[ADR-0002](0002-pr-anchored-review.md)（PR-anchored review）
@@ -290,6 +290,8 @@ D2のfeature freezeの例外である。いずれも踏んだ実装PRの中で�
 
 **未達の台帳を持つ。** 貫通が通ったことでMilestone exit criteriaが満たされたと誤読しないよう、上表の右列を[implementation-plan.md](../spec/06_project/01_implementation-plan.md)側で追跡する。
 
+**Epicはmilestoneではなくsliceに対応させる（追記 2026-08-21）。** 作業単位はEpicであり、実行順序の単位がsliceである以上、両者が食い違うとEpic単位の作業が成立しない。S1〜S3をEpicとして新設し、milestone Epicは完成の定義と未達台帳として残す。したがってEpicとmilestoneは1対1ではなく、milestoneの進捗はimplementation-plan.mdの未達表を正とする。Task Issueが必ず1つのEpicに属する規律は変えない。
+
 ## Consequences
 
 ### 影響を受ける文書・Issue
@@ -307,6 +309,7 @@ D2のfeature freezeの例外である。いずれも踏んだ実装PRの中で�
 | docs/contracts/operation-protocol-v1alpha1.md | checkpoint commit identity規則を、S2の実装PRと同じchangeで追記する |
 | internal/contract/artifact.go | `test-plan` / `red-evidence` / `source-bundle`のkind語彙の扱いを、S2の実装PRと同じchangeで決める |
 | docs/deferred/ | 貫通中に作ったshortcutのうち、Issue化するには早いものを記録する |
+| GitHub Epic（追記 2026-08-21） | **当初この行が無く、Epic構成が未更新のまま残った。** 作業単位はEpicであるため、実行順序をsliceへ変えるならEpicもsliceに対応していなければならない。S1 / S2 / S3のEpicを新設して貫通対象Taskを移し、既存のmilestone Epicは「完成の定義」と未達台帳として残した。S4 / S5のEpicはS3到達後に切る |
 
 ### 利点
 
