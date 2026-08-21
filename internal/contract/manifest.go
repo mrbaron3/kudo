@@ -37,6 +37,11 @@ type ContextManifestRef struct {
 	Digest Digest
 }
 
+// Valid は未知 version を許容しつつ、Context Manifest の schema family と digest 形式を検証する。
+func (r ContextManifestRef) Valid() bool {
+	return validSchemaIdentity(r.Schema, contextManifestSchemaPrefix) && r.Digest.Valid()
+}
+
 // EncodeContextManifest は manifest を検証し、canonical payload と ref を返す。
 //
 // claim には同じ Task Context を compile して得た ClaimRequirements を渡す。

@@ -9,9 +9,10 @@ Compose-deployed issue-to-PR runtime を完成させるための delivery order 
 
 ## Current status
 
-現在repositoryに実装済みなのは、`kudo help`/`kudo version`のCLI bootstrap、Milestone 0のCompose開発基盤（multi-stage Dockerfile、PostgreSQL 18.4付き開発用Compose、container内check/integration test入口）、`kudo.issue/v1alpha1`のstrict parser、Issue Observation・canonical Task Context・Claim Requirementsを作るpure Issue Compiler、Context Manifest・Execution Policyのcanonical core、およびWorker Operation/Review protocolのcanonical identity・binding・semantic staleness判定である。target architectureは文書化されているが、次は未実装である。
+現在repositoryに実装済みなのは、`kudo help`/`kudo version`のCLI bootstrap、Milestone 0のCompose開発基盤（multi-stage Dockerfile、PostgreSQL 18.4付き開発用Compose、container内check/integration test入口）、`kudo.issue/v1alpha1`のstrict parser、Issue Observation・canonical Task Context・Claim Requirementsを作るpure Issue Compiler、Context Manifest・Execution Policyのcanonical core、Worker Operation/Review protocolのcanonical identity・binding・semantic staleness判定、およびReview Result binding lineageを含むversioned PostgreSQL schemaとRunStoreである。target architectureは文書化されているが、次は未実装である。
 
-- PostgreSQL schema、Operation queue、lease、inbox/outbox
+- Operation queue、lease、inbox/outbox
+- structured claim contextのdurable schema（RunStoreは保存先が無い間、値を持つRunを受理せず拒否する）
 - GitHub webhook/poller/reconciliation
 - Artifact Store と Run workspace
 - Codex/Claude provider adapter
@@ -20,6 +21,32 @@ Compose-deployed issue-to-PR runtime を完成させるための delivery order 
 
 target document が完成形を定義していることと、code が完成していることを混同しない。
 
+## Delivery order
+
+[ADR-0007](../../adr/0007-vertical-slice-delivery.md)により、**milestoneは「完成の定義」であって実行順序の単位ではない**。実行は縦の貫通sliceを単位とし、各milestoneの貫通に必要な最小部分を横断して先に通し、残りを後から幅として戻す。
+
+| slice | 到達点 | 開始するmilestone |
+| --- | --- | --- |
+| S1 | live GitHub Issue 1件が`claimed` Runになる | M3 |
+| S2 | `author_tests`がRED evidenceとsource-bundleを固定する | M4、M5 |
+| S3 | test-only headがpushされdraft PRが1本できる | M5 |
+| S4 | `test_validity` reviewが1 round通る | M5 |
+| S5 | `implement`とfinal reviewを通しPRがready化する | M6 |
+
+M0とM1は完了扱いのまま変わらない。M2はRunStoreまで到達しており、残るqueue / lease / inbox / outboxはslice順へ従属する。M7とM8は貫通後、幅を戻し切ってから着手する。
+
+各milestoneのexit criteriaは削らない。貫通の時点で未達のまま残るものは次のとおりであり、貫通が通ったことをexit criteria達成と誤読しないため、この表を台帳として維持する。
+
+| milestone | 貫通時点で未達のまま残るもの |
+| --- | --- |
+| M2 | Operation queue、lease、attempt recovery、delivery inbox。**status outbox producer は S1 で決着が要る**（ADR-0007 §1 S1） |
+| M3 | webhook、pagination網羅、4 label lifecycle、rate limit retry、`healthz` / `readyz` |
+| M4 | orphan detection、secret redaction網羅、両provider adapter。**role別credential / filesystem policy は S4 を例外とする**（最初の review verdict 時点で Review Worker は read-only／workspace 非 mount） |
+| M5 | `revise_tests`、`needs_human` escalation / resumption、staleness全経路 |
+| M6 | `repair_implementation`、test mutation detection、required checks統合、PR body validator |
+
+各sliceで「何を作るか」と「何を意図的に雑にするか」、および後から入れられないため貫通でも落としてはならないものは、ADR-0007が定義する。
+
 ## Delivery rules
 
 - protocol、parser、fixture、test を同じ change で更新する。
@@ -27,7 +54,8 @@ target document が完成形を定義していることと、code が完成し�
 - PostgreSQL、GitHub、process、clock、filesystem、provider、telemetry は interface と deterministic fake を持つ。
 - transport/execution failure と quality verdict を別 type として保つ。
 - model-bearing Operation は常に fresh session factory を通す。
-- 一つの milestone の temporary shortcut を target architecture として文書化しない。
+- 一つの milestone の temporary shortcut を target architecture として文書化しない。貫通slice中に意図して雑にしたものは実装PRと[docs/deferred/](deferred/)へ記録し、`architecture.md`や`contracts/`へは書かない。
+- `internal/contract`はfeature freezeする（[ADR-0007](../../adr/0007-vertical-slice-delivery.md) D2）。変更は「貫通で実際に詰まった箇所」だけを理由に行い、網羅性や対称性を理由に追加しない。
 - Milestone 0以降の実装とintegration testは、host固有のdaemonではなくCompose基盤で再現できる状態を維持する。
 - 各 milestone の merge 前に`mise run check`を通す。
 
@@ -105,11 +133,13 @@ PostgreSQL に authoritative Run state、Operation queue、lease、inbox/outbox 
 
 Webhook と必須 polling fallback を同じ`ReconcileIssue`へ接続し、実行可能な Issue を durable claim する。
 
+実行順序は[ADR-0007](../../adr/0007-vertical-slice-delivery.md)のS1が先行し、webhookとlabel lifecycleの残りは幅を戻す段で満たす。
+
 ### Milestone 3 deliverables
 
 - GitHub App authentication と role-scoped installation token
 - `POST /webhooks/github`の raw-body signature verification、payload limit、delivery inbox
-- startup reconciliation と既定60秒 polling、pagination、rate-limit handling
+- startup reconciliation と既定15分 polling、pagination、rate-limit handling
 - candidate filter: open、non-PR、configured target assignee / ready label（既定`mrbaron3` / `ai-ready`）
 - live Issue Reader、native relationship、dependency、repository content resolver
 - claim時と各後続Operationでlive Issue/authorityを取得し、同じCompiler versionでTask Context / Context
@@ -138,6 +168,8 @@ Webhook と必須 polling fallback を同じ`ReconcileIssue`へ接続し、実�
 
 Worker が provider と repository command を安全に実行し、session 間を immutable artifact で handoff できる基盤を作る。
 
+実行順序は[ADR-0007](../../adr/0007-vertical-slice-delivery.md)のS2が先行する。provider session isolation、Artifact Store のlayout / durability / streaming API、checkpoint commit identity は後入れできないため、最小形でも落とさない。
+
 ### Milestone 4 deliverables
 
 - test / implementation / review evidence専用のnamed volume向けcontent-addressed Artifact Store。raw Issue
@@ -163,6 +195,8 @@ Worker が provider と repository command を安全に実行し、session 間�
 
 Issue claim から test validity approval までの完全な TDD 前半を実装する。
 
+実行順序は[ADR-0007](../../adr/0007-vertical-slice-delivery.md)のS2（RED evidence）、S3（draft PR publish）、S4（test validity review 1 round）に分割される。S3到達が貫通の主目的である。
+
 ### Milestone 5 deliverables
 
 - `author_tests`と`revise_tests` Issue Operation
@@ -186,6 +220,8 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 ## Milestone 6 — GREEN, refactor, final review, and PR
 
 承認済み test から implementation を完成させ、承認済み head を merge して Task Issue を close する。
+
+実行順序は[ADR-0007](../../adr/0007-vertical-slice-delivery.md)のS5に対応する。
 
 ### Milestone 6 deliverables
 

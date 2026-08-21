@@ -167,7 +167,7 @@ configuration は command flag より environment / mounted config を基本と�
 | `KUDO_REPOSITORIES` | 許可された`owner/repository`一覧 |
 | `KUDO_TARGET_ASSIGNEE` | 既定`mrbaron3` |
 | `KUDO_READY_LABEL` | 既定`ai-ready` |
-| `KUDO_POLL_INTERVAL` | 既定`60s`。正数かつ最低値を検証する |
+| `KUDO_POLL_INTERVAL` | 既定`15m`。正数かつ最低値を検証する。未認証GitHub readは60 req/hour（IP単位）のため、認証を持たない構成で短くしすぎるとclaim用の枠が残らない |
 | `KUDO_ARTIFACT_ROOT` | 既定`/var/lib/kudo/artifacts` |
 | `KUDO_WORKSPACE_ROOT` | Issue Worker専用。既定`/var/lib/kudo/workspaces` |
 | `KUDO_PROVIDER_ALLOWLIST` | `codex`、`claude`の許可集合 |
@@ -202,8 +202,19 @@ schema migration は`migrate` service が application 起動前に行う。migra
 
 - destructive migration を application startup に暗黙実行しない。
 - migration 実行前に PostgreSQL backup を取得できる手順を持つ。
-- binary は対応 schema version 範囲を readiness で検証する。
+- rolling deployment を行わない現行構成では、binary は適用済み schema version が自身の
+  `CurrentSchemaVersion` と完全一致することを readiness で検証する。
 - queue payload、artifact manifest、Review protocol は schema version を持ち、DB migration だけで無断変換しない。
+
+### Migration runner
+
+migration の適用と履歴管理は [goose](https://github.com/pressly/goose) が担う。「Prefer the Go standard library」の例外として依存を追加したのは、migration runner が version 順序、部分適用からの再開、同時起動の直列化を持つ well-known な boundary であり、自作すると同じ問題を再実装したうえで検証コストを自分で負うことになるためである。SQL は binary へ embed し、`migrate` service は同じ image から起動する。
+
+goose の履歴 table 名は `goose_db_version` とする。慣習名の `schema_migrations` は Rails、Ecto、golang-migrate がいずれも既定で作るため、同一 schema に別 tool の履歴があると存在確認は成功したうえで列の型が合わず、「未初期化」でも「version 不一致」でもない診断不能な失敗になる。
+
+goose の履歴は version 番号だけを持ち、適用済み migration の中身が後から書き換えられたことを runtime では検出できない。この検出は build 時の golden test（`internal/adapter/postgres/migrate_test.go` の `migrationDigests`）が担う。適用済み file を変更すると CI が落ちるため、schema 変更は必ず新しい migration として追加する。
+
+table 名に application prefix は付けない。この database は Kudo 専用である。同居が必要になった場合の分離は identifier ではなく PostgreSQL schema（`CREATE SCHEMA kudo` と `search_path`）で行う。**この分離機構は未実装であり、production の接続設定を作る時点で決める。**
 
 ## Backup and recovery
 

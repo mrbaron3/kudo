@@ -104,6 +104,7 @@ type ReviewCompleted struct {
 	Verdict       contract.ReviewVerdict
 	Head          string
 	RequestDigest contract.Digest
+	ResultDigest  contract.Digest
 }
 
 // ImplementationFixed は GREEN と refactor 後の required checks が固定されたことを表す。

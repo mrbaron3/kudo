@@ -80,7 +80,8 @@ claim 成功後に assignee または status label が手で変更されても�
 Polling は任意の追加機能ではなく、Webhook 欠落を回復する必須経路である。
 
 - Controller startup 時に一度実行する。
-- 正常稼働中は既定60秒ごとに実行し、複数 instance では leader lease により同じ poll cycle を一つにする。
+- 正常稼働中は既定15分ごとに実行し、複数 instance では leader lease により同じ poll cycle を一つにする。
+- 間隔が15分なのは、polling が低遅延経路ではなく取りこぼし回復経路だからである。低遅延は webhook が担う。加えて未認証 GitHub read は60 req/hour（IP 単位）であり、短い間隔では polling だけで枠を使い切って claim 用の request が残らない。
 - configured repository ごとに、open、target assignee、`ai-ready`を満たす Issue を pagination して列挙する。
 - 取得した各 IssueRef を webhook と同じ`ReconcileIssue`へ投入する。
 - poll cycle 自体に claim、dependency、label mutation の business logic を置かない。

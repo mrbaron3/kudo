@@ -3,10 +3,11 @@ package workflow
 import "github.com/mrbaron3/kudo/internal/contract"
 
 // Approval は gate を通した review 結果の binding である。
-// verdict そのものではなく「どの head のどの request が承認されたか」だけを持つ。
+// verdict そのものではなく「どの head のどの request/result が承認されたか」を持つ。
 type Approval struct {
 	Head          string
 	RequestDigest contract.Digest
+	ResultDigest  contract.Digest
 }
 
 // Run は 1 Issue に対する実行の durable aggregate である。

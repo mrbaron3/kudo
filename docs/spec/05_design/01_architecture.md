@@ -101,7 +101,7 @@ reconstructionの共通orchestrationは`internal/livecontext`が所有し、clai
 Controller は control plane であり、次を所有する。
 
 - GitHub webhook の HTTP ingress と署名検証 adapter の起動
-- startup reconciliation と既定60秒ごとの fallback polling
+- startup reconciliation と既定15分ごとの fallback polling
 - webhook/polling を集約する冪等な`ReconcileIssue`
 - Run state machine と許可された transition の検証
 - Issue/Run scoped lease と concurrent capacity の調停

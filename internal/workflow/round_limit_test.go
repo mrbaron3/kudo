@@ -47,7 +47,11 @@ func reviewedRun(phase Phase, limits contract.ReviewRoundLimits, rounds ReviewRo
 		run.PublishedHead = finalHead
 		run.PublishedTestHead = testHead
 		run.ChecksHead = finalHead
-		run.TestApproval = &Approval{Head: testHead, RequestDigest: contract.SHA256([]byte("test-approve"))}
+		run.TestApproval = &Approval{
+			Head:          testHead,
+			RequestDigest: contract.SHA256([]byte("test-approve-request")),
+			ResultDigest:  contract.SHA256([]byte("test-approve-result")),
+		}
 	}
 	return run
 }
@@ -58,6 +62,7 @@ func requestChanges(kind contract.ReviewKind, head string) ReviewCompleted {
 		Verdict:       contract.VerdictRequestChanges,
 		Head:          head,
 		RequestDigest: contract.SHA256([]byte("request-changes-" + head)),
+		ResultDigest:  contract.SHA256([]byte("request-changes-result-" + head)),
 	}
 }
 
@@ -268,6 +273,7 @@ func TestRoundLimitDoesNotBlockApproval(t *testing.T) {
 	decision := requireDecision(t, run, ReviewCompleted{
 		Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove,
 		Head: testHead, RequestDigest: contract.SHA256([]byte("approve")),
+		ResultDigest: contract.SHA256([]byte("approve-result")),
 	})
 	if decision.Run.Phase != PhaseImplementing {
 		t.Fatalf("phase = %q, want %q", decision.Run.Phase, PhaseImplementing)
@@ -362,7 +368,8 @@ func TestEveryEscalationEndsTheUnattendedStretch(t *testing.T) {
 	}{
 		"needs_human verdict": {
 			ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictNeedsHuman,
-				Head: testHead, RequestDigest: contract.SHA256([]byte("nh"))},
+				Head: testHead, RequestDigest: contract.SHA256([]byte("nh")),
+				ResultDigest: contract.SHA256([]byte("nh-result"))},
 			EscalationReviewNeedsHuman, ReviewRounds{TestValidity: 2},
 		},
 		"retry budget": {
@@ -408,6 +415,7 @@ func TestEscalationReasonsAreClassified(t *testing.T) {
 	requireEscalation(t, requireDecision(t, run, ReviewCompleted{
 		Kind: contract.ReviewTestValidity, Verdict: contract.VerdictNeedsHuman,
 		Head: testHead, RequestDigest: contract.SHA256([]byte("nh")),
+		ResultDigest: contract.SHA256([]byte("nh-result")),
 	}), EscalationReviewNeedsHuman, PhaseAwaitingTestReview, ReviewRounds{TestValidity: 1})
 
 	requireEscalation(t, requireDecision(t, run,

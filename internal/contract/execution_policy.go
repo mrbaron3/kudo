@@ -34,6 +34,11 @@ type ExecutionPolicyRef struct {
 	Digest Digest
 }
 
+// Valid は未知 version を許容しつつ、Execution Policy の schema family と digest 形式を検証する。
+func (r ExecutionPolicyRef) Valid() bool {
+	return validSchemaIdentity(r.Schema, executionPolicySchemaPrefix) && r.Digest.Valid()
+}
+
 // EncodeExecutionPolicy は policy を検証し、canonical payload と ref を返す。
 func EncodeExecutionPolicy(policy ExecutionPolicy) (ExecutionPolicyRef, ArtifactPayload, error) {
 	if err := validateExecutionPolicy(policy); err != nil {
