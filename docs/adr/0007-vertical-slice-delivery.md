@@ -38,7 +38,7 @@
 
 本ADRは次の調査結果を根拠にしている。いずれも実測とコード確認を伴う。
 
-- **GitHub adapter最小形**: claim貫通に新規で必要なのはGitHub App token境界、薄いread client、candidate filter、claim use caseの4つだけで、parse・canonical artifact・identity・Run永続化・state machineは既存3 packageで揃っている。
+- **GitHub adapter最小形**: claim貫通に新規で必要なのは未認証の薄いread client、将来の認証を注入する`TokenSource` seam、candidate filter、claim use caseの4つだけで、parse・canonical artifact・identity・Run永続化・state machineは既存3 packageで揃っている。
 - **provider adapterとRun workspace最小形**: この端末でcodex 0.147.0とclaude 2.1.226の両方がheadless + JSON Schema制約付きstructured outputで動作することを実測した。同時に、project doc auto-discoveryを無効化しないと対象repositoryの`AGENTS.md` / `CLAUDE.md`がsessionへ黙って入ることを実測した（codexで+8,897 input token、claudeで`cache_creation`が3,769→75,263 token）。
 - **Artifact StoreとRED evidence最小形**: S1〜S3が踏む3 kind（claim 4本 + `author_tests` 3本 + `publish_head` 1本）で`requiredOperationOutputs`が要求するlogical nameの和は8本である（全kindの和は11本）。なお`init()`のpanic guardは各operation kindがkeyを持つことしか検査せず、要求集合を空にすると素通りする——3本を守るのはguardではなくD2のcontract disciplineであり、機械が守ってくれるわけではない。一方で`test-plan` / `red-evidence` / `source-bundle`は`artifactKindRules`に登録が無く、現状の`ArtifactPayload.Validate()`は`protocol_kind_unknown`で弾く。
 
@@ -128,13 +128,13 @@ sliceは次の5本とし、この順で実行する。各sliceは前のsliceが�
 - Operation queue、lease、heartbeat、reaper（#14）を作らない。claim後の`DispatchOperation`はS2でinline実行し、queueは後から包む。
 - artifact bytesを保存しない（refs-only）。ただし`ArtifactWriter` interfaceの呼び出し口だけS1で確定させる（「§2 落とさないもの」）。
 
-**決着済み (1): 貫通は未認証のGitHub readで行い、認証の設計を保留する**
+**決着済み (1): S1〜S2のGitHub readは未認証で行い、write認証はS3直前に設計する**
 
-対象repositoryはpublicである。Issue read、repository content read、commit readはいずれも未認証で成立することを実測で確認した。貫通の全sliceを未認証で通し、GitHub App / PATいずれの認証機構もこの段階では作らない。
+対象repositoryはpublicである。Issue read、repository content read、commit readはいずれも未認証で成立することを実測で確認した。S1〜S2で必要なGitHub readは未認証で通し、この2 sliceではGitHub App / PATいずれの認証機構も作らない。branch pushとPR作成が始まるS3の直前にwrite認証を設計する。
 
-GitHub Appが解いている問題は、role別のpermission downscopeと短命tokenである。前者が必要になるのは「Review Workerがread-onlyであること」をGitHub側に強制させたい時点だが、**貫通中のReview Workerは未認証であり、write APIを叩く手段そのものを持たない**。認証を入れないことが、この段階では最も強い権限分離になっている。PATも同様に作らない——public readに不要な credential を置くと、rotate対象と漏洩面が理由なく増える。
+GitHub Appが解いている問題は、role別のpermission downscopeと短命tokenである。S1〜S2にはReview Workerもwrite操作も存在せず、credentialを置かないことがこの段階では最も強い権限分離になる。PATも同様に作らない——public readに不要なcredentialを置くと、rotate対象と漏洩面が理由なく増える。最初のReview Workerが動くS4までには、S3で導入する認証をread-only tokenへdownscopeし、GitHub側でもwrite APIを実行できない構成にする。
 
-この決着により、JWT署名 / 鍵管理 / token cache / 期限判定、`TokenSource` interfaceとその実装、およびそれらのtestが貫通から丸ごと消える。GitHub App自体の作成はweb UI操作で自動化できないため、貫通前の人間の手作業も1つ減る。
+この決着により、S1〜S2からJWT署名 / 鍵管理 / token cache / 期限判定と`TokenSource`実装、およびそれらのtestが消える。将来の認証を注入する`TokenSource` seamだけをS1に残し、S3着手時に実装を追加する。
 
 **代償: polling間隔を15分にする。** 未認証のGitHub APIは60 req/hourで、しかもIP単位である。60秒間隔ではpollingだけで枠を使い切り、claimに必要なIssue get / content取得 / base SHAの分が残らない。15分間隔なら消費は4 req/hourで、残り56をclaimへ回せる。
 
@@ -336,7 +336,7 @@ D2のfeature freezeの例外である。いずれも踏んだ実装PRの中で�
 - **`ArtifactEntry`の長さ0チェック**: 現行の検証は`Length >= 0`しか見ないため、長さ0の`red-evidence`もmanifest validationを通る。protocol層で弾くか、store側のPutで弾くか、`author_tests` handlerが固定前に検査するかを決めていない。
 - **authority contentをmanifest entryとして載せる場合のlogical name規則**: `validArtifactName`は小文字英数字と`- . / _`しか許さないが、authority path側（`validAuthorityPath`）は大文字を許すため、この repository自身の`AGENTS.md`をそのままnameにできない。必須集合には入っていないため貫通では回避できるが、命名規則を場当たりで決めない。
 - **RED evidenceのversioned schema化**: 貫通がS3で止まる（reviewを含まない）間はopaque bytesでも実害が無いが、S4へ広げる前にschemaを決める必要がある。決めた時点で過去のevidenceは別identityになる。この境界を跨ぐ判断を暗黙にしない。
-- **review round上限**: 別worktreeで並行設計中であり、本ADRは踏み込まない。`ReconcileIssue`のresult taxonomyとlabel投影はreview roundと接するため、両者のenum定義が衝突しないか統合時に確認する。
+- **review round上限**: [ADR-0003](0003-review-round-limit.md)で決着済みである。`ReconcileIssue`のresult taxonomyとlabel投影を実装するときは、同ADRのescalation reasonと既存enumを再利用し、別の語彙を作らない。
 
 ## Revisit conditions
 

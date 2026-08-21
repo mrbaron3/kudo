@@ -202,7 +202,8 @@ schema migration は`migrate` service が application 起動前に行う。migra
 
 - destructive migration を application startup に暗黙実行しない。
 - migration 実行前に PostgreSQL backup を取得できる手順を持つ。
-- binary は対応 schema version 範囲を readiness で検証する。
+- rolling deployment を行わない現行構成では、binary は適用済み schema version が自身の
+  `CurrentSchemaVersion` と完全一致することを readiness で検証する。
 - queue payload、artifact manifest、Review protocol は schema version を持ち、DB migration だけで無断変換しない。
 
 ### Migration runner
