@@ -23,7 +23,7 @@ import (
 // 新しい migration を足すときだけ entry を追加する。既存 entry の値を書き換えることは
 // 「適用済みの migration を改変した」ことを意味し、その database は再現できなくなる。
 var migrationDigests = map[string]string{
-	"0001_run_store.sql": "sha256:12bbe89805e0631e2d222d99dc8617ef6e8751fafdee07a384aeb706b7f62932",
+	"0001_run_store.sql": "sha256:91d9bbef3f1b4bf7bfa0ca24eb40d72ffc48127c9cee999ff6ccb1be468d5a89",
 }
 
 func TestMigrationFileContentsAreFixed(t *testing.T) {

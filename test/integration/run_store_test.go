@@ -167,7 +167,7 @@ func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("observation-1")),
 	}
-	run := claimedRun("run-round-trip", 1301, initialObservation.Digest)
+	run := claimedRun("run-round-trip", 1301, initialObservation)
 	// Store は schema の中身を解釈しない。将来 version も schema/digest の組として扱う。
 	run.Input.ContextManifest.Schema = "kudo.context-manifest/v1alpha2"
 	run.Input.ExecutionPolicy.Schema = "kudo.execution-policy/v2"
@@ -213,8 +213,10 @@ func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 		Schema: "kudo.issue-observation/v1alpha2",
 		Digest: contract.SHA256([]byte("observation-2")),
 	}
+	secondBody := contract.SHA256([]byte("body-2"))
 	stored = persistEvent(t, ctx, store, stored, workflow.ObservationRecorded{
-		Observation: secondObservation.Digest,
+		Observation: secondObservation,
+		BodyDigest:  secondBody,
 	}, &secondObservation)
 
 	// digest が同じでも schema が変われば別の opaque ref であり、lineage に残す。
@@ -222,12 +224,15 @@ func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 		Schema: "kudo.issue-observation/v1alpha3",
 		Digest: secondObservation.Digest,
 	}
+	thirdBody := contract.SHA256([]byte("body-3"))
 	stored = persistEvent(t, ctx, store, stored, workflow.ObservationRecorded{
-		Observation: thirdObservation.Digest,
+		Observation: thirdObservation,
+		BodyDigest:  thirdBody,
 	}, &thirdObservation)
-	// 同一refの再観測はRun履歴には残るが、Observation lineageを重複させない。
+	// 同一refかつ同一本文の再観測はRun履歴には残るが、Observation lineageを重複させない。
 	stored = persistEvent(t, ctx, store, stored, workflow.ObservationRecorded{
-		Observation: thirdObservation.Digest,
+		Observation: thirdObservation,
+		BodyDigest:  thirdBody,
 	}, &thirdObservation)
 
 	// process-localなStoreと接続を捨てても、PostgreSQLだけから全bindingを復元できる。
@@ -246,9 +251,9 @@ func TestRunStoreRestoresOpaqueBindingsAndObservationLineage(t *testing.T) {
 		t.Fatalf("Issue Observation lineage を取得できない: %v", err)
 	}
 	wantLineage := []postgresadapter.ObservationRecord{
-		{RunVersion: 1, Ref: initialObservation},
-		{RunVersion: 9, Ref: secondObservation},
-		{RunVersion: 10, Ref: thirdObservation},
+		{RunVersion: 1, Ref: initialObservation, BodyDigest: contract.SHA256([]byte("run-round-trip-body"))},
+		{RunVersion: 9, Ref: secondObservation, BodyDigest: secondBody},
+		{RunVersion: 10, Ref: thirdObservation, BodyDigest: thirdBody},
 	}
 	if !reflect.DeepEqual(lineage, wantLineage) {
 		t.Fatalf("Observation lineage = %#v, want %#v", lineage, wantLineage)
@@ -327,7 +332,7 @@ func TestRunStoreStoresAnAbsentPullRequestAsNull(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("absent-pull-request")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-absent-pull-request", 1306, observation.Digest), observation)
+	created, err := store.Create(ctx, claimedRun("run-absent-pull-request", 1306, observation), observation)
 	if err != nil {
 		t.Fatalf("Run を作成できない: %v", err)
 	}
@@ -385,7 +390,7 @@ func TestRunStoreRejectsCrossKindArtifactReferences(t *testing.T) {
 				Schema: contract.IssueObservationSchemaV1Alpha1,
 				Digest: contract.SHA256([]byte(fmt.Sprintf("cross-kind-%d", i))),
 			}
-			run := claimedRun(fmt.Sprintf("run-cross-kind-%d", i), 1310+i, observation.Digest)
+			run := claimedRun(fmt.Sprintf("run-cross-kind-%d", i), 1310+i, observation)
 			test.mutate(&run, &observation)
 
 			if _, err := store.Create(ctx, run, observation); !errors.Is(err, postgresadapter.ErrInvalidRun) {
@@ -411,7 +416,7 @@ func TestRunStoreRejectsGitHubReferencesOutsideTheContractGrammar(t *testing.T) 
 			Schema: contract.IssueObservationSchemaV1Alpha1,
 			Digest: contract.SHA256([]byte(fmt.Sprintf("invalid-issue-ref-%d", i))),
 		}
-		run := claimedRun(fmt.Sprintf("run-invalid-issue-ref-%d", i), 1340+i, observation.Digest)
+		run := claimedRun(fmt.Sprintf("run-invalid-issue-ref-%d", i), 1340+i, observation)
 		run.Issue = issue
 		if _, err := store.Create(ctx, run, observation); !errors.Is(err, postgresadapter.ErrInvalidRun) {
 			t.Fatalf("Issue reference %q の error = %v, want ErrInvalidRun", issue.String(), err)
@@ -422,7 +427,7 @@ func TestRunStoreRejectsGitHubReferencesOutsideTheContractGrammar(t *testing.T) 
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("invalid-pull-request-ref")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-invalid-pull-request-ref", 1344, observation.Digest), observation)
+	created, err := store.Create(ctx, claimedRun("run-invalid-pull-request-ref", 1344, observation), observation)
 	if err != nil {
 		t.Fatalf("Run を作成できない: %v", err)
 	}
@@ -449,7 +454,7 @@ func TestRunStoreRejectsCrossKindObservationTransition(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("initial-observation")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-cross-kind-transition", 1320, initial.Digest), initial)
+	created, err := store.Create(ctx, claimedRun("run-cross-kind-transition", 1320, initial), initial)
 	if err != nil {
 		t.Fatalf("Runを作成できない: %v", err)
 	}
@@ -459,7 +464,7 @@ func TestRunStoreRejectsCrossKindObservationTransition(t *testing.T) {
 		Schema: contract.ContextManifestSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("cross-kind-observation")),
 	}
-	next.Observation = badObservation.Digest
+	next.Observation = badObservation
 	_, err = store.Transition(ctx, postgresadapter.Transition{
 		ExpectedVersion: created.Version,
 		Event:           workflow.KindObservationRecorded,
@@ -481,7 +486,7 @@ func TestRunStoreRejectsCorruptStoredSchemaFamily(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("corrupt-schema-observation")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-corrupt-schema", 1321, observation.Digest), observation)
+	created, err := store.Create(ctx, claimedRun("run-corrupt-schema", 1321, observation), observation)
 	if err != nil {
 		t.Fatalf("Runを作成できない: %v", err)
 	}
@@ -519,7 +524,7 @@ func TestRunStoreRejectsCorruptStoredSchemaFamily(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("corrupt-observation-schema-initial")),
 	}
-	created, err = store.Create(ctx, claimedRun("run-corrupt-observation-schema", 1322, observation.Digest), observation)
+	created, err = store.Create(ctx, claimedRun("run-corrupt-observation-schema", 1322, observation), observation)
 	if err != nil {
 		t.Fatalf("Runを作成できない: %v", err)
 	}
@@ -537,9 +542,10 @@ func TestRunStoreRejectsCorruptStoredSchemaFamily(t *testing.T) {
 		t.Fatalf("不正な Issue Observation の transition を準備できない: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO run_issue_observations (run_id, run_version, schema, digest)
-		VALUES ($1, 2, $2, $3)
-	`, created.ID, contract.ContextManifestSchemaV1Alpha1, badDigest); err != nil {
+		INSERT INTO run_issue_observations (run_id, run_version, schema, digest, body_digest)
+		VALUES ($1, 2, $2, $3, $4)
+	`, created.ID, contract.ContextManifestSchemaV1Alpha1, badDigest,
+		contract.SHA256([]byte("corrupt-observation-body"))); err != nil {
 		t.Fatalf("不正な Issue Observation lineage を準備できない: %v", err)
 	}
 	if _, err := pool.Exec(ctx, "UPDATE runs SET version = 2 WHERE id = $1", created.ID); err != nil {
@@ -584,7 +590,7 @@ func TestRunStoreRejectsPinnedReviewBudgetChanges(t *testing.T) {
 				Digest: contract.SHA256([]byte(fmt.Sprintf("pinned-budget-observation-%d", i))),
 			}
 			created, err := store.Create(ctx,
-				claimedRun(fmt.Sprintf("run-pinned-budget-%d", i), 1322+i, observation.Digest),
+				claimedRun(fmt.Sprintf("run-pinned-budget-%d", i), 1322+i, observation),
 				observation,
 			)
 			if err != nil {
@@ -615,7 +621,7 @@ func TestRunStoreRejectsTotalRoundRollback(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("total-round-rollback-observation")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-total-round-rollback", 1323, observation.Digest), observation)
+	created, err := store.Create(ctx, claimedRun("run-total-round-rollback", 1323, observation), observation)
 	if err != nil {
 		t.Fatalf("Runを作成できない: %v", err)
 	}
@@ -669,7 +675,7 @@ func TestRunStoreRestoresReviewRoundBudget(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("rounds-observation")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-rounds", 1303, observation.Digest), observation)
+	created, err := store.Create(ctx, claimedRun("run-rounds", 1303, observation), observation)
 	if err != nil {
 		t.Fatalf("Run を作成できない: %v", err)
 	}
@@ -751,7 +757,7 @@ func TestRunStoreRejectsRoundsAboveTotal(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("rounds-invariant-observation")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-rounds-invariant", 1304, observation.Digest), observation)
+	created, err := store.Create(ctx, claimedRun("run-rounds-invariant", 1304, observation), observation)
 	if err != nil {
 		t.Fatalf("Run を作成できない: %v", err)
 	}
@@ -780,7 +786,7 @@ func TestRunStoreCompareAndSwap(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("cas-observation")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-cas", 1302, observation.Digest), observation)
+	created, err := store.Create(ctx, claimedRun("run-cas", 1302, observation), observation)
 	if err != nil {
 		t.Fatalf("Run を作成できない: %v", err)
 	}
@@ -857,7 +863,7 @@ func TestRunStoreRollsBackSavepointAfterRequestCancellation(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("cancelled-savepoint-observation")),
 	}
-	run := claimedRun("run-cancelled-savepoint", 1390, observation.Digest)
+	run := claimedRun("run-cancelled-savepoint", 1390, observation)
 	_, err = store.Create(requestCtx, run, observation)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel 後の Create error = %v, want context.Canceled", err)
@@ -886,14 +892,14 @@ func TestRunStoreAllowsOnlyOneWriterPerIssue(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("writer-1")),
 	}
-	if _, err := store.Create(ctx, claimedRun("run-writer-1", 1303, firstObservation.Digest), firstObservation); err != nil {
+	if _, err := store.Create(ctx, claimedRun("run-writer-1", 1303, firstObservation), firstObservation); err != nil {
 		t.Fatalf("最初の writer Run を作成できない: %v", err)
 	}
 	secondObservation := contract.IssueObservationRef{
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("writer-2")),
 	}
-	_, err := store.Create(ctx, claimedRun("run-writer-2", 1303, secondObservation.Digest), secondObservation)
+	_, err := store.Create(ctx, claimedRun("run-writer-2", 1303, secondObservation), secondObservation)
 	if !errors.Is(err, postgresadapter.ErrActiveRun) {
 		t.Fatalf("同じ Issue の二つ目の writer error = %v, want ErrActiveRun", err)
 	}
@@ -902,7 +908,7 @@ func TestRunStoreAllowsOnlyOneWriterPerIssue(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("other-issue")),
 	}
-	if _, err := store.Create(ctx, claimedRun("run-other-issue", 1304, otherIssueObservation.Digest), otherIssueObservation); err != nil {
+	if _, err := store.Create(ctx, claimedRun("run-other-issue", 1304, otherIssueObservation), otherIssueObservation); err != nil {
 		t.Fatalf("別 Issue の独立 Run が global lock で拒否された: %v", err)
 	}
 }
@@ -917,7 +923,7 @@ func TestRunStoreRequiresNeedsHumanRunToBeSupersededBeforeAReplacementClaim(t *t
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("needs-human-first")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-needs-human-first", 1350, firstObservation.Digest), firstObservation)
+	created, err := store.Create(ctx, claimedRun("run-needs-human-first", 1350, firstObservation), firstObservation)
 	if err != nil {
 		t.Fatalf("最初の Run を作成できない: %v", err)
 	}
@@ -936,7 +942,7 @@ func TestRunStoreRequiresNeedsHumanRunToBeSupersededBeforeAReplacementClaim(t *t
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("needs-human-second")),
 	}
-	_, err = store.Create(ctx, claimedRun("run-needs-human-second", 1350, secondObservation.Digest), secondObservation)
+	_, err = store.Create(ctx, claimedRun("run-needs-human-second", 1350, secondObservation), secondObservation)
 	if !errors.Is(err, postgresadapter.ErrActiveRun) {
 		t.Fatalf("needs_human Run が残る Issue の再 claim error = %v, want ErrActiveRun", err)
 	}
@@ -951,7 +957,7 @@ func TestRunStoreRequiresNeedsHumanRunToBeSupersededBeforeAReplacementClaim(t *t
 		t.Fatalf("paused Run を supersede できない: %v", err)
 	}
 	if _, err := store.Create(ctx,
-		claimedRun("run-needs-human-replacement", 1350, secondObservation.Digest), secondObservation,
+		claimedRun("run-needs-human-replacement", 1350, secondObservation), secondObservation,
 	); err != nil {
 		t.Fatalf("supersede 後の置換 Run を claim できない: %v", err)
 	}
@@ -983,7 +989,7 @@ func TestRunStoreDetectsCorruptTransitionHistory(t *testing.T) {
 				Digest: contract.SHA256([]byte(fmt.Sprintf("transition-corruption-%d", i))),
 			}
 			created, err := store.Create(ctx,
-				claimedRun(fmt.Sprintf("run-transition-corruption-%d", i), 1360+i, observation.Digest),
+				claimedRun(fmt.Sprintf("run-transition-corruption-%d", i), 1360+i, observation),
 				observation,
 			)
 			if err != nil {
@@ -1050,7 +1056,7 @@ func TestRunTransitionSchemaRejectsAmbiguousMissingFromPhase(t *testing.T) {
 				Digest: contract.SHA256([]byte("ambiguous-from-phase-" + name)),
 			}
 			created, err := store.Create(ctx,
-				claimedRun("run-ambiguous-from-phase-"+name, 1370, observation.Digest), observation,
+				claimedRun("run-ambiguous-from-phase-"+name, 1370, observation), observation,
 			)
 			if err != nil {
 				t.Fatalf("Run を作成できない: %v", err)
@@ -1078,7 +1084,7 @@ func TestRunStoreSchemaGuardsNameTheirConstraints(t *testing.T) {
 		Schema: contract.IssueObservationSchemaV1Alpha1,
 		Digest: contract.SHA256([]byte("schema-guard")),
 	}
-	created, err := store.Create(ctx, claimedRun("run-schema-guard", 1305, observation.Digest), observation)
+	created, err := store.Create(ctx, claimedRun("run-schema-guard", 1305, observation), observation)
 	if err != nil {
 		t.Fatalf("Run を作成できない: %v", err)
 	}
@@ -1224,7 +1230,7 @@ func assertConstraintViolation(t *testing.T, err error, want string) {
 	}
 }
 
-func claimedRun(id string, issueNumber int, observation contract.Digest) workflow.Run {
+func claimedRun(id string, issueNumber int, observation contract.IssueObservationRef) workflow.Run {
 	return workflow.Run{
 		ID:    id,
 		Issue: contract.IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: issueNumber},
@@ -1243,8 +1249,9 @@ func claimedRun(id string, issueNumber int, observation contract.Digest) workflo
 			Schema: contract.EscalationPolicySchemaV1Alpha1,
 			Digest: contract.SHA256([]byte(id + "-escalation")),
 		},
-		RoundLimits: contract.ReviewRoundLimits{TestValidity: 3, FinalImplementation: 3},
-		Observation: observation,
+		RoundLimits:           contract.ReviewRoundLimits{TestValidity: 3, FinalImplementation: 3},
+		Observation:           observation,
+		ObservationBodyDigest: contract.SHA256([]byte(id + "-body")),
 	}
 }
 

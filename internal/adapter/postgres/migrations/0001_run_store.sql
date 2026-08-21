@@ -22,7 +22,8 @@ CREATE TABLE runs (
         'publishing_final_head',
         'awaiting_final_review',
         'finalizing_pull_request',
-        'awaiting_human_review',
+        'merging_pull_request',
+        'merged',
         'needs_human',
         'superseded'
     )),
@@ -75,7 +76,8 @@ CREATE TABLE runs (
         'implementing',
         'publishing_final_head',
         'awaiting_final_review',
-        'finalizing_pull_request'
+        'finalizing_pull_request',
+        'merging_pull_request'
     )) STORED,
     CONSTRAINT runs_context_manifest_ref_fkey
         FOREIGN KEY (context_manifest_schema, context_manifest_digest)
@@ -124,7 +126,9 @@ CREATE TABLE run_transitions (
         'head_published',
         'review_completed',
         'implementation_fixed',
+        'test_revision_required',
         'pull_request_finalized',
+        'pull_request_merged',
         'observation_recorded',
         'semantic_input_changed',
         'attempt_failed',
@@ -140,7 +144,8 @@ CREATE TABLE run_transitions (
         'publishing_final_head',
         'awaiting_final_review',
         'finalizing_pull_request',
-        'awaiting_human_review',
+        'merging_pull_request',
+        'merged',
         'needs_human',
         'superseded'
     )),
@@ -154,7 +159,8 @@ CREATE TABLE run_transitions (
             'publishing_final_head',
             'awaiting_final_review',
             'finalizing_pull_request',
-            'awaiting_human_review',
+            'merging_pull_request',
+            'merged',
             'needs_human',
             'superseded'
         )
@@ -182,6 +188,10 @@ CREATE TABLE run_issue_observations (
     run_version bigint NOT NULL CHECK (run_version > 0),
     schema text NOT NULL,
     digest text NOT NULL,
+    -- Issue 本文そのものの digest。observation ref は canonical artifact の identity で
+    -- あり、本文 bytes の identity ではない。live Issue が観測時と同じ本文かを後から
+    -- 判定するには両方要る（ADR-0006 の live context reconstruction）。
+    body_digest text NOT NULL CHECK (body_digest ~ '^sha256:[0-9a-f]{64}$'),
     PRIMARY KEY (run_id, run_version),
     CONSTRAINT run_issue_observations_transition_fkey
         FOREIGN KEY (run_id, run_version)

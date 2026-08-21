@@ -44,6 +44,7 @@ type Transition struct {
 type ObservationRecord struct {
 	RunVersion int64
 	Ref        contract.IssueObservationRef
+	BodyDigest contract.Digest
 }
 
 // TransitionRecord は一回の永続化済み phase 遷移を表す。
@@ -112,7 +113,7 @@ func (s *RunStore) Create(ctx context.Context, run workflow.Run, observation con
 	`, run.ID, run.Version, workflow.KindClaimSucceeded, nil, run.Phase); err != nil {
 		return workflow.Run{}, fmt.Errorf("初期 transition を保存する: %w", err)
 	}
-	if err := insertObservation(ctx, tx, run.ID, run.Version, observation); err != nil {
+	if err := insertObservation(ctx, tx, run.ID, run.Version, observation, run.ObservationBodyDigest); err != nil {
 		return workflow.Run{}, fmt.Errorf("初期 Issue Observation を保存する: %w", err)
 	}
 	if err := commitStoreTransaction(ctx, tx); err != nil {
@@ -186,20 +187,31 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 		); err != nil {
 			return workflow.Run{}, err
 		}
-		if transition.Observation.Digest != transition.Run.Observation {
-			return workflow.Run{}, invalidRun("IssueObservationRef digest が Run の Observation と一致しない")
+		if *transition.Observation != transition.Run.Observation {
+			return workflow.Run{}, invalidRun("IssueObservationRef が Run の Observation と一致しない")
+		}
+		if !transition.Run.ObservationBodyDigest.Valid() {
+			return workflow.Run{}, invalidRun(
+				"Issue 本文 digest が不正: %q", transition.Run.ObservationBodyDigest)
 		}
 		currentObservation, loadErr := loadLatestObservation(ctx, tx, current.ID)
 		if loadErr != nil {
 			return workflow.Run{}, loadErr
 		}
-		appendObservation = currentObservation != *transition.Observation
+		// ref と本文 digest のどちらかが動いたら追記する。ref だけで判定すると、
+		// 同じ ref のまま本文 digest が変わった観測が lineage に残らず、復元した Run
+		// だけ古い本文 digest を指す。
+		appendObservation = currentObservation != *transition.Observation ||
+			current.ObservationBodyDigest != transition.Run.ObservationBodyDigest
 	} else {
 		if transition.Observation != nil {
 			return workflow.Run{}, invalidRun("Observation event 以外は IssueObservationRef を追記できない")
 		}
 		if transition.Run.Observation != current.Observation {
 			return workflow.Run{}, invalidRun("Observation event 以外は Run の Observation を変更できない")
+		}
+		if transition.Run.ObservationBodyDigest != current.ObservationBodyDigest {
+			return workflow.Run{}, invalidRun("Observation event 以外は Run の Issue 本文 digest を変更できない")
 		}
 	}
 
@@ -276,7 +288,7 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 		}
 	}
 	if appendObservation {
-		if err := insertObservation(ctx, tx, next.ID, next.Version, *transition.Observation); err != nil {
+		if err := insertObservation(ctx, tx, next.ID, next.Version, *transition.Observation, next.ObservationBodyDigest); err != nil {
 			return workflow.Run{}, fmt.Errorf("Issue Observation lineage を保存する: %w", err)
 		}
 	}
@@ -289,7 +301,7 @@ func (s *RunStore) Transition(ctx context.Context, transition Transition) (workf
 // ObservationLineage は current になった observation ref を version 昇順で返す。
 func (s *RunStore) ObservationLineage(ctx context.Context, id string) ([]ObservationRecord, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT run_version, schema, digest
+		SELECT run_version, schema, digest, body_digest
 		FROM run_issue_observations
 		WHERE run_id = $1
 		ORDER BY run_version
@@ -302,7 +314,7 @@ func (s *RunStore) ObservationLineage(ctx context.Context, id string) ([]Observa
 	records := make([]ObservationRecord, 0)
 	for rows.Next() {
 		var record ObservationRecord
-		if err := rows.Scan(&record.RunVersion, &record.Ref.Schema, &record.Ref.Digest); err != nil {
+		if err := rows.Scan(&record.RunVersion, &record.Ref.Schema, &record.Ref.Digest, &record.BodyDigest); err != nil {
 			return nil, fmt.Errorf("Issue Observation lineage を読む: %w", err)
 		}
 		if record.RunVersion < 1 {
@@ -507,7 +519,7 @@ func loadRun(ctx context.Context, db runQuerier, id string, forUpdate bool) (wor
 			run.context_manifest_schema, run.context_manifest_digest,
 			run.execution_policy_schema, run.execution_policy_digest,
 			run.escalation_policy_schema, run.escalation_policy_digest,
-			observation.schema, observation.digest, run.pull_request_ref,
+			observation.schema, observation.digest, observation.body_digest, run.pull_request_ref,
 			run.fixed_head, run.published_head, run.published_test_head, run.checks_head,
 			run.test_approval_head, run.test_approval_request_digest, run.test_approval_result_digest,
 			run.final_approval_head, run.final_approval_request_digest, run.final_approval_result_digest,
@@ -516,7 +528,7 @@ func loadRun(ctx context.Context, db runQuerier, id string, forUpdate bool) (wor
 			run.total_rounds_test_validity, run.total_rounds_final_implementation
 		FROM runs AS run
 		LEFT JOIN LATERAL (
-			SELECT schema, digest
+			SELECT schema, digest, body_digest
 			FROM run_issue_observations
 			WHERE run_id = run.id
 			ORDER BY run_version DESC
@@ -561,6 +573,7 @@ func scanRun(row rowScanner) (workflow.Run, error) {
 	var (
 		run                                                            workflow.Run
 		issueRef, observationSchema, observationDigest, pullRequestRef sql.NullString
+		observationBodyDigest                                          sql.NullString
 		testHead, testRequest, testResult                              sql.NullString
 		finalHead, finalRequest, finalResult                           sql.NullString
 	)
@@ -569,7 +582,7 @@ func scanRun(row rowScanner) (workflow.Run, error) {
 		&run.Input.ContextManifest.Schema, &run.Input.ContextManifest.Digest,
 		&run.Input.ExecutionPolicy.Schema, &run.Input.ExecutionPolicy.Digest,
 		&run.EscalationPolicy.Schema, &run.EscalationPolicy.Digest,
-		&observationSchema, &observationDigest, &pullRequestRef,
+		&observationSchema, &observationDigest, &observationBodyDigest, &pullRequestRef,
 		&run.FixedHead, &run.PublishedHead, &run.PublishedTestHead, &run.ChecksHead,
 		&testHead, &testRequest, &testResult, &finalHead, &finalRequest, &finalResult,
 		&run.RoundLimits.TestValidity, &run.RoundLimits.FinalImplementation,
@@ -582,7 +595,7 @@ func scanRun(row rowScanner) (workflow.Run, error) {
 	if !issueRef.Valid {
 		return workflow.Run{}, corruptRun("Issue reference が NULL")
 	}
-	if observationSchema.Valid != observationDigest.Valid {
+	if observationSchema.Valid != observationDigest.Valid || observationSchema.Valid != observationBodyDigest.Valid {
 		return workflow.Run{}, corruptRun("Issue Observation ref の NULL が不整合")
 	}
 	if !observationSchema.Valid {
@@ -598,7 +611,12 @@ func scanRun(row rowScanner) (workflow.Run, error) {
 			observation.Schema, observation.Digest,
 		)
 	}
-	run.Observation = observation.Digest
+	bodyDigest := contract.Digest(observationBodyDigest.String)
+	if !bodyDigest.Valid() {
+		return workflow.Run{}, corruptRun("Issue 本文 digest が不正: %q", bodyDigest)
+	}
+	run.Observation = observation
+	run.ObservationBodyDigest = bodyDigest
 	run.Issue, err = parseIssueRef(issueRef.String)
 	if err != nil {
 		return workflow.Run{}, corruptRun("Issue reference が不正: %v", err)
@@ -677,11 +695,18 @@ func insertArtifactRef(ctx context.Context, tx pgx.Tx, ref versionedRef) error {
 	return err
 }
 
-func insertObservation(ctx context.Context, tx pgx.Tx, runID string, version int64, ref contract.IssueObservationRef) error {
+func insertObservation(
+	ctx context.Context,
+	tx pgx.Tx,
+	runID string,
+	version int64,
+	ref contract.IssueObservationRef,
+	bodyDigest contract.Digest,
+) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO run_issue_observations (run_id, run_version, schema, digest)
-		VALUES ($1, $2, $3, $4)
-	`, runID, version, ref.Schema, ref.Digest)
+		INSERT INTO run_issue_observations (run_id, run_version, schema, digest, body_digest)
+		VALUES ($1, $2, $3, $4, $5)
+	`, runID, version, ref.Schema, ref.Digest, bodyDigest)
 	return err
 }
 
@@ -721,8 +746,8 @@ func validateCreate(run workflow.Run, observation contract.IssueObservationRef) 
 	); err != nil {
 		return err
 	}
-	if run.Observation != observation.Digest {
-		return invalidRun("初期 IssueObservationRef digest が Run の Observation と一致しない")
+	if run.Observation != observation {
+		return invalidRun("初期 IssueObservationRef が Run の Observation と一致しない")
 	}
 	return nil
 }
@@ -876,7 +901,16 @@ func validateRun(run workflow.Run) error {
 		return err
 	}
 	if !run.Observation.Valid() {
-		return invalidRun("Observation digest が不正: %q", run.Observation)
+		return invalidRun("IssueObservationRef が不正: schema=%q digest=%q",
+			run.Observation.Schema, run.Observation.Digest)
+	}
+	if !run.ObservationBodyDigest.Valid() {
+		return invalidRun("Issue 本文 digest が不正: %q", run.ObservationBodyDigest)
+	}
+	// structured claim context の durable schema は同じ Milestone 2 の別 slice である。
+	// 保存できない値を黙って捨てると、復元した Run だけ checkpoint を失う。
+	if run.ClaimContext != (contract.ClaimContext{}) {
+		return invalidRun("structured claim context を保存する schema がまだ無い")
 	}
 	if run.PullRequest != (contract.PullRequestRef{}) {
 		if _, err := parsePullRequestRef(run.PullRequest.String()); err != nil {

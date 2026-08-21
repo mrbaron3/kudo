@@ -248,6 +248,10 @@ func validStoredRun() workflow.Run {
 			Digest: contract.SHA256([]byte("escalation")),
 		},
 		RoundLimits: contract.ReviewRoundLimits{TestValidity: 3, FinalImplementation: 3},
-		Observation: contract.SHA256([]byte("observation")),
+		Observation: contract.IssueObservationRef{
+			Schema: contract.IssueObservationSchemaV1Alpha1,
+			Digest: contract.SHA256([]byte("observation")),
+		},
+		ObservationBodyDigest: contract.SHA256([]byte("issue-body")),
 	}
 }
