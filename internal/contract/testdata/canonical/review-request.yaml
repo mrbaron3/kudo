@@ -6,13 +6,13 @@ pullRequest: "github://mrbaron3/kudo/pull/57"
 headSha: "89abcdef0123456789abcdef0123456789abcdef"
 contextManifest:
   schema: "kudo.context-manifest/v1alpha1"
-  digest: "sha256:6367ff1a65c2f02218cfb6f40fd9b979447a51d008d54d6f31392ec1c888a1d2"
+  digest: "sha256:ebd445c72e5ec38c89d7426352c4560be1708048266e361a247d931e7b2503ed"
 executionPolicy:
   schema: "kudo.execution-policy/v1alpha1"
   digest: "sha256:3b9f2163726f0420bc286602bea5ad9acb7085aba4a6bdc935138cd0d488feec"
 artifactManifest:
   schema: "kudo.artifact-manifest/v1alpha1"
-  digest: "sha256:3aac97422b7345789feb2f47475c5fcb4b628f2c7aea853b5798649be2b6c3bf"
+  digest: "sha256:731d494480b2ecb3988612defb0927462f2445380c157f60099e435fcec9c4ce"
 policyRefs:
-  - "docs/contracts/issue-contract-v1alpha1.md"
-  - "docs/review-policies/test-validity-v1alpha1.md"
+  - "docs/spec/05_design/contracts/issue-contract-v1alpha1.md"
+  - "docs/spec/05_design/review-policies/test-validity-v1alpha1.md"

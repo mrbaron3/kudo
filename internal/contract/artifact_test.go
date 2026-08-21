@@ -2,10 +2,47 @@ package contract
 
 import (
 	"bytes"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestReconstructiblePayloadCannotBePersisted(t *testing.T) {
+	compiled := requireCompiled(t, readFixture(t, "valid/full.md"))
+	_, manifestPayload, err := EncodeContextManifest(compiled.ClaimRequirements, sampleContextManifest(compiled))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, payload := range []ArtifactPayload{
+		compiled.RawBodyPayload,
+		compiled.ObservationPayload,
+		compiled.TaskContextPayload,
+		manifestPayload,
+	} {
+		if err := ValidatePersistentArtifactPayload(payload); !errors.Is(err, ProtocolKindConstraint) {
+			t.Fatalf("kind %qが永続化拒否の %q へ分類されない: %v", payload.Kind, ProtocolKindConstraint, err)
+		}
+	}
+
+	_, evidence, err := EncodePullRequestObservation(samplePullRequestObservation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePersistentArtifactPayload(evidence); err != nil {
+		t.Fatalf("再構築できないevidenceを永続化できない: %v", err)
+	}
+}
+
+func TestReconstructiblePayloadCannotEnterManifestUnderAlias(t *testing.T) {
+	compiled := requireCompiled(t, readFixture(t, "valid/minimal.md"))
+
+	if _, err := NewArtifactEntry("compiled-input", compiled.TaskContextPayload); !errors.Is(err, ProtocolKindConstraint) {
+		t.Fatalf("Task Context payloadの別名manifest entryが %q へ分類されない: %v",
+			ProtocolKindConstraint, err)
+	}
+}
 
 func TestContextManifestDifferenceMatrix(t *testing.T) {
 	compiled := requireCompiled(t, readFixture(t, "valid/full.md"))
@@ -124,8 +161,8 @@ func TestVersionedArtifactReadPreservesBytes(t *testing.T) {
 		t.Fatal("改変 payload を受理した")
 	}
 
-	// Reader は schema/digest と bytes を照合するだけで再 encode しない。
-	// そのため、将来の非互換 Task Context schema も旧 artifact と並存できる。
+	// Readerはschema/digestと当該Attemptで再生成したbytesを照合するだけで
+	// 再encodeしない。そのため、将来の非互換Task Context schemaもopaqueに照合できる。
 	futureBytes := []byte("schema: \"kudo.task-context/v1beta1\"\nnewRepresentation: true\n")
 	futurePayload := newArtifactPayload(
 		ArtifactKindTaskContext,
@@ -136,7 +173,7 @@ func TestVersionedArtifactReadPreservesBytes(t *testing.T) {
 	futureRef := TaskContextRef{Schema: futurePayload.Schema, Digest: futurePayload.Digest}
 	futureGot, err := ReadTaskContextArtifact(futureRef, futurePayload)
 	if err != nil {
-		t.Fatalf("future schema artifact の opaque read: %v", err)
+		t.Fatalf("future schema payloadのopaque read: %v", err)
 	}
 	if !bytes.Equal(futureGot, futureBytes) {
 		t.Fatal("future schema artifact が再 encode された")
@@ -390,7 +427,7 @@ func TestClaimRequirementsIsStableProjection(t *testing.T) {
 		},
 		AuthorityRefs: []AuthorityRef{
 			{Path: "AGENTS.md"},
-			{Path: "docs/contracts/issue-contract-v1alpha1.md"},
+			{Path: "docs/spec/05_design/contracts/issue-contract-v1alpha1.md"},
 			{Path: ".github/ISSUE_TEMPLATE/kudo-task.md"},
 			{Issue: &IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 1}},
 		},

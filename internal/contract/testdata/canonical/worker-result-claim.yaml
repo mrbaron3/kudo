@@ -1,0 +1,20 @@
+schema: "kudo.worker-result/v1alpha1"
+operationDigest: "sha256:6fe78d3afafb4297aeec7f560617e8cec260dd516a63713fb101661fa5e96d16"
+outcome: "succeeded"
+headSha: null
+claimContext:
+  compiler: "kudo.issue-compiler/v1alpha1"
+  issueObservation:
+    schema: "kudo.issue-observation/v1alpha1"
+    digest: "sha256:c203d6b9efbc6d8b6fad6b61d01f30af341bb52907177449a279404312e48bfa"
+  bodyDigest: "sha256:1e29dbca96f751432ac1e0bccdcfca54f93b9fb956c9a28089af37ba4c97870a"
+  taskContext:
+    schema: "kudo.task-context/v1alpha1"
+    digest: "sha256:7e9bd1f502da50e37d688fe8ff3cbb8f720702e363896b4936e5263968ace1ef"
+  contextManifest:
+    schema: "kudo.context-manifest/v1alpha1"
+    digest: "sha256:ebd445c72e5ec38c89d7426352c4560be1708048266e361a247d931e7b2503ed"
+  baseSha: "0123456789abcdef0123456789abcdef01234567"
+changedInputFields: []
+outputArtifacts: []
+externalRefs: []

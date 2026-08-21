@@ -43,7 +43,7 @@ func sampleWorkerOperation(t *testing.T) WorkerOperation {
 		ExecutionPolicy: policyRef,
 		HeadSHA:         sampleHeadSHA,
 		InputArtifacts:  []Digest{SHA256([]byte("implementation-brief"))},
-		PolicyRefs:      []string{"docs/github-routing.md"},
+		PolicyRefs:      []string{"docs/spec/05_design/04_github-routing.md"},
 		CausationID:     "transition-01",
 		CreatedAt:       sampleCreatedAt,
 	}
@@ -64,13 +64,34 @@ func sampleClaimOperation(t *testing.T) WorkerOperation {
 	}
 }
 
+func sampleClaimContext(t *testing.T, issue IssueRef) ClaimContext {
+	t.Helper()
+	compiled, errs := Compile(readFixture(t, "valid/full.md"), issue)
+	if len(errs) > 0 {
+		t.Fatalf("compile error: %v", errs)
+	}
+	manifest := sampleContextManifest(compiled)
+	manifestRef, _, err := EncodeContextManifest(compiled.ClaimRequirements, manifest)
+	if err != nil {
+		t.Fatalf("manifest encode error: %v", err)
+	}
+	return ClaimContext{
+		Compiler:        compiled.CompilerVersion,
+		Observation:     compiled.ObservationRef,
+		BodyDigest:      compiled.Observation.BodyDigest,
+		TaskContext:     compiled.TaskContextRef,
+		ContextManifest: manifestRef,
+		BaseSHA:         manifest.BaseSHA,
+	}
+}
+
 func sampleOperationResult(t *testing.T, op WorkerOperation) OperationResult {
 	t.Helper()
 	digest, err := OperationDigest(op)
 	if err != nil {
 		t.Fatalf("operation digest error: %v", err)
 	}
-	return OperationResult{
+	result := OperationResult{
 		Schema:          WorkerResultSchemaV1Alpha1,
 		OperationDigest: digest,
 		AttemptID:       "attempt-01",
@@ -79,6 +100,11 @@ func sampleOperationResult(t *testing.T, op WorkerOperation) OperationResult {
 		OutputArtifacts: sampleKindOutputs(op.Kind),
 		CompletedAt:     sampleCreatedAt.Add(time.Minute),
 	}
+	if op.Kind == OperationClaim {
+		context := sampleClaimContext(t, op.Issue)
+		result.ClaimContext = &context
+	}
+	return result
 }
 
 // sampleStaleOperationResult は semantic input が変わって止まった attempt の Result を返す。
@@ -88,7 +114,22 @@ func sampleStaleOperationResult(t *testing.T, op WorkerOperation) OperationResul
 	result.Outcome = OutcomeStaleInput
 	result.HeadSHA = ""
 	result.OutputArtifacts = nil
+	result.ClaimContext = nil
 	result.ChangedInputFields = []string{fieldHeadSHA, fieldExecutionPolicy}
+	return result
+}
+
+// sampleTestRevisionResult は「承認済み test の変更が必要」と判断して停止した Result を返す。
+// head は最後に承認された test checkpoint へ rollback 済みであることを表す。
+func sampleTestRevisionResult(t *testing.T, op WorkerOperation) OperationResult {
+	t.Helper()
+	result := sampleOperationResult(t, op)
+	result.Outcome = OutcomeTestRevisionRequired
+	result.HeadSHA = sampleHeadSHA
+	result.ClaimContext = nil
+	result.OutputArtifacts = []NamedArtifact{
+		{Name: string(ArtifactNameTestRevisionReport), Digest: SHA256([]byte("test-revision-report"))},
+	}
 	return result
 }
 
@@ -103,10 +144,18 @@ func requireOperationDigest(t *testing.T, op WorkerOperation) Digest {
 
 func TestWorkerOperationCanonicalGolden(t *testing.T) {
 	op := sampleWorkerOperation(t)
+	claim := sampleClaimOperation(t)
+	claimResult := sampleOperationResult(t, claim)
+	claimResult.HeadSHA = ""
 	requireGolden(t, encodeOperationIdentity(op), "worker-operation.yaml")
-	requireGolden(t, encodeOperationIdentity(sampleClaimOperation(t)), "worker-operation-claim.yaml")
+	requireGolden(t, encodeOperationIdentity(claim), "worker-operation-claim.yaml")
+	requireGolden(t, encodeOperationResultIdentity(claimResult), "worker-result-claim.yaml")
 	requireGolden(t, encodeOperationResultIdentity(sampleOperationResult(t, op)), "worker-result.yaml")
 	requireGolden(t, encodeOperationResultIdentity(sampleStaleOperationResult(t, op)), "worker-result-stale.yaml")
+
+	implement := sampleWorkerOperation(t)
+	implement.Kind = OperationImplement
+	requireGolden(t, encodeOperationResultIdentity(sampleTestRevisionResult(t, implement)), "worker-result-test-revision.yaml")
 
 	identity := string(encodeOperationIdentity(op))
 	for _, excluded := range []string{"issueObservation", "bodyDigest", "observedAt", "operationId", "createdAt", "attempt"} {
@@ -134,11 +183,11 @@ func TestOperationDigestCanonicalizesIssueReferenceCase(t *testing.T) {
 func TestOperationDigestCanonicalizesSetOrder(t *testing.T) {
 	ordered := sampleWorkerOperation(t)
 	ordered.InputArtifacts = []Digest{SHA256([]byte("a")), SHA256([]byte("b"))}
-	ordered.PolicyRefs = []string{"docs/github-routing.md", "docs/workflow.md"}
+	ordered.PolicyRefs = []string{"docs/spec/05_design/04_github-routing.md", "docs/spec/05_design/02_workflow.md"}
 
 	reversed := sampleWorkerOperation(t)
 	reversed.InputArtifacts = []Digest{SHA256([]byte("b")), SHA256([]byte("a"))}
-	reversed.PolicyRefs = []string{"docs/workflow.md", "docs/github-routing.md"}
+	reversed.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md", "docs/spec/05_design/04_github-routing.md"}
 
 	if requireOperationDigest(t, ordered) != requireOperationDigest(t, reversed) {
 		t.Fatal("集合の並び替えで Operation digest が変化")
@@ -176,7 +225,7 @@ func TestWorkerOperationValidation(t *testing.T) {
 		"policy ref path":    func(o *WorkerOperation) { o.PolicyRefs = []string{"/etc/passwd"} },
 		"policy ref escape":  func(o *WorkerOperation) { o.PolicyRefs = []string{"../secrets.md"} },
 		"duplicate policy ref": func(o *WorkerOperation) {
-			o.PolicyRefs = []string{"docs/workflow.md", "docs/workflow.md"}
+			o.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md", "docs/spec/05_design/02_workflow.md"}
 		},
 	}
 	for name, mutate := range tests {
@@ -233,6 +282,7 @@ func TestOperationKindRequiresDeclaredInputArtifacts(t *testing.T) {
 		OperationRepairImplementation,
 		OperationPublishHead,
 		OperationFinalizePullRequest,
+		OperationMergePullRequest,
 	}
 	for _, kind := range requiring {
 		t.Run(string(kind), func(t *testing.T) {
@@ -274,7 +324,7 @@ func TestBindOperationResult(t *testing.T) {
 		"execution policy": func(o *WorkerOperation) { o.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) },
 		"head":             func(o *WorkerOperation) { o.HeadSHA = sampleNextSHA },
 		"input artifact":   func(o *WorkerOperation) { o.InputArtifacts = []Digest{SHA256([]byte("別 input"))} },
-		"policy ref":       func(o *WorkerOperation) { o.PolicyRefs = []string{"docs/workflow.md"} },
+		"policy ref":       func(o *WorkerOperation) { o.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md"} },
 	}
 	for name, mutate := range changes {
 		t.Run(name, func(t *testing.T) {
@@ -323,6 +373,60 @@ func TestBindOperationResult(t *testing.T) {
 			t.Fatal("head を固定しない succeeded を受理した")
 		}
 	})
+}
+
+// claimは再構築可能なIssue本文やcanonical YAMLをArtifact Storeへ保存せず、
+// live再compileに必要なversionとdigestだけをstructured checkpointとして返す。
+func TestClaimSuccessCarriesDigestOnlyContext(t *testing.T) {
+	claim := sampleClaimOperation(t)
+	result := sampleOperationResult(t, claim)
+	result.HeadSHA = ""
+	result.OutputArtifacts = nil
+	context := sampleClaimContext(t, claim.Issue)
+	result.ClaimContext = &context
+
+	if err := BindOperationResult(claim, result); err != nil {
+		t.Fatalf("digestだけのclaim contextを拒否した: %v", err)
+	}
+	if len(result.OutputArtifacts) != 0 {
+		t.Fatalf("claimがIssue由来artifactを返した: %v", result.OutputArtifacts)
+	}
+
+	missing := result
+	missing.ClaimContext = nil
+	if err := BindOperationResult(claim, missing); err == nil {
+		t.Fatal("claim contextを欠くsucceeded claimを受理した")
+	}
+
+	nonClaim := sampleOperationResult(t, sampleWorkerOperation(t))
+	nonClaim.ClaimContext = &context
+	if err := BindOperationResult(sampleWorkerOperation(t), nonClaim); err == nil {
+		t.Fatal("claim以外のResultがclaim contextを持つことを許した")
+	}
+
+	mismatched := result
+	mismatchedContext := *result.ClaimContext
+	mismatchedContext.BodyDigest = SHA256([]byte("別のlive Issue body"))
+	mismatched.ClaimContext = &mismatchedContext
+	if err := BindOperationResult(claim, mismatched); err == nil {
+		t.Fatal("body digestとIssue Observation refが食い違うclaim contextを受理した")
+	}
+
+	firstDigest, err := OperationResultDigest(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := result
+	changedContext := *result.ClaimContext
+	changedContext.TaskContext.Digest = SHA256([]byte("別のTask Context"))
+	changed.ClaimContext = &changedContext
+	secondDigest, err := OperationResultDigest(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == secondDigest {
+		t.Fatal("claim contextの変更がResult identityへ反映されない")
+	}
 }
 
 // 同じ logical Operation の retry は attempt だけが変わり、Operation identity は変わらない。
@@ -503,7 +607,7 @@ func TestSucceededResultRequiresKindOutput(t *testing.T) {
 			switch kind {
 			case OperationClaim:
 				result.HeadSHA = ""
-			case OperationPublishHead, OperationFinalizePullRequest:
+			case OperationPublishHead, OperationFinalizePullRequest, OperationMergePullRequest:
 				result.HeadSHA = op.HeadSHA
 				result.ExternalRefs = []string{"github://mrbaron3/kudo/pull/42"}
 			}
@@ -539,6 +643,61 @@ func TestSucceededResultRequiresKindOutput(t *testing.T) {
 	}
 }
 
+// implement / repair_implementation だけが「承認済み test の変更が必要」という差し戻しを
+// test_revision_required として返せる。この Result は rollback 済みの承認済み test
+// checkpoint head と、revise_tests session の入力になる test-revision-report を必須とする。
+// blocking Review Result を持たない差し戻しなので、報告が無いと修正 session は根拠を失う。
+func TestTestRevisionRequiredResult(t *testing.T) {
+	for _, kind := range []OperationKind{OperationImplement, OperationRepairImplementation} {
+		t.Run(string(kind), func(t *testing.T) {
+			op := sampleWorkerOperation(t)
+			op.Kind = kind
+
+			result := sampleTestRevisionResult(t, op)
+			if err := BindOperationResult(op, result); err != nil {
+				t.Fatalf("test_revision_required Result を拒否した: %v", err)
+			}
+
+			noHead := result
+			noHead.HeadSHA = ""
+			if err := BindOperationResult(op, noHead); err == nil {
+				t.Fatal("rollback 先 head を持たない test_revision_required を受理した")
+			}
+
+			noReport := result
+			noReport.OutputArtifacts = nil
+			if err := BindOperationResult(op, noReport); err == nil {
+				t.Fatal("test-revision-report を持たない test_revision_required を受理した")
+			}
+		})
+	}
+}
+
+// test を所有する author/revise lane は自分の test に差し戻しを返せず、publish 系と claim は
+// test を評価しない。他 kind からの test_revision_required は binding 境界で拒否する。
+func TestTestRevisionRequiredRejectedForOtherKinds(t *testing.T) {
+	for kind := range operationKindRules {
+		if kind == OperationImplement || kind == OperationRepairImplementation {
+			continue
+		}
+		t.Run(string(kind), func(t *testing.T) {
+			op := sampleWorkerOperation(t)
+			if kind == OperationClaim {
+				op = sampleClaimOperation(t)
+			}
+			op.Kind = kind
+
+			result := sampleTestRevisionResult(t, op)
+			if kind == OperationClaim {
+				result.HeadSHA = ""
+			}
+			if err := BindOperationResult(op, result); err == nil {
+				t.Fatalf("kind %q の test_revision_required を受理した", kind)
+			}
+		})
+	}
+}
+
 // sampleKindOutputs は kind の必須 logical name をすべて備えた output table を返す。
 func sampleKindOutputs(kind OperationKind) []NamedArtifact {
 	required := requiredOperationOutputs[kind]
@@ -549,12 +708,15 @@ func sampleKindOutputs(kind OperationKind) []NamedArtifact {
 	return outputs
 }
 
-// publish_head と finalize_pull_request は source head を進めない Operation であり、
-// 固定済み head をそのまま branch と PR へ反映する。Result が別の head を報告できると、
-// review していない head に対する外部 mutation が gate を通ってしまう。対象 PR の
-// reference と観測 record も succeeded の必須出力である。
+// publish_head、finalize_pull_request、merge_pull_request は source head を進めない
+// Operation であり、固定済み head をそのまま branch、PR、base へ反映する。Result が別の
+// head を報告できると、review していない head に対する外部 mutation が gate を通ってしまう。
+// merge commit は base 側に生まれる別の commit であり、この head 照合を緩める理由にならない。
+// 対象 PR の reference と観測 record も succeeded の必須出力である。
 func TestPublishOperationsBindHeadAndReference(t *testing.T) {
-	for _, kind := range []OperationKind{OperationPublishHead, OperationFinalizePullRequest} {
+	for _, kind := range []OperationKind{
+		OperationPublishHead, OperationFinalizePullRequest, OperationMergePullRequest,
+	} {
 		t.Run(string(kind), func(t *testing.T) {
 			op := sampleWorkerOperation(t)
 			op.Kind = kind

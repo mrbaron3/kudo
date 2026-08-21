@@ -10,6 +10,58 @@ import (
 // 決める gate 条件である。以下の test は、その集合が語彙として閉じていること、kind を
 // 追加したときに宣言忘れが検出されること、欠落が binding 境界で拒否されることを固定する。
 
+// Issue由来の入力はGitHubから各Operationで再取得・再compileする。canonical bytesは
+// digest計算とそのAttemptのmodel入力にだけ使い、Artifact Storeの必須outputへ格上げしない。
+func TestReconstructibleIssueInputsAreNotPersistentArtifacts(t *testing.T) {
+	reconstructible := map[ArtifactName]bool{
+		"raw-issue-body":    true,
+		"issue-observation": true,
+		"task-context":      true,
+		"context-manifest":  true,
+	}
+	for kind, required := range requiredOperationOutputs {
+		for _, name := range required {
+			if reconstructible[name] {
+				t.Fatalf("operation kind %q が再構築可能な %q の永続化を要求している", kind, name)
+			}
+		}
+	}
+	for kind, required := range requiredReviewEntries {
+		for _, name := range required {
+			if reconstructible[name] {
+				t.Fatalf("review kind %q が再構築可能な %q の永続化を要求している", kind, name)
+			}
+		}
+	}
+	for _, name := range ArtifactNames() {
+		if reconstructible[name] {
+			t.Fatalf("再構築可能な %q が永続artifact語彙に残っている", name)
+		}
+	}
+
+	claim := sampleClaimOperation(t)
+	result := sampleOperationResult(t, claim)
+	result.HeadSHA = ""
+	result.OutputArtifacts = []NamedArtifact{{
+		Name:   "task-context",
+		Digest: SHA256([]byte("保存してはならないTask Context")),
+	}}
+	if err := BindOperationResult(claim, result); !errors.Is(err, ProtocolKindConstraint) {
+		t.Fatalf("Issue由来output artifactが %q へ分類されない: %v", ProtocolKindConstraint, err)
+	}
+
+	manifest := sampleArtifactManifest(t)
+	manifest.Entries = append(manifest.Entries, ArtifactEntry{
+		Name:      "context-manifest",
+		MediaType: MediaTypeYAML,
+		Length:    1,
+		Digest:    SHA256([]byte("x")),
+	})
+	if _, _, err := EncodeArtifactManifest(manifest); !errors.Is(err, ProtocolKindConstraint) {
+		t.Fatalf("Issue由来manifest entryが %q へ分類されない: %v", ProtocolKindConstraint, err)
+	}
+}
+
 // TestRequiredArtifactNamesAreClosedAndReachable は語彙と kind 別必須集合の対応を固定する。
 //
 // 必須集合の網羅は「思いついた kind を列挙する」形で書くと、新しい kind を追加したとき
@@ -39,6 +91,13 @@ func TestRequiredArtifactNamesAreClosedAndReachable(t *testing.T) {
 			}
 			reachable[name] = true
 		}
+	}
+	// kind 別集合のほかに、outcome に紐付く必須集合も語彙の到達点である。
+	for _, name := range requiredTestRevisionOutputs {
+		if !vocabulary[name] {
+			t.Fatalf("test_revision_required が語彙外の name を要求している: %s", name)
+		}
+		reachable[name] = true
 	}
 	for kind := range reviewKinds {
 		required, ok := requiredReviewEntries[kind]
@@ -187,31 +246,6 @@ func TestReviewRequestBindingReportsManifestSchemaMismatch(t *testing.T) {
 	for _, schema := range []string{req.ArtifactManifest.Schema, manifest.Schema} {
 		if !strings.Contains(err.Error(), schema) {
 			t.Fatalf("manifest schema %q が error に現れない: %v", schema, err)
-		}
-	}
-}
-
-// Context Manifest は Review Request の semantic input と manifest entry の両方に現れる。
-// 両者が違う request を通すと、reviewer がどちらを読むかで評価対象が分かれる。
-func TestReviewRequestBindingRejectsContextManifestEntryMismatch(t *testing.T) {
-	manifest := sampleArtifactManifest(t)
-	entryDigest := SHA256([]byte("別 context manifest"))
-	for i := range manifest.Entries {
-		if manifest.Entries[i].Name == string(ArtifactNameContextManifest) {
-			manifest.Entries[i].Digest = entryDigest
-			break
-		}
-	}
-	req := sampleReviewRequest(t)
-	req.ArtifactManifest = requireArtifactManifestRef(t, manifest)
-
-	err := BindReviewRequestManifest(req, manifest)
-	if !errors.Is(err, ProtocolIdentityMismatch) {
-		t.Fatalf("Context Manifest identity の不一致が %q へ分類されない: %v", ProtocolIdentityMismatch, err)
-	}
-	for _, digest := range []Digest{entryDigest, req.ContextManifest.Digest} {
-		if !strings.Contains(err.Error(), string(digest)) {
-			t.Fatalf("Context Manifest digest %q が error に現れない: %v", digest, err)
 		}
 	}
 }

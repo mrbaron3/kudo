@@ -25,6 +25,9 @@ type Run struct {
 
 	// Input は staleness 判定の対象となる semantic identity である。
 	Input InputIdentity
+	// ClaimContextは各Operationがlive Issue/authorityからcanonical inputを再構築する
+	// ためのcheckpointである。Issue由来のcanonical bytesは保持しない。
+	ClaimContext contract.ClaimContext
 	// EscalationPolicy は claim 時に pin した gate 予算 artifact の ref である。
 	//
 	// Input へ含めない。上限は reviewer が読まない値であり review 判断の入力ではないため、
@@ -44,8 +47,10 @@ type Run struct {
 	// TotalRounds は Run の生涯で確定した review round 数である。reset せず、
 	// 差し戻しを繰り返す Run を人間が識別するための lineage として使う。
 	TotalRounds ReviewRounds
-	// Observation は audit lineage の最新観測であり、identity には寄与しない。
-	Observation contract.Digest
+	// ObservationとObservationBodyDigestはaudit lineageの最新観測であり、
+	// semantic identityには寄与しない。schemaをdigestから推測しないためrefを保持する。
+	Observation           contract.IssueObservationRef
+	ObservationBodyDigest contract.Digest
 
 	PullRequest contract.PullRequestRef
 
@@ -64,4 +69,9 @@ type Run struct {
 
 	TestApproval  *Approval
 	FinalApproval *Approval
+
+	// MergeCommit は承認済み head を base へ統合した commit である。
+	// terminal Run が「どの commit が base へ入ったか」を artifact を読まずに
+	// answer できるようにするため、head と同じく aggregate が持つ。
+	MergeCommit string
 }

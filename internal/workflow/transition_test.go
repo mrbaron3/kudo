@@ -13,6 +13,7 @@ const (
 	testHead     = "89abcdef0123456789abcdef0123456789abcdef"
 	finalHead    = "fedcba9876543210fedcba9876543210fedcba98"
 	repairedHead = "0123456789abcdef0123456789abcdef01234567"
+	mergeCommit  = "abcdef0123456789abcdef0123456789abcdef01"
 )
 
 func sampleInput() InputIdentity {
@@ -26,6 +27,69 @@ func sampleInput() InputIdentity {
 			Digest: contract.SHA256([]byte("execution-policy")),
 		},
 	}
+}
+
+func sampleClaimContext() contract.ClaimContext {
+	return contract.ClaimContext{
+		Compiler: contract.IssueCompilerVersionV1Alpha1,
+		Observation: contract.IssueObservationRef{
+			Schema: contract.IssueObservationSchemaV1Alpha1,
+			Digest: contract.SHA256([]byte("issue-observation")),
+		},
+		BodyDigest: contract.SHA256([]byte("raw issue body")),
+		TaskContext: contract.TaskContextRef{
+			Schema: contract.TaskContextSchemaV1Alpha1,
+			Digest: contract.SHA256([]byte("task-context")),
+		},
+		ContextManifest: sampleInput().ContextManifest,
+		BaseSHA:         "0123456789abcdef0123456789abcdef01234567",
+	}
+}
+
+func sampleClaimSucceeded() ClaimSucceeded {
+	return ClaimSucceeded{
+		Context:          sampleClaimContext(),
+		ExecutionPolicy:  sampleInput().ExecutionPolicy,
+		EscalationPolicy: sampleEscalationPolicyRef(),
+		RoundLimits:      sampleRoundLimits(),
+	}
+}
+
+func sampleObservation(body string) ObservationRecorded {
+	bodyDigest := contract.SHA256([]byte(body))
+	return ObservationRecorded{
+		Observation: contract.IssueObservationRef{
+			Schema: contract.IssueObservationSchemaV1Alpha1,
+			Digest: contract.SHA256([]byte("observation:" + body)),
+		},
+		BodyDigest: bodyDigest,
+	}
+}
+
+func TestClaimSucceededPinsLiveReconstructionCheckpoint(t *testing.T) {
+	context := sampleClaimContext()
+	decision := requireDecision(t, Run{ID: "run-01"}, ClaimSucceeded{
+		Context:          context,
+		ExecutionPolicy:  sampleInput().ExecutionPolicy,
+		EscalationPolicy: sampleEscalationPolicyRef(),
+		RoundLimits:      sampleRoundLimits(),
+	})
+
+	if decision.Run.ClaimContext != context {
+		t.Fatalf("claim contextがRunへ固定されていない: %+v", decision.Run.ClaimContext)
+	}
+	if decision.Run.Input.ContextManifest != context.ContextManifest {
+		t.Fatal("semantic inputがclaim contextのContext Manifestから導出されていない")
+	}
+	if decision.Run.Observation != context.Observation || decision.Run.ObservationBodyDigest != context.BodyDigest {
+		t.Fatal("Issue Observationのschema/ref/body digestがaudit lineageへ固定されていない")
+	}
+}
+
+func TestClaimRejectsMissingLiveReconstructionCheckpoint(t *testing.T) {
+	claim := sampleClaimSucceeded()
+	claim.Context = contract.ClaimContext{}
+	requireRejected(t, Run{ID: "run-01"}, claim, TransitionGateUnsatisfied)
 }
 
 func samplePullRequest() contract.PullRequestRef {
@@ -47,12 +111,7 @@ func advance(t *testing.T, run Run, events ...Event) Run {
 
 func claimedRun(t *testing.T) Run {
 	t.Helper()
-	return advance(t, Run{ID: "run-01"}, ClaimSucceeded{
-		Input:            sampleInput(),
-		Observation:      contract.SHA256([]byte("observation-1")),
-		EscalationPolicy: sampleEscalationPolicyRef(),
-		RoundLimits:      sampleRoundLimits(),
-	})
+	return advance(t, Run{ID: "run-01"}, sampleClaimSucceeded())
 }
 
 // awaitingTestReview は RED 固定と head publish まで進んだ Run を返す。
@@ -118,8 +177,7 @@ func TestNormalFlowReachesHumanHandoff(t *testing.T) {
 		phase   Phase
 		actions []string
 	}{
-		{ClaimSucceeded{Input: sampleInput(), Observation: contract.SHA256([]byte("o1")),
-			EscalationPolicy: sampleEscalationPolicyRef(), RoundLimits: sampleRoundLimits()},
+		{sampleClaimSucceeded(),
 			PhaseClaimed, []string{"project_status", "dispatch_operation"}},
 		{OperationStarted{Kind: contract.OperationAuthorTests}, PhaseAuthoringTests, nil},
 		{TestsAuthored{Head: testHead}, PhasePublishingTestHead, []string{"dispatch_operation"}},
@@ -135,7 +193,8 @@ func TestNormalFlowReachesHumanHandoff(t *testing.T) {
 		{ReviewCompleted{Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictApprove,
 			Head: finalHead, RequestDigest: contract.SHA256([]byte("r2"))},
 			PhaseFinalizingPullRequest, []string{"dispatch_operation"}},
-		{PullRequestFinalized{Head: finalHead}, PhaseAwaitingHumanReview, []string{"project_status"}},
+		{PullRequestFinalized{Head: finalHead}, PhaseMergingPullRequest, []string{"dispatch_operation"}},
+		{PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit}, PhaseMerged, []string{"project_status"}},
 	}
 	for i, step := range steps {
 		decision := requireDecision(t, run, step.event)
@@ -182,6 +241,7 @@ func TestPointerEventsHaveTheSameSemanticsAsValues(t *testing.T) {
 		Kind: contract.ReviewFinalImplementation, Verdict: contract.VerdictApprove,
 		Head: finalHead, RequestDigest: contract.SHA256([]byte("final-request")),
 	})
+	merging := advance(t, finalizing, PullRequestFinalized{Head: finalHead})
 	changed := sampleInput()
 	changed.ContextManifest.Digest = contract.SHA256([]byte("changed-context"))
 
@@ -192,15 +252,15 @@ func TestPointerEventsHaveTheSameSemanticsAsValues(t *testing.T) {
 		pointer Event
 	}{
 		{"claim", Run{ID: "run-01"},
-			ClaimSucceeded{Input: sampleInput(), RoundLimits: sampleRoundLimits()},
-			&ClaimSucceeded{Input: sampleInput(), RoundLimits: sampleRoundLimits()}},
+			sampleClaimSucceeded(), func() *ClaimSucceeded { event := sampleClaimSucceeded(); return &event }()},
 		{"operation started", claimedRun(t), OperationStarted{Kind: contract.OperationAuthorTests}, &OperationStarted{Kind: contract.OperationAuthorTests}},
 		{"tests authored", authoring, TestsAuthored{Head: testHead}, &TestsAuthored{Head: testHead}},
 		{"head published", publishingTest, HeadPublished{Head: testHead, PullRequest: samplePullRequest()}, &HeadPublished{Head: testHead, PullRequest: samplePullRequest()}},
 		{"review completed", awaitingTestReview(t), ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead}, &ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead}},
 		{"implementation fixed", implementing, ImplementationFixed{Head: finalHead, ChecksPassed: true}, &ImplementationFixed{Head: finalHead, ChecksPassed: true}},
 		{"pull request finalized", finalizing, PullRequestFinalized{Head: finalHead}, &PullRequestFinalized{Head: finalHead}},
-		{"observation recorded", awaitingTestReview(t), ObservationRecorded{Observation: contract.SHA256([]byte("o2"))}, &ObservationRecorded{Observation: contract.SHA256([]byte("o2"))}},
+		{"pull request merged", merging, PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit}, &PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit}},
+		{"observation recorded", awaitingTestReview(t), sampleObservation("o2"), func() *ObservationRecorded { event := sampleObservation("o2"); return &event }()},
 		{"semantic input changed", awaitingTestReview(t), SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: changed}, &SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: changed}},
 		{"attempt failed", awaitingTestReview(t), AttemptFailed{Class: contract.FailureTimeout}, &AttemptFailed{Class: contract.FailureTimeout}},
 		{"human escalated", awaitingTestReview(t),
@@ -236,15 +296,16 @@ func TestTypedNilPointerEventIsRejectedWithoutPanic(t *testing.T) {
 // 実装と test が同じ組を見落として通り抜けることを防ぐ。
 func TestUndeclaredTransitionsAreRejected(t *testing.T) {
 	events := map[EventKind]Event{
-		KindClaimSucceeded: ClaimSucceeded{Input: sampleInput(), Observation: contract.SHA256([]byte("o")),
-			EscalationPolicy: sampleEscalationPolicyRef(), RoundLimits: sampleRoundLimits()},
+		KindClaimSucceeded:       sampleClaimSucceeded(),
 		KindOperationStarted:     OperationStarted{Kind: contract.OperationAuthorTests},
 		KindTestsAuthored:        TestsAuthored{Head: testHead},
 		KindHeadPublished:        HeadPublished{Head: testHead, PullRequest: samplePullRequest()},
 		KindReviewCompleted:      ReviewCompleted{Kind: contract.ReviewTestValidity, Verdict: contract.VerdictApprove, Head: testHead, RequestDigest: contract.SHA256([]byte("r"))},
 		KindImplementationFixed:  ImplementationFixed{Head: finalHead, ChecksPassed: true},
+		KindTestRevisionRequired: TestRevisionRequired{Head: testHead},
 		KindPullRequestFinalized: PullRequestFinalized{Head: finalHead},
-		KindObservationRecorded:  ObservationRecorded{Observation: contract.SHA256([]byte("o2"))},
+		KindPullRequestMerged:    PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit},
+		KindObservationRecorded:  sampleObservation("o2"),
 		KindSemanticInputChanged: SemanticInputChanged{ChangedFields: []string{"contextManifest"}, Input: sampleInput()},
 		KindAttemptFailed:        AttemptFailed{Class: contract.FailureTimeout},
 		KindHumanEscalated:       HumanEscalated{Reason: EscalationContractAuthorityConflict},
@@ -378,6 +439,12 @@ func TestFinalizeRequiresApprovalAndChecksOnPublishedHead(t *testing.T) {
 	// PR finalize は final approve に bind された head だけを確定できる
 	finalizing := advance(t, awaitingFinalReview(t), approve(finalHead))
 	requireRejected(t, finalizing, PullRequestFinalized{Head: testHead}, TransitionGateUnsatisfied)
+
+	// merge も同じ head へ束縛する。承認していない head の merge を成功として受理すると、
+	// review していない変更が base へ入る。
+	merging := advance(t, finalizing, PullRequestFinalized{Head: finalHead})
+	requireRejected(t, merging, PullRequestMerged{Head: testHead, MergeCommit: mergeCommit},
+		TransitionGateUnsatisfied)
 }
 
 // AC-4: transport failure と request_changes を needs_human と混同しない。
@@ -455,8 +522,9 @@ func TestObservationOnlyChangeDoesNotSupersedeRun(t *testing.T) {
 		t.Fatal("前提の Run が test approval を持っていない")
 	}
 	before := run.Input
+	beforeBodyDigest := run.ObservationBodyDigest
 
-	decision := requireDecision(t, run, ObservationRecorded{Observation: contract.SHA256([]byte("observation-2"))})
+	decision := requireDecision(t, run, sampleObservation("observation-2"))
 	if decision.Run.Phase != run.Phase {
 		t.Fatalf("observation 更新で phase が %q へ動いた", decision.Run.Phase)
 	}
@@ -468,6 +536,9 @@ func TestObservationOnlyChangeDoesNotSupersedeRun(t *testing.T) {
 	}
 	if decision.Run.Observation == run.Observation {
 		t.Fatal("observation lineage が更新されていない")
+	}
+	if decision.Run.ObservationBodyDigest == beforeBodyDigest {
+		t.Fatal("observation body digestが更新されていない")
 	}
 	if decision.Run.TestApproval != run.TestApproval {
 		t.Fatal("observation 更新で approval が破棄された")
@@ -510,11 +581,14 @@ func TestSemanticInputChangeSupersedesRun(t *testing.T) {
 // opaque な identity 以外が入り込んでいないことを構造として固定する。
 func TestRunHoldsOnlyOpaqueIdentity(t *testing.T) {
 	allowed := map[string]bool{
-		"contract.IssueRef":           true,
-		"contract.PullRequestRef":     true,
-		"contract.Digest":             true,
-		"contract.ContextManifestRef": true,
-		"contract.ExecutionPolicyRef": true,
+		"contract.IssueRef":            true,
+		"contract.IssueObservationRef": true,
+		"contract.PullRequestRef":      true,
+		"contract.Digest":              true,
+		"contract.ContextManifestRef":  true,
+		"contract.ExecutionPolicyRef":  true,
+		// live再構築用のversion/ref/digest/baseだけを持ち、canonical bytesを持たない。
+		"contract.ClaimContext": true,
 		// gate 予算の ref と解決済みの上限値。prose でも parse 結果でもない。
 		"contract.EscalationPolicyRef": true,
 		"contract.ReviewRoundLimits":   true,
@@ -571,6 +645,19 @@ func TestGatesRejectInconsistentStoredRun(t *testing.T) {
 			run: Run{ID: "run-01", Phase: PhaseFinalizingPullRequest, Input: sampleInput(),
 				PublishedHead: finalHead, ChecksHead: finalHead},
 			event: PullRequestFinalized{Head: finalHead},
+		},
+		"merge without final approval": {
+			run: Run{ID: "run-01", Phase: PhaseMergingPullRequest, Input: sampleInput(),
+				PublishedHead: finalHead, ChecksHead: finalHead},
+			event: PullRequestMerged{Head: finalHead, MergeCommit: mergeCommit},
+		},
+		// merge commit 無しの成功は「merge した」と主張できていない。base 側に commit が
+		// 生まれていない状態を terminal として確定させない。
+		"merge without merge commit": {
+			run: Run{ID: "run-01", Phase: PhaseMergingPullRequest, Input: sampleInput(),
+				PublishedHead: finalHead, ChecksHead: finalHead,
+				FinalApproval: &Approval{Head: finalHead, RequestDigest: contract.SHA256([]byte("final-approve"))}},
+			event: PullRequestMerged{Head: finalHead},
 		},
 		"publish head never fixed": {
 			run:   Run{ID: "run-01", Phase: PhasePublishingTestHead, Input: sampleInput()},

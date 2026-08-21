@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// 正本は docs/contracts/review-protocol-v1alpha1.md である。
+// 正本は docs/spec/05_design/contracts/review-protocol-v1alpha1.md である。
 
 const (
 	// ReviewRequestSchemaV1Alpha1 は Review Worker への品質評価依頼の schema である。
@@ -129,8 +129,8 @@ func ValidateReviewRequest(req ReviewRequest) error {
 // manifest を再 encode して request の ref と照合したうえで必須 entry を検証する。name の
 // 充足だけを見て ref を照合しないと、必須 entry を揃えた別の manifest を渡して gate を
 // 通せてしまい、検証した manifest と reviewer が実際に読む manifest がずれる。
-// Context Manifest は request にも明示される semantic input なので、entry の digest とも
-// 一致させ、同じ request 内に相反する identity を残さない。
+// Issue由来のTask ContextとContext Manifestはlive sourceから再構築するため、Artifact
+// Manifestには含めない。requestのContext Manifest identityとの比較はfreshness境界が担う。
 func BindReviewRequestManifest(req ReviewRequest, manifest ArtifactManifest) error {
 	if err := ValidateReviewRequest(req); err != nil {
 		return err
@@ -147,13 +147,6 @@ func BindReviewRequestManifest(req ReviewRequest, manifest ArtifactManifest) err
 	if err := requireArtifactNames("entries", fmt.Sprintf("review kind %q", req.Kind),
 		requiredReviewEntries[req.Kind], artifactEntrySet(manifest.Entries)); err != nil {
 		return err
-	}
-	for i, entry := range manifest.Entries {
-		if entry.Name == string(ArtifactNameContextManifest) && entry.Digest != req.ContextManifest.Digest {
-			return protocolErr(ProtocolIdentityMismatch, fmt.Sprintf("entries[%d].digest", i),
-				"context-manifest entry が request の Context Manifest と一致しない: got %s, want %s",
-				entry.Digest, req.ContextManifest.Digest)
-		}
 	}
 	return nil
 }
@@ -188,8 +181,8 @@ func encodeReviewRequestIdentity(req ReviewRequest) []byte {
 // provider へ渡ってしまう。語彙は artifact logical name と同じ理由で pure core に置く。
 // policy の意味を変えるときは新しい versioned path を追加し、ここも同じ change で差し替える。
 var requiredReviewPolicyRefs = map[ReviewKind][]string{
-	ReviewTestValidity:        {"docs/review-policies/test-validity-v1alpha1.md"},
-	ReviewFinalImplementation: {"docs/review-policies/final-implementation-v1alpha1.md"},
+	ReviewTestValidity:        {"docs/spec/05_design/review-policies/test-validity-v1alpha1.md"},
+	ReviewFinalImplementation: {"docs/spec/05_design/review-policies/final-implementation-v1alpha1.md"},
 }
 
 // RequiredReviewPolicyRefs は kind の Request が含めるべき標準 policy path を返す。
@@ -251,7 +244,7 @@ var findingSeverities = map[FindingSeverity]bool{
 //
 // 適用可否は review session が policy の適用条件から判断する。語彙を pure core に置くのは
 // 「全観点への態度表明」という宣言の完全性を binding 境界で機械検証するためであり、
-// 適用条件そのものは docs/review-policies/final-implementation-v1alpha1.md が正本である。
+// 適用条件そのものは docs/spec/05_design/review-policies/final-implementation-v1alpha1.md が正本である。
 type ConditionalPerspective string
 
 const (

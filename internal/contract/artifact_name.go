@@ -6,32 +6,20 @@ import (
 	"strings"
 )
 
-// 正本は docs/contracts/operation-protocol-v1alpha1.md の Artifact logical names である。
+// 正本は docs/spec/05_design/contracts/operation-protocol-v1alpha1.md の Artifact logical names である。
 
 // ArtifactName は Operation Result と Artifact Manifest が共有する logical name の語彙である。
 //
 // ArtifactKind とは別の値空間である。ArtifactKind は bytes 自体の規則（versioned schema と
 // media type）を決めるが、logical name は artifact が table の中で果たす役割を決める。
-// source bundle のように kind を持たない不透明 bytes があり、逆に authority が Issue
-// reference のときは同じ kind の raw body が別々の name で複数入るため、両者は 1 対 1 に
-// 対応しない。綴りが一致するものは既定の name を kind から取っただけで、
-// 一方の都合でもう一方を変えてよい関係ではない。
+// source bundleのようにkindを持たない不透明bytesもあるため、両者は1対1に対応しない。
+// GitHubから再構築できるIssue由来payloadは、この永続artifact語彙へ含めない。
 //
 // 語彙は配備設定ではなく契約として pure core に置く。必須集合を Execution Policy 等の
 // producer が作る artifact へ移すと、producer が自分に課される gate 条件を自分で緩められる。
 type ArtifactName string
 
 const (
-	// ArtifactNameRawIssueBody は observation 時点の Issue body bytes である。
-	// Issue Observation は body digest しか持たないため、これが無いと reviewer は
-	// 観測が何を指していたかを再構成できない。
-	ArtifactNameRawIssueBody ArtifactName = "raw-issue-body"
-	// ArtifactNameIssueObservation は取得 identity と exact body digest の記録である。
-	ArtifactNameIssueObservation ArtifactName = "issue-observation"
-	// ArtifactNameTaskContext は model session へ渡す canonical Task Context である。
-	ArtifactNameTaskContext ArtifactName = "task-context"
-	// ArtifactNameContextManifest は解決済み実装入力の closure である。
-	ArtifactNameContextManifest ArtifactName = "context-manifest"
 	// ArtifactNameTestPlan は Acceptance Criteria と test の対応を示す計画である。
 	ArtifactNameTestPlan ArtifactName = "test-plan"
 	// ArtifactNameRedEvidence は test が実装前に失敗したことの実行証跡である。
@@ -55,14 +43,14 @@ const (
 	// parse しないため、必須化は静的な kind 別集合ではなく review の deterministic
 	// prerequisite（#28）が行う。語彙だけをここで固定する。
 	ArtifactNamePerformanceEvidence ArtifactName = "performance-evidence"
+	// ArtifactNameTestRevisionReport は implement / repair_implementation が「承認済み test の
+	// 変更が必要」と判断した根拠である。blocking Review Result を持たない差し戻しであり、
+	// この report が revise_tests session へ渡す唯一の finding になる。
+	ArtifactNameTestRevisionReport ArtifactName = "test-revision-report"
 )
 
 // artifactNames は語彙の宣言順である。producer が名前を綴り直さずに参照できるよう公開する。
 var artifactNames = []ArtifactName{
-	ArtifactNameRawIssueBody,
-	ArtifactNameIssueObservation,
-	ArtifactNameTaskContext,
-	ArtifactNameContextManifest,
 	ArtifactNameTestPlan,
 	ArtifactNameRedEvidence,
 	ArtifactNameGreenEvidence,
@@ -72,34 +60,48 @@ var artifactNames = []ArtifactName{
 	ArtifactNamePullRequestDraft,
 	ArtifactNamePullRequestObservation,
 	ArtifactNamePerformanceEvidence,
+	ArtifactNameTestRevisionReport,
+}
+
+// reconstructibleIssueInputNamesはlive sourceから各Operationで再構築する予約名である。
+// output/manifestのopenな拡張語彙を維持しつつ、これらを別名の永続的な正本として
+// 復活させる経路は明示的に閉じる。
+var reconstructibleIssueInputNames = map[string]bool{
+	"raw-issue-body":    true,
+	"issue-observation": true,
+	"task-context":      true,
+	"context-manifest":  true,
 }
 
 // requiredOperationOutputs は kind の succeeded Result が固定していなければならない
 // logical name である。protocol 文書の kind 表が Output として挙げる artifact のうち、
 // head と external reference のように別 field が担うものを除いた集合と一致させる。
 //
-// publish_head と finalize_pull_request が PR observation を必須にするのは、publish の
-// 成否と PR の状態遷移（draft の ensure、ready 化）を Controller が観測 record から
-// 検証できなければ、Review Request の lineage と handoff terminal の根拠を用意できない
-// ためである。
+// publish_head、finalize_pull_request、merge_pull_request が PR observation を必須にするのは、
+// publish の成否と PR の状態遷移（draft の ensure、ready 化、merged）を Controller が観測
+// record から検証できなければ、Review Request の lineage と merge 完了の根拠を用意できない
+// ためである。merge の成否を Result の真偽値ではなく観測 record に置くことで、応答を失った
+// retry が同じ観測から自分の merge を再確認できる。
+// requiredTestRevisionOutputs は test_revision_required の Result が固定していなければ
+// ならない logical name である。succeeded の kind 別集合と違い outcome に紐付く。
+// 差し戻しは blocking Review Result を作らないため、report が無いと revise_tests session は
+// 「何を直すのか」を提供する入力を持たない。
+var requiredTestRevisionOutputs = []ArtifactName{ArtifactNameTestRevisionReport}
+
 var requiredOperationOutputs = map[OperationKind][]ArtifactName{
-	OperationClaim: {
-		ArtifactNameRawIssueBody,
-		ArtifactNameIssueObservation,
-		ArtifactNameTaskContext,
-		ArtifactNameContextManifest,
-	},
+	OperationClaim:                {},
 	OperationAuthorTests:          {ArtifactNameTestPlan, ArtifactNameRedEvidence, ArtifactNameSourceBundle},
 	OperationReviseTests:          {ArtifactNameTestPlan, ArtifactNameRedEvidence, ArtifactNameSourceBundle},
 	OperationImplement:            {ArtifactNameGreenEvidence, ArtifactNameCheckEvidence, ArtifactNamePullRequestDraft, ArtifactNameSourceBundle},
 	OperationRepairImplementation: {ArtifactNameGreenEvidence, ArtifactNameCheckEvidence, ArtifactNamePullRequestDraft, ArtifactNameSourceBundle},
 	OperationPublishHead:          {ArtifactNamePullRequestObservation},
 	OperationFinalizePullRequest:  {ArtifactNamePullRequestObservation},
+	OperationMergePullRequest:     {ArtifactNamePullRequestObservation},
 }
 
 // requiredReviewEntries は review kind の Artifact Manifest が備えていなければならない
-// logical name である。protocol 文書が「最低限参照できるようにする」と定める集合のうち、
-// 件数が入力ごとに変わる authority content を除いたものと一致させる。
+// logical nameである。protocol文書が「最低限参照できるようにする」と定める、
+// live sourceから再構築できないevidenceの集合と一致させる。
 //
 // source-bundle は head を生成する Operation の必須 output である。model の成果ではないが、
 // Issue Worker が checkpoint commit から固定しなければ、workspace を持たない Controller は
@@ -110,20 +112,12 @@ var requiredOperationOutputs = map[OperationKind][]ArtifactName{
 // 必須集合には含めない。
 var requiredReviewEntries = map[ReviewKind][]ArtifactName{
 	ReviewTestValidity: {
-		ArtifactNameRawIssueBody,
-		ArtifactNameIssueObservation,
-		ArtifactNameTaskContext,
-		ArtifactNameContextManifest,
 		ArtifactNameTestPlan,
 		ArtifactNameRedEvidence,
 		ArtifactNameSourceBundle,
 		ArtifactNamePullRequestObservation,
 	},
 	ReviewFinalImplementation: {
-		ArtifactNameRawIssueBody,
-		ArtifactNameIssueObservation,
-		ArtifactNameTaskContext,
-		ArtifactNameContextManifest,
 		ArtifactNameTestPlan,
 		ArtifactNameRedEvidence,
 		ArtifactNameSourceBundle,
@@ -205,6 +199,10 @@ func validateNamedArtifacts(field string, artifacts []NamedArtifact) error {
 		if !validArtifactName(artifact.Name) {
 			return protocolErr(ProtocolFieldInvalid, name+".name",
 				"artifact の logical name が不正: %q", artifact.Name)
+		}
+		if reconstructibleIssueInputNames[artifact.Name] {
+			return protocolErr(ProtocolKindConstraint, name+".name",
+				"Issue由来の再構築可能なinputは永続artifactにできない: %q", artifact.Name)
 		}
 		if seen[artifact.Name] {
 			return protocolErr(ProtocolFieldDuplicate, name+".name",

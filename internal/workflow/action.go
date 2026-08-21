@@ -19,9 +19,11 @@ const (
 type StatusLabel string
 
 const (
-	StatusInProgress    StatusLabel = "ai-in-progress"
-	StatusNeedsHuman    StatusLabel = "ai-needs-human"
-	StatusReviewWaiting StatusLabel = "ai-review-waiting"
+	StatusInProgress StatusLabel = "ai-in-progress"
+	StatusNeedsHuman StatusLabel = "ai-needs-human"
+	// StatusMerged は phase の表示ではなく「承認済み head が base へ入った」という
+	// 外形事実の投影である。
+	StatusMerged StatusLabel = "ai-merged"
 )
 
 // Action は transition が要求する副作用である。
@@ -44,8 +46,16 @@ type RequestReview struct {
 }
 
 // ProjectStatus は GitHub status label の投影意図である。
+//
+// CloseIssue を別 action にせず同じ intent へ載せるのは、label と close が
+// merge completion という一つの durable event から生まれ、同じ transaction で
+// 記録されなければ「close 済みだが in-progress のまま」という中間状態が
+// 観測できてしまうためである。
 type ProjectStatus struct {
 	Label StatusLabel
+	// CloseIssue は Task Issue を close する意図である。PR body の closing keyword で
+	// GitHub が先に close していた場合、outbox は no-op として成功にする。
+	CloseIssue bool
 }
 
 // ScheduleRetry は同じ logical Operation を backoff 後に再実行する意図である。

@@ -17,7 +17,7 @@ acceptanceCriteriaIds:
   - AC-3
 authorityRefs:
   - AGENTS.md
-  - docs/contracts/issue-contract-v1alpha1.md
+  - docs/spec/05_design/contracts/issue-contract-v1alpha1.md
   - .github/ISSUE_TEMPLATE/kudo-task.md
   - github://mrbaron3/kudo/issues/1
 ```

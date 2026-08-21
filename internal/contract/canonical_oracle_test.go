@@ -489,7 +489,7 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 		t.Fatalf("Artifact Manifest が復元されない: %+v", artifacts)
 	}
 	// length は implicit int にせず decimal string として復元される
-	if artifacts.Entries[0].Name != "context-manifest" || artifacts.Entries[0].Length == "" {
+	if artifacts.Entries[0].Name != "pull-request-observation" || artifacts.Entries[0].Length == "" {
 		t.Fatalf("entries[0] = %+v", artifacts.Entries[0])
 	}
 }

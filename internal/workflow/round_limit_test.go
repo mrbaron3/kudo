@@ -92,6 +92,70 @@ func requireEscalation(t *testing.T, decision Decision, reason EscalationReason,
 	}
 }
 
+// implementingRun は test approve 済みで実装中の Run を、指定した上限と round 数で作る。
+func implementingRun(limits contract.ReviewRoundLimits, rounds ReviewRounds) Run {
+	return Run{
+		ID:                "run-01",
+		Phase:             PhaseImplementing,
+		Input:             sampleInput(),
+		EscalationPolicy:  sampleEscalationPolicyRef(),
+		RoundLimits:       limits,
+		Rounds:            rounds,
+		TotalRounds:       rounds,
+		PullRequest:       samplePullRequest(),
+		PublishedHead:     testHead,
+		PublishedTestHead: testHead,
+		TestApproval:      &Approval{Head: testHead, RequestDigest: contract.SHA256([]byte("test-approve"))},
+	}
+}
+
+// implement 発の test 差し戻しも test_validity の round 予算を消費する。
+// 消費しないと implement→revise→approve→implement の往復がどの予算にも数えられず、
+// 無人区間が有限にならない（ADR-0003 2026-08-21 追記）。
+func TestTestRevisionRequiredConsumesTestValidityRounds(t *testing.T) {
+	run := implementingRun(sampleRoundLimits(), ReviewRounds{TestValidity: 1})
+
+	decision := requireDecision(t, run, TestRevisionRequired{Head: testHead})
+	if decision.Run.Phase != PhaseAuthoringTests {
+		t.Fatalf("phase = %q, want %q", decision.Run.Phase, PhaseAuthoringTests)
+	}
+	dispatch, ok := decision.Actions[0].(DispatchOperation)
+	if !ok || dispatch.Kind != contract.OperationReviseTests {
+		t.Fatalf("action = %+v, want dispatch %q", decision.Actions[0], contract.OperationReviseTests)
+	}
+	if decision.Run.Rounds.TestValidity != 2 || decision.Run.TotalRounds.TestValidity != 2 {
+		t.Fatalf("rounds = %d / %d, want 2 / 2",
+			decision.Run.Rounds.TestValidity, decision.Run.TotalRounds.TestValidity)
+	}
+	// 差し戻した時点で以前の approval を前提にしない。新しい approve を得るまで
+	// implementation へ戻れないことを、gate ではなく state で表す。
+	if decision.Run.TestApproval != nil {
+		t.Fatal("差し戻し後も以前の test approval が残っている")
+	}
+}
+
+// 上限に達した差し戻しは revise_tests を発行せず人へ渡す。reviewer ではなく
+// Controller の予算切れなので reason は review_round_limit_exceeded になる。
+func TestTestRevisionRequiredEscalatesAtRoundLimit(t *testing.T) {
+	limits := contract.ReviewRoundLimits{TestValidity: 3, FinalImplementation: 3}
+	run := implementingRun(limits, ReviewRounds{TestValidity: 2})
+
+	decision := requireDecision(t, run, TestRevisionRequired{Head: testHead})
+	requireEscalation(t, decision, EscalationReviewRoundLimitExceeded, PhaseImplementing,
+		ReviewRounds{TestValidity: 3})
+}
+
+// rollback 先は最後に承認された test checkpoint でなければならない。別 head の差し戻しを
+// 受理すると、承認していない test 状態から revise_tests が始まる。
+func TestTestRevisionRequiredBindsToApprovedTestHead(t *testing.T) {
+	run := implementingRun(sampleRoundLimits(), ReviewRounds{TestValidity: 1})
+	requireRejected(t, run, TestRevisionRequired{Head: revisedTestHead}, TransitionGateUnsatisfied)
+
+	noApproval := run
+	noApproval.TestApproval = nil
+	requireRejected(t, noApproval, TestRevisionRequired{Head: testHead}, TransitionGateUnsatisfied)
+}
+
 // round 上限は quality verdict ではなく Controller の gate 判断である。
 // reviewer は同じ request_changes を返し続け、Controller だけが loop を打ち切る。
 func TestReviewRoundLimitStopsTheAutomaticRepairLoop(t *testing.T) {
@@ -221,7 +285,7 @@ func TestNonVerdictEventsDoNotConsumeReviewRounds(t *testing.T) {
 
 	for name, event := range map[string]Event{
 		"attempt failure":  AttemptFailed{Class: contract.FailureTimeout},
-		"observation only": ObservationRecorded{Observation: contract.SHA256([]byte("o2"))},
+		"observation only": sampleObservation("o2"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			decision := requireDecision(t, base, event)
@@ -249,12 +313,9 @@ func TestSupersedeStartsANewRunWithFreshCounters(t *testing.T) {
 		t.Fatal("superseded Run の生涯 counter が監査 lineage として残っていない")
 	}
 
-	fresh := requireDecision(t, Run{ID: "run-02"}, ClaimSucceeded{
-		Input:            sampleInput(),
-		Observation:      contract.SHA256([]byte("o1")),
-		EscalationPolicy: sampleEscalationPolicyRef(),
-		RoundLimits:      limits,
-	})
+	claim := sampleClaimSucceeded()
+	claim.RoundLimits = limits
+	fresh := requireDecision(t, Run{ID: "run-02"}, claim)
 	if fresh.Run.Rounds != (ReviewRounds{}) || fresh.Run.TotalRounds != (ReviewRounds{}) {
 		t.Fatalf("新しい Run の counter = %+v / %+v, want zero", fresh.Run.Rounds, fresh.Run.TotalRounds)
 	}
@@ -282,7 +343,7 @@ func TestEscalationResetsTheStretchBudgetButKeepsLineage(t *testing.T) {
 	}
 
 	// 停止中の audit 更新は counter を触らない。
-	resumed := requireDecision(t, paused, ObservationRecorded{Observation: contract.SHA256([]byte("o2"))})
+	resumed := requireDecision(t, paused, sampleObservation("o2"))
 	if resumed.Run.Rounds != (ReviewRounds{}) || resumed.Run.TotalRounds != paused.TotalRounds {
 		t.Fatalf("observation で counter が動いた: %+v / %+v", resumed.Run.Rounds, resumed.Run.TotalRounds)
 	}
@@ -332,12 +393,9 @@ func TestClaimRejectsOutOfRangeRoundLimits(t *testing.T) {
 		"final 超過": {TestValidity: 3, FinalImplementation: contract.MaxReviewRounds + 1},
 	} {
 		t.Run(name, func(t *testing.T) {
-			requireRejected(t, Run{ID: "run-01"}, ClaimSucceeded{
-				Input:            sampleInput(),
-				Observation:      contract.SHA256([]byte("o1")),
-				EscalationPolicy: sampleEscalationPolicyRef(),
-				RoundLimits:      limits,
-			}, TransitionGateUnsatisfied)
+			claim := sampleClaimSucceeded()
+			claim.RoundLimits = limits
+			requireRejected(t, Run{ID: "run-01"}, claim, TransitionGateUnsatisfied)
 		})
 	}
 }

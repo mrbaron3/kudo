@@ -25,29 +25,7 @@ func sampleOpaqueArtifact(name ArtifactName, mediaType string, data []byte) Arti
 // sampleArtifactManifest は test_validity の必須 entry を満たす manifest を返す。
 func sampleArtifactManifest(t *testing.T) ArtifactManifest {
 	t.Helper()
-	compiled, _, _ := sampleResolvedInput(t)
-	_, manifestPayload, err := EncodeContextManifest(compiled.ClaimRequirements, sampleContextManifest(compiled))
-	if err != nil {
-		t.Fatalf("manifest encode error: %v", err)
-	}
-
-	named := []struct {
-		name    ArtifactName
-		payload ArtifactPayload
-	}{
-		{ArtifactNameTaskContext, compiled.TaskContextPayload},
-		{ArtifactNameIssueObservation, compiled.ObservationPayload},
-		{ArtifactNameRawIssueBody, compiled.RawBodyPayload},
-		{ArtifactNameContextManifest, manifestPayload},
-	}
-	entries := make([]ArtifactEntry, 0, len(named)+3)
-	for _, item := range named {
-		entry, err := NewArtifactEntry(string(item.name), item.payload)
-		if err != nil {
-			t.Fatalf("artifact entry %q: %v", item.name, err)
-		}
-		entries = append(entries, entry)
-	}
+	entries := make([]ArtifactEntry, 0, 4)
 	_, observationPayload, err := EncodePullRequestObservation(samplePullRequestObservation())
 	if err != nil {
 		t.Fatalf("pull request observation encode error: %v", err)
@@ -128,8 +106,8 @@ func sampleReviewRequest(t *testing.T) ReviewRequest {
 		ExecutionPolicy:        policyRef,
 		ArtifactManifest:       requireArtifactManifestRef(t, sampleArtifactManifest(t)),
 		PolicyRefs: []string{
-			"docs/contracts/issue-contract-v1alpha1.md",
-			"docs/review-policies/test-validity-v1alpha1.md",
+			"docs/spec/05_design/contracts/issue-contract-v1alpha1.md",
+			"docs/spec/05_design/review-policies/test-validity-v1alpha1.md",
 		},
 		CreatedAt: sampleCreatedAt,
 	}
@@ -141,7 +119,7 @@ func sampleFinalReviewRequest(t *testing.T) ReviewRequest {
 	t.Helper()
 	req := sampleReviewRequest(t)
 	req.Kind = ReviewFinalImplementation
-	req.PolicyRefs = []string{"docs/review-policies/final-implementation-v1alpha1.md"}
+	req.PolicyRefs = []string{"docs/spec/05_design/review-policies/final-implementation-v1alpha1.md"}
 	req.ArtifactManifest = requireArtifactManifestRef(t, sampleFinalImplementationManifest(t))
 	return req
 }
@@ -271,7 +249,7 @@ func TestReviewRequestValidation(t *testing.T) {
 		"empty policy refs":        func(r *ReviewRequest) { r.PolicyRefs = nil },
 		"policy ref path":          func(r *ReviewRequest) { r.PolicyRefs = []string{"../secret.md"} },
 		"missing required policy": func(r *ReviewRequest) {
-			r.PolicyRefs = []string{"docs/contracts/issue-contract-v1alpha1.md"}
+			r.PolicyRefs = []string{"docs/spec/05_design/contracts/issue-contract-v1alpha1.md"}
 		},
 		"created at": func(r *ReviewRequest) { r.CreatedAt = time.Time{} },
 	}
@@ -311,7 +289,7 @@ func TestReviewRequestRequiresKindPolicyRef(t *testing.T) {
 			if len(required) == 0 {
 				t.Fatalf("kind %q の標準 policy が宣言されていない", kind)
 			}
-			req.PolicyRefs = []string{"docs/contracts/issue-contract-v1alpha1.md"}
+			req.PolicyRefs = []string{"docs/spec/05_design/contracts/issue-contract-v1alpha1.md"}
 			err := ValidateReviewRequest(req)
 			if !errors.Is(err, ProtocolKindConstraint) {
 				t.Fatalf("標準 policy の欠落が %q へ分類されない: %v", ProtocolKindConstraint, err)
@@ -324,7 +302,7 @@ func TestReviewRequestRequiresKindPolicyRef(t *testing.T) {
 			}
 
 			// 標準 policy さえ含めば repository 固有 policy の追加は妨げない。
-			req.PolicyRefs = append([]string{"docs/github-routing.md"}, required...)
+			req.PolicyRefs = append([]string{"docs/spec/05_design/04_github-routing.md"}, required...)
 			if err := ValidateReviewRequest(req); err != nil {
 				t.Fatalf("標準 policy + 追加 policy の request を拒否した: %v", err)
 			}
@@ -548,7 +526,7 @@ func TestBindReviewResult(t *testing.T) {
 		"execution policy":  func(r *ReviewRequest) { r.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) },
 		"head":              func(r *ReviewRequest) { r.HeadSHA = sampleNextSHA },
 		"artifact manifest": func(r *ReviewRequest) { r.ArtifactManifest.Digest = SHA256([]byte("別 artifact")) },
-		"policy refs":       func(r *ReviewRequest) { r.PolicyRefs = []string{"docs/workflow.md"} },
+		"policy refs":       func(r *ReviewRequest) { r.PolicyRefs = []string{"docs/spec/05_design/02_workflow.md"} },
 	}
 	for name, mutate := range changes {
 		t.Run(name, func(t *testing.T) {
@@ -770,24 +748,27 @@ func TestArtifactManifestValidation(t *testing.T) {
 // entry の length/digest/media type を producer に自己申告させると、bytes と
 // manifest が食い違ったまま review へ渡る。payload から導出する経路を用意する。
 func TestNewArtifactEntryDerivesMetadataFromPayload(t *testing.T) {
-	compiled, _, _ := sampleResolvedInput(t)
-	entry, err := NewArtifactEntry("task-context", compiled.TaskContextPayload)
+	_, payload, err := EncodePullRequestObservation(samplePullRequestObservation())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.Digest != compiled.TaskContextPayload.Digest ||
-		entry.MediaType != compiled.TaskContextPayload.MediaType ||
-		entry.Length != int64(len(compiled.TaskContextPayload.Data)) {
+	entry, err := NewArtifactEntry(string(ArtifactNamePullRequestObservation), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Digest != payload.Digest ||
+		entry.MediaType != payload.MediaType ||
+		entry.Length != int64(len(payload.Data)) {
 		t.Fatalf("payload から導出されていない: %+v", entry)
 	}
 
-	tampered := compiled.TaskContextPayload
+	tampered := payload
 	tampered.Data = append([]byte(nil), tampered.Data...)
 	tampered.Data[0] = 'X'
-	if _, err := NewArtifactEntry("task-context", tampered); err == nil {
+	if _, err := NewArtifactEntry(string(ArtifactNamePullRequestObservation), tampered); err == nil {
 		t.Fatal("digest と bytes が一致しない payload から entry を作った")
 	}
-	if _, err := NewArtifactEntry("Task Context", compiled.TaskContextPayload); err == nil {
+	if _, err := NewArtifactEntry("Pull Request Observation", payload); err == nil {
 		t.Fatal("不正な logical name を受理した")
 	}
 }

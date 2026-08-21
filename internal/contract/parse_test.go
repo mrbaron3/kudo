@@ -104,7 +104,7 @@ func TestParseFullTyped(t *testing.T) {
 		AcceptanceCriteriaIDs: []string{"AC-1", "AC-2", "AC-3"},
 		AuthorityRefs: []AuthorityRef{
 			{Path: "AGENTS.md"},
-			{Path: "docs/contracts/issue-contract-v1alpha1.md"},
+			{Path: "docs/spec/05_design/contracts/issue-contract-v1alpha1.md"},
 			{Path: ".github/ISSUE_TEMPLATE/kudo-task.md"},
 			{Issue: &issue1},
 		},

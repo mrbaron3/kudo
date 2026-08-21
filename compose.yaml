@@ -74,7 +74,7 @@ networks:
   internal:
 
 volumes:
-  # durable workflow state（backup 対象。docs/runtime-platform.md の naming と一致）
+  # durable workflow state（backup 対象。docs/spec/05_design/03_runtime-platform.md の naming と一致）
   postgres-data:
   # 開発用 Go cache（破棄して再生成できる）
   go-build-cache:

@@ -1,7 +1,7 @@
 // Package workflow は Run の durable phase と、分類済み event から次 state と
 // 必要 action を決める pure な transition function を提供する。
 //
-// 正本は docs/workflow.md の Durable states と docs/architecture.md である。
+// 正本は docs/spec/05_design/02_workflow.md の Durable states と docs/spec/05_design/01_architecture.md である。
 // 本 package は network、clock、filesystem、Issue parser、canonical YAML reader を
 // 呼ばない。Run と event は解決済みの opaque な identity だけを運ぶ。
 package workflow
@@ -32,14 +32,19 @@ const (
 	PhaseAwaitingFinalReview Phase = "awaiting_final_review"
 	// PhaseFinalizingPullRequest は required PR body 確定と draft 解除の段階である。
 	PhaseFinalizingPullRequest Phase = "finalizing_pull_request"
-	// PhaseAwaitingHumanReview は Kudo の正常 handoff terminal である。
-	PhaseAwaitingHumanReview Phase = "awaiting_human_review"
+	// PhaseMergingPullRequest は merge gate が成立し、承認済み head を base へ
+	// 統合している段階である。finalize と分けるのは、body 確定のやり直しなしに
+	// merge だけを再試行できるようにするためである。
+	PhaseMergingPullRequest Phase = "merging_pull_request"
+	// PhaseMerged は Kudo の正常 terminal である。Task Issue の close と
+	// `ai-merged` label は、この phase からの投影である。
+	PhaseMerged Phase = "merged"
 	// PhaseNeedsHuman は実行を停止した paused Run である。terminal ではないが、
 	// resume と supersede は再 reconciliation が排他的に決める。
 	PhaseNeedsHuman Phase = "needs_human"
 	// PhaseSuperseded は semantic input が変わって打ち切られた Run である。
 	//
-	// docs/workflow.md の state 図には現れないが、同書の Escalation and resumption が
+	// docs/spec/05_design/02_workflow.md の state 図には現れないが、同書の Escalation and resumption が
 	// 「入力が変わった場合は古い Run を superseded とし、新しい Run と review lineage を
 	// 作る」と定めている。stale を needs_human へ潰すと、人の判断を待つ停止と、
 	// 入力が変わったので作り直す停止が同じ phase になり、再 claim が gate される。
@@ -56,7 +61,8 @@ var phases = []Phase{
 	PhasePublishingFinalHead,
 	PhaseAwaitingFinalReview,
 	PhaseFinalizingPullRequest,
-	PhaseAwaitingHumanReview,
+	PhaseMergingPullRequest,
+	PhaseMerged,
 	PhaseNeedsHuman,
 	PhaseSuperseded,
 }
@@ -66,7 +72,7 @@ func Phases() []Phase { return slices.Clone(phases) }
 
 // Terminal は Run がこれ以上進まない phase かを返す。
 func (p Phase) Terminal() bool {
-	return p == PhaseAwaitingHumanReview || p == PhaseSuperseded
+	return p == PhaseMerged || p == PhaseSuperseded
 }
 
 // Paused は人の対応を待って停止している phase かを返す。

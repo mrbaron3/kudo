@@ -31,7 +31,7 @@ type ContextManifest struct {
 	AuthorityRefs []AuthorityContent
 }
 
-// ContextManifestRef は manifest schema と canonical artifact digest の組である。
+// ContextManifestRefはmanifest schemaとcanonical content digestの組である。
 type ContextManifestRef struct {
 	Schema string
 	Digest Digest
@@ -228,7 +228,7 @@ func encodeContextManifest(manifest ContextManifest) []byte {
 	return []byte(b.String())
 }
 
-// ReadContextManifestArtifact は ref/payload を照合して保存 bytes を返す。
+// ReadContextManifestArtifactはrefと再生成したpayloadを照合してbytesを返す。
 func ReadContextManifestArtifact(ref ContextManifestRef, payload ArtifactPayload) ([]byte, error) {
 	if !validSchemaIdentity(ref.Schema, contextManifestSchemaPrefix) {
 		return nil, protocolSchemaErr("schema", ref.Schema, "ContextManifestRef schema が不正: %q", ref.Schema)

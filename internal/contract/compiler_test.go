@@ -117,6 +117,24 @@ func TestCompileCanonicalGolden(t *testing.T) {
 	}
 }
 
+func TestCompilerCanBeSelectedByPinnedVersion(t *testing.T) {
+	compiler, err := CompilerForVersion(IssueCompilerVersionV1Alpha1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, errs := compiler.Compile(readFixture(t, "valid/minimal.md"), compilerTestIssue)
+	if len(errs) > 0 {
+		t.Fatalf("pinned compilerのcompile error: %v", errs)
+	}
+	if compiled.CompilerVersion != IssueCompilerVersionV1Alpha1 {
+		t.Fatalf("compiler version = %q", compiled.CompilerVersion)
+	}
+
+	if _, err := CompilerForVersion("kudo.issue-compiler/v9"); err == nil {
+		t.Fatal("未対応compiler versionを受理した")
+	}
+}
+
 func TestCompileDeterministic(t *testing.T) {
 	body := readFixture(t, "valid/full.md")
 	first := requireCompiled(t, body)

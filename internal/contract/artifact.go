@@ -45,9 +45,10 @@ const (
 	MediaTypeYAML     = "application/yaml; charset=utf-8"
 )
 
-// ArtifactPayload は content-addressed Artifact Store へ渡す write-once payload である。
-// Schema は raw Issue body のような schema-less payload では空にする。
-// Data を変更した場合 Validate は失敗するため、producer は作成後に変更しない。
+// ArtifactPayloadはcanonical bytesとそのcontent identityを束ねる。
+// EvidenceはArtifact Storeへ保存できるが、raw Issue body、Issue Observation、Task Context、
+// Context Manifestはdigest計算とAttempt内の利用だけに使い、永続化しない。
+// Schemaはraw Issue bodyのようなschema-less payloadでは空にする。
 type ArtifactPayload struct {
 	Kind      ArtifactKind
 	Schema    string
@@ -113,9 +114,27 @@ func (p ArtifactPayload) Validate() error {
 	return nil
 }
 
-// readVersionedArtifact は ref と payload を bytes 単位で照合して clone を返す。
-// canonical bytes を decode/re-encode しないため、active Run が参照する旧 schema の
-// artifact も同じ bytes のまま読み出せる。
+// ValidatePersistentArtifactPayloadはArtifact Storeへputできるpayloadかを検証する。
+// Issue由来のcanonical payloadはcontent identityの計算とAttempt内のmodel入力にだけ使い、
+// live sourceから再構築できないevidenceと同じ永続境界へ流さない。
+func ValidatePersistentArtifactPayload(payload ArtifactPayload) error {
+	if err := payload.Validate(); err != nil {
+		return err
+	}
+	switch payload.Kind {
+	case ArtifactKindRawIssueBody,
+		ArtifactKindIssueObservation,
+		ArtifactKindTaskContext,
+		ArtifactKindContextManifest:
+		return protocolErr(ProtocolKindConstraint, "kind",
+			"Issue由来の再構築可能なpayloadは永続化できない: %q", payload.Kind)
+	default:
+		return nil
+	}
+}
+
+// readVersionedArtifactはrefとpayloadをbytes単位で照合してcloneを返す。
+// payloadが永続artifactかAttempt内で再生成したcanonical bytesかには依存しない。
 func readVersionedArtifact(kind ArtifactKind, schema string, digest Digest, payload ArtifactPayload) ([]byte, error) {
 	if schema == "" {
 		return nil, protocolErr(ProtocolFieldMissing, "schema", "artifact ref schema が空")

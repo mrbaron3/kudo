@@ -16,15 +16,15 @@ const (
 	TaskContextSchemaV1Alpha1 = "kudo.task-context/v1alpha1"
 )
 
-// IssueObservation は verified Issue identity と exact body digest を結び付ける。
-// Raw body bytes 自体は RawBodyPayload に保存し、この値へ複製しない。
+// IssueObservationはverified Issue identityとexact body digestを結び付ける。
+// Raw body bytes自体は永続化せず、Compileの返却payload内でだけ保持する。
 type IssueObservation struct {
 	Schema     string
 	Issue      IssueRef
 	BodyDigest Digest
 }
 
-// IssueObservationRef は observation schema と canonical artifact digest の組である。
+// IssueObservationRefはobservation schemaとcanonical content digestの組である。
 type IssueObservationRef struct {
 	Schema string
 	Digest Digest
@@ -61,7 +61,7 @@ type TaskContext struct {
 	AdvisoryHints               *string
 }
 
-// TaskContextRef は Task Context schema と canonical artifact digest の組である。
+// TaskContextRefはTask Context schemaとcanonical content digestの組である。
 type TaskContextRef struct {
 	Schema string
 	Digest Digest
@@ -76,7 +76,8 @@ type ClaimRequirements struct {
 	AuthorityRefs []AuthorityRef
 }
 
-// CompiledIssue は一回の pure compile で得られる versioned input と payload を束ねる。
+// CompiledIssueは一回のpure compileで得られるversioned inputと一時payloadを束ねる。
+// payloadはdigest計算と当該Attemptのmodel inputに使い、Issue由来bytesの永続化を意味しない。
 type CompiledIssue struct {
 	CompilerVersion    string
 	Observation        IssueObservation
@@ -90,21 +91,39 @@ type CompiledIssue struct {
 }
 
 // Compiler は Issue Contract と Task Context の特定 version の組合せを表す。
-// zero value も v1alpha1 compiler として使用できる。
-type Compiler struct{}
+// versionは非公開にし、active Runがpinした未対応versionを現在版へ暗黙fallbackさせない。
+// zero valueは後方互換のためv1alpha1 compilerとして使用できる。
+type Compiler struct {
+	version string
+}
 
 // NewCompiler は現在の v1alpha1 compiler を返す。
-func NewCompiler() Compiler { return Compiler{} }
+func NewCompiler() Compiler { return Compiler{version: IssueCompilerVersionV1Alpha1} }
+
+// CompilerForVersionはclaim時にpinしたalgorithm versionのCompilerを返す。
+// 対応を削除したversionを現在版で代行すると、同じRunのTask Context identityを再現できない。
+func CompilerForVersion(version string) (Compiler, error) {
+	if version != IssueCompilerVersionV1Alpha1 {
+		return Compiler{}, protocolErr(ProtocolSchemaUnknown, "compiler",
+			"未対応のIssue Compiler version: %q", version)
+	}
+	return Compiler{version: version}, nil
+}
 
 // Version は compiler algorithm の version を返す。
-func (Compiler) Version() string { return IssueCompilerVersionV1Alpha1 }
+func (c Compiler) Version() string {
+	if c.version == "" {
+		return IssueCompilerVersionV1Alpha1
+	}
+	return c.version
+}
 
 // Compile は raw GitHub body と検証済み Issue identity から実行入力を構築する。
 func Compile(body string, issue IssueRef) (*CompiledIssue, []ValidationError) {
 	return NewCompiler().Compile(body, issue)
 }
 
-// Compile は external I/O を行わず、同じ入力から byte 単位で同じ artifact を返す。
+// Compileはexternal I/Oを行わず、同じ入力からbyte単位で同じcanonical payloadを返す。
 func (c Compiler) Compile(body string, issue IssueRef) (*CompiledIssue, []ValidationError) {
 	if !validIssueRef(issue) {
 		return nil, []ValidationError{{
@@ -176,9 +195,8 @@ func (c Compiler) Compile(body string, issue IssueRef) (*CompiledIssue, []Valida
 	}, nil
 }
 
-// validateBodyCharacters は canonical artifact へ載せられない control character を
-// 信頼境界で拒否する。ここで通すと compile と digest 計算は成功し、PostgreSQL の
-// text / jsonb へ保存する段階で初めて失敗するため、失敗境界を入力側へ寄せる。
+// validateBodyCharactersはcanonical payloadとmodel inputへ載せられないcontrol characterを
+// 信頼境界で拒否する。compile後のconsumerで初めて失敗させず、失敗境界を入力側へ寄せる。
 //
 // LF と TAB は本文の構造として許可する。CRLF は行分割で `\r` を落とすため許可し、
 // 単独の CR は canonical bytes へ残ってしまうため拒否する。
@@ -321,7 +339,7 @@ func encodeTaskContext(context TaskContext) []byte {
 	return []byte(b.String())
 }
 
-// ReadIssueObservationArtifact は ref と payload を照合し、保存 bytes をそのまま返す。
+// ReadIssueObservationArtifactはrefと再生成したpayloadを照合し、bytesをそのまま返す。
 func ReadIssueObservationArtifact(ref IssueObservationRef, payload ArtifactPayload) ([]byte, error) {
 	if !validSchemaIdentity(ref.Schema, issueObservationSchemaPrefix) {
 		return nil, protocolSchemaErr("schema", ref.Schema, "IssueObservationRef schema が不正: %q", ref.Schema)
@@ -329,7 +347,7 @@ func ReadIssueObservationArtifact(ref IssueObservationRef, payload ArtifactPaylo
 	return readVersionedArtifact(ArtifactKindIssueObservation, ref.Schema, ref.Digest, payload)
 }
 
-// ReadTaskContextArtifact は ref と payload を照合し、再 encode せず保存 bytes を返す。
+// ReadTaskContextArtifactはrefと再生成したpayloadを照合し、再encodeせずbytesを返す。
 func ReadTaskContextArtifact(ref TaskContextRef, payload ArtifactPayload) ([]byte, error) {
 	if !validSchemaIdentity(ref.Schema, taskContextSchemaPrefix) {
 		return nil, protocolSchemaErr("schema", ref.Schema, "TaskContextRef schema が不正: %q", ref.Schema)
