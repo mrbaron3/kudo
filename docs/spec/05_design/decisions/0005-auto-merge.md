@@ -2,6 +2,7 @@
 
 - Status: accepted（2026-08-21）
 - 関連Issue: 未起票（プロダクトゴールの見直しで決定）
+- 実装Task: [#62](https://github.com/mrbaron3/kudo/issues/62)（merge_pull_requestと完了投影）、[#60](https://github.com/mrbaron3/kudo/issues/60)（finalize / merge前のready化）
 - 関連ADR: [ADR-0002](0002-pr-anchored-review.md)（全review roundをPRへ繋留する判断を前提とする）、[ADR-0003](0003-review-round-limit.md)（自動loopの上限）
 - Supersede対象: ADR-0002 D1の「ready化と`ai-review-waiting`投影がhandoff terminalである」、[01. プロダクト設計](../../01_product-design/) §5の「Pull Requestのmerge、Issue close」除外
 
