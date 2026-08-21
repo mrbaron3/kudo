@@ -24,6 +24,8 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 | 文書の単一ルート | [ADR-0004](../../adr/0004-single-documentation-root.md) | `docs/spec/` への正本集約と protocol path 移行 |
 | 自動 merge | [ADR-0005](../../adr/0005-auto-merge.md) | 承認済み head の自動 merge、完了 terminal、merge gate |
 | Live context再構築 | [ADR-0006](../../adr/0006-live-context-reconstruction.md) | Issue由来YAMLを保存せず、各Operationで再取得・再compileする判断 |
+| 縦slice delivery | [ADR-0007](../../adr/0007-vertical-slice-delivery.md) | 実行順序を層でなく貫通sliceにした判断とcontract freeze |
+| ADRの置き場所 | [ADR-0008](../../adr/0008-adr-directory-outside-spec.md) | ADRを`docs/spec/`体系の外の`docs/adr/`に置く判断 |
 
 ```text
 05_design/
@@ -42,7 +44,7 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
     └── final-implementation-v1alpha1.md
 ```
 
-ADR は [docs/adr/](../../adr/) に置く（[ADR-0004](../../adr/0004-single-documentation-root.md) の 2026-08-21 追記）。
+ADR は [docs/adr/](../../adr/) に置く（[ADR-0008](../../adr/0008-adr-directory-outside-spec.md)）。
 
 ## 機能設計との分担
 

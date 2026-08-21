@@ -150,6 +150,17 @@ Review Worker は read-only evaluator である。
 
 Review Worker は implementation workspace volume を mount せず、GitHub write credential を持たない。Review Result artifact の新規追加と Operation Result の記録はできるが、受け取った artifact、source、branch、PR は変更できない。
 
+Review Worker の handler は1つの Request を次の pipeline で処理する。1〜5は model session 起動前の決定論的段階であり、失敗はすべて protocol / staleness / execution failure として返す。6以降だけが品質判断を作る（この分離を選んだ理由 → [ADR-0002](../../adr/0002-pr-anchored-review.md)）。
+
+1. **Lease**: role=review の queued Request を lease し、heartbeat を維持する。
+2. **Protocol validation**: strict parse。Request identity を構成する ref 群の schema + digest binding 検証。
+3. **Live freshness**: Issue 側は Task Context / Context Manifest を live 再構築して照合し、PR 側は live PR の open 状態・head 一致・base 一致・draft 状態を確認して`pull-request-observation` artifact を固定する。head / base 不一致は stale、close / merge は品質 verdict を返さず人間へ escalate し、body 編集や draft/ready 遷移だけの差分は audit lineage へ追記する。
+4. **Artifact resolution**: manifest の全 entry を digest / length 照合で取得し、immutable source snapshot から`headSha`検証済み disposable checkout を構築する。
+5. **Deterministic prerequisites**: policy の機械検証（binding 整合、approved-test lineage、evidence の head binding、bound 宣言時の測定 evidence の数値照合）。
+6. **Session**: fresh provider process へ組み立てた context を渡す。structured output を strict parse し、不正 output は bounded retry 後に execution failure とする。
+7. **Result 構築**: verdict / finding 整合（`approve`に blocking なし、`request_changes` / `needs_human`に blocking 必須）と、条件付き観点の applicability 宣言の完全性を検証し、canonical encode して artifact 追記、Operation result を一度だけ記録する。
+8. **Failure taxonomy**: timeout / rate limit / network / provider crash は attempt failure として retry 可能に記録する。品質 verdict と failure を同じ field に載せない。
+
 ### GitHub adapters
 
 GitHub 固有処理は薄い adapter とし、次を application operation から分離する。

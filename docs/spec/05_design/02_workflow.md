@@ -191,7 +191,7 @@ test plan は各 Acceptance Criteria と test case の対応を示す。テス�
 
 Issue Worker は test-only checkpoint commit、patch、command、exit status、stdout/stderr、environment identity を artifact manifest に記録する。RED が成立しなければ review へ進めない。
 
-RED 固定後、Controller は`publish_head`を発行する。Issue Worker は期待 head と live branch head を照合してから push し（compare-and-push）、draft Pull Request を冪等に ensure する。PR body は artifact から決定論的に生成し、Task Issue link、Run ID、phase、test plan 要約を含む。published head、PR reference、pull request observation が durable に記録された後にだけ review round を開始する。draft PR 上の CI が RED になるのは TDD の位相の正直な表示であり、隠すために publish を遅らせない。全 review round は以後この同一 draft PR へ繋留される（[ADR-0002](../../adr/0002-pr-anchored-review.md)）。
+RED 固定後、Controller は`publish_head`を発行する。Issue Worker は期待 head と live branch head を照合してから push し（compare-and-push）、draft Pull Request を冪等に ensure する。PR body は artifact から決定論的に生成し、Task Issue link、Run ID、phase、test plan 要約を含む。PR body は Kudo の自動管理であり、人間の編集は handoff 後まで想定しない。以後の publish は body の phase 節を更新するが、body 更新は source head を変えないため review binding を壊さない。published head、PR reference、pull request observation が durable に記録された後にだけ review round を開始する。draft PR 上の CI が RED になるのは TDD の位相の正直な表示であり、隠すために publish を遅らせない。全 review round は以後この同一 draft PR へ繋留される（[ADR-0002](../../adr/0002-pr-anchored-review.md)）。
 
 ### 4. Test validity review
 
@@ -243,7 +243,7 @@ Pull Request 自体は RED 固定後から draft として存在する。final a
 
 ### 8. Merge と完了投影
 
-ready 化が durable に記録された後、Controller は`merge_pull_request`を enqueue する。Operation を eligible にする条件と失敗時の routing は [ADR-0005](../../adr/0005-auto-merge.md) を正とし、少なくとも final approve の binding、live PR の open / base / head 一致、required status check の success、mergeable の4点が揃うまで eligible にしない。この外形条件は Controller が read-only の pull request / check 観測で評価する（[Runtime platform](03_runtime-platform.md)の credential 表）。required check の pending は品質 verdict でも execution failure でもなく、Operation を`retry_wait`のまま backoff 再照合する待機であり、retry budget を消費しない。execution deadline を超えた pending、check failure、conflict、branch protection の拒否では、Operation を実行させずに cancel し、`merge_blocked`として`needs_human`へ送る。
+ready 化が durable に記録された後、Controller は`merge_pull_request`を enqueue する。Operation を eligible にする条件は、final approve の binding、live PR の open / base / head 一致、required status check の success、mergeable の4点がすべて成立することである（review に merge 判断をさせず、外形条件を Controller が評価する分担を選んだ理由 → [ADR-0005](../../adr/0005-auto-merge.md)）。この外形条件は Controller が read-only の pull request / check 観測で評価する（[Runtime platform](03_runtime-platform.md)の credential 表）。required check の pending は品質 verdict でも execution failure でもなく、Operation を`retry_wait`のまま backoff 再照合する待機であり、retry budget を消費しない。execution deadline を超えた pending、check failure、conflict、branch protection の拒否では、Operation を実行させずに cancel し、`merge_blocked`として`needs_human`へ送る。
 
 Issue Worker は lease した`merge_pull_request`の開始時に live context を再構築・照合し、mutation 直前にも live PR の open / base / head を再照合したうえで、期待 head SHA を明示した compare-and-merge で merge commit を作り、head branch を冪等に削除し、merge commit SHA と merged 状態を`pull-request-observation`へ固定する。Controller の gate 評価と Issue Worker の実行の間に required check や protection が変化して GitHub が merge を拒否した場合は、品質 verdict へ変換せず、拒否の観測を evidence とした`needs_human` Result として返し、Controller が`merge_blocked`として扱う。merge method は merge commit に固定し、squash と rebase は承認済み commit lineage を base 側で失わせるため使わない。
 

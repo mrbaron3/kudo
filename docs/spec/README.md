@@ -2,7 +2,7 @@
 
 Kudo のプロダクト仕様、機能別 Acceptance Criteria、詳細設計、versioned contract、実装計画を格納する、
 リポジトリ内で唯一の文書体系である。文書への入口は本ファイルに集約し、ADR を置く [docs/adr/](../adr/)
-（[ADR-0004](../adr/0004-single-documentation-root.md) 2026-08-21 追記）を唯一の例外として、`docs/spec/` の
+（[ADR-0008](../adr/0008-adr-directory-outside-spec.md)）を唯一の例外として、`docs/spec/` の
 外に別の正本や補足文書を作らない。
 
 完成形の **Why / What / How** と、現在地を示す project 文書を同じ体系内で分離する。
@@ -85,7 +85,8 @@ docs/
 - 同じ要求は一つの文書だけが定義し、他文書は要約せず正本へリンクする。
 - `05_design/contracts/` の意味または path を変える場合は、文書、parser、fixture、test を同じ変更で更新する。
 - review policy の意味を変える場合は新しい versioned path を追加し、進行中 Request の基準を上書きしない。
-- accepted ADR を置き換える場合は既存 ADR を黙って書き換えず、新しい ADR で supersede する。
+- ADR は決定の背景、却下した代替案、受け入れた代償、再検討条件を残す不変の記録である。schema、手順、作業リスト等の規範的な現在形は仕様側（`docs/spec/`）だけが持ち、ADR はそれを参照する。仕様側は判断の理由を再定義せず、ADR へリンクする。
+- accepted ADR を置き換える場合は既存 ADR を黙って書き換えず、新しい ADR で supersede する。追記による更新をしない（typo・リンク切れの修正を除く）。
 - 完成形と現在地を混在させず、進捗と残作業は [06_project/](06_project/) で管理する。
 
 ## 更新順序
