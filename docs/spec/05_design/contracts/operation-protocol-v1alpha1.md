@@ -253,6 +253,42 @@ Operation Result の`outputs`は logical name で引く table であり、name �
 が決まる。記録者は payload の producer 自身である（Implementer は自分の evidence を、Reviewer は
 自分の verdict / finding を、自分の名義で書く）。
 
+### Record surface envelope
+
+comment、Pull Request body、check run output の機械可読部分は、次の2種類の一行 HTML comment で
+表現する。人間向け本文はこの envelope の外側に置く。
+
+```text
+<!-- kudo-marker {"schema":"kudo.record-marker/v1alpha1","repository":"github://owner/repository","issue":42,"run":"123","kind":"review-finding","round":1,"head":"<git-commit-sha>","digest":"sha256:<digest>"} -->
+<!-- kudo-machine {"schema":"kudo.machine-block/v1alpha1","kind":"review-result","mediaType":"application/yaml","digest":"sha256:<digest>","payload":"<RFC 4648 padded base64>"} -->
+```
+
+marker は record の冪等 identity である。`schema`、`repository`、`issue`、`kind`、`digest`を必須とし、
+Run が確定した record は`run`、review round に属する record は`round`、commit に束縛する record は
+`head`も持つ。該当しない optional field は key ごと省略し、空文字や`round: 0`を記録しない。
+`repository`は小文字へ canonicalize した`github://owner/repository`、`digest`は producer が
+`internal/contract`で計算した content または request identity である。gateway は digest の形式だけを
+検証し、payload の canonical encode、decode、digest 再計算を代行しない。
+
+machine block は versioned payload bytes の包み紙である。`kind`は包む payload の役割、`mediaType`は
+payload bytes の media type、`digest`はその canonical payload の identity を表す。`payload`は改行、
+HTML comment terminator、Markdown fence を含む bytes も曖昧なく保持するため、RFC 4648 の padded
+standard base64 で表す。base64 decode 後の意味解析と digest 照合は payload schema を所有する
+`internal/contract`が行う。
+
+同じ record には marker を1件、machine blockを0件または1件だけ置く。comment template は人間向け
+本文、空行、marker、machine block の順とし、check run は`output.text`へ marker と machine block を
+置く。Pull Request body の claim checkpoint も同じ envelope を使う。label は HTML comment を保持
+できないため、現在の label set を検索し、case-insensitive な label name 自体を冪等 key とする。
+人間向け本文とcheck run summaryに予約済みprefix`<!-- kudo-marker `、`<!-- kudo-machine `を含めない。
+model由来本文が機械可読recordを追加してparserを曖昧にする経路を作らないためである。
+
+同一 schema 内の未知 JSON field は将来の追加 field として無視するが、field 重複、required field
+欠落、未知 schema、複数 marker / machine block は曖昧な record として拒否する。encoder の field 順、
+optional field の省略、base64 alphabet、comment template は
+`internal/adapter/github/testdata/record-surface/`の golden fixture を正とする。既存形式を変更する場合は、
+本節、parser、fixture、testを同じ change で更新する。
+
 | logical name | 内容 | 記録先 | 主な producer |
 | --- | --- | --- | --- |
 | `test-plan` | Acceptance Criteria と test の対応 | marker 付き PR comment | `author_tests`、`revise_tests` |
@@ -309,7 +345,8 @@ record surface には上限がある（check run output と comment はそれぞ
 記録先の上限に収まるよう producer 側で構成し、収まらない payload は protocol 境界で
 `protocol_field_too_long`として reject する。command の stdout/stderr は capture 時に bounded な抜粋へ
 redaction とともに縮め、全文は telemetry にのみ流す。記録後の truncation は digest と bytes の対応を
-壊すため行わない。
+壊すため行わない。64KiB 判定は base64 と envelope を含む render 後の record surface bytes に対して
+行う。
 
 ## Attempt rules
 

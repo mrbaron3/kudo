@@ -258,9 +258,10 @@ testを同時に更新する。
 2. **checkpoint commitのidentity規則が[contracts/](../05_design/contracts/)に無い。** [Operation Protocol](../05_design/contracts/operation-protocol-v1alpha1.md)
    の「同じ入力から同じ結果を再生成したattemptは同じcontent identityを持つ」がhead SHA経由で壊れない
    よう、#21の実装PRと同じchangeで文書化する。
-3. **marker / machine blockの具体formatが未定義。** claim checkpoint、evidence / verdict check runの
-   output block、finding commentのmarkerは、#16の実装PRの中でformatを確定し、contract fixtureへ
-   固定する。
+3. **marker / machine blockの具体format（#16で解消）。**
+   [Operation Protocol](../05_design/contracts/operation-protocol-v1alpha1.md)のrecord surface envelopeとして
+   確定し、claim checkpoint、evidence / verdict check runのoutput block、finding commentが同じ
+   encoder / parserとgolden fixtureを使う。
 
 ### 後回しにするものと後から足せる根拠
 
