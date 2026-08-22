@@ -39,9 +39,10 @@ func (r Repository) canonical() Repository {
 
 // Config は actor-scoped gateway instance の接続先を固定する。
 type Config struct {
-	BaseURL    string
-	APIVersion string
-	Repository Repository
+	BaseURL          string
+	APIVersion       string
+	Repository       Repository
+	RecorderIdentity *RecorderIdentity
 }
 
 // Gateway は一つの TokenSource と repository に束縛された GitHub capability instance である。
@@ -52,6 +53,7 @@ type Gateway struct {
 	baseURL    string
 	apiVersion string
 	repository Repository
+	recorder   *RecorderIdentity
 }
 
 // Actor は GitHub user または App user の観測 metadata である。
@@ -65,6 +67,14 @@ type AppIdentity struct {
 	ID   int64
 	Slug string
 	Name string
+}
+
+// RecorderIdentity は一つの actor-scoped TokenSource が GitHub 上で持つ
+// comment author と check run App の immutable numeric identity を固定する。
+// GitHub App の bot user ID と App ID は別 namespace なので両方を明示する。
+type RecorderIdentity struct {
+	CommentAuthor Actor
+	CheckRunApp   AppIdentity
 }
 
 type Label struct {

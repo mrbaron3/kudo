@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +11,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 )
+
+var ErrRecorderIdentityRequired = errors.New("recorder identity が設定されていない")
 
 // EnsureComment は同じ marker を持つ既存 comment を全 page から検索し、
 // 見つからない場合だけ actor identity で新しい comment を作る。
@@ -19,6 +22,9 @@ func (g *Gateway) EnsureComment(ctx context.Context, targetNumber int64, record 
 	}
 	if err := g.validateMarkerRepository(record.Marker); err != nil {
 		return Comment{}, false, err
+	}
+	if g.recorder == nil {
+		return Comment{}, false, ErrRecorderIdentityRequired
 	}
 	rendered, err := RenderComment(record.Body, record.Marker, record.MachineBlock)
 	if err != nil {
@@ -30,6 +36,9 @@ func (g *Gateway) EnsureComment(ctx context.Context, targetNumber int64, record 
 	}
 	var matches []Comment
 	for _, comment := range comments {
+		if comment.Author.ID != g.recorder.CommentAuthor.ID {
+			continue
+		}
 		markers, parseErr := ParseMarkers(string(comment.Body))
 		if parseErr != nil {
 			return Comment{}, false, invalidResponse("search comments", "既存 comment の marker が不正", parseErr)
@@ -66,6 +75,13 @@ func (g *Gateway) EnsureComment(ctx context.Context, targetNumber int64, record 
 	if err != nil {
 		return Comment{}, false, invalidResponse("POST comment", "created comment body が不正", err)
 	}
+	if comment.Author.ID != g.recorder.CommentAuthor.ID {
+		return Comment{}, false, &TransportFailure{
+			Class:     FailurePermission,
+			Operation: "POST comment",
+			Message:   "created comment の author が configured recorder identity と一致しない",
+		}
+	}
 	return comment, true, nil
 }
 
@@ -74,6 +90,9 @@ func (g *Gateway) EnsureComment(ctx context.Context, targetNumber int64, record 
 func (g *Gateway) EnsureCheckRun(ctx context.Context, record CheckRunRecord) (CheckRun, bool, error) {
 	if err := g.validateCheckRunRecord(record); err != nil {
 		return CheckRun{}, false, err
+	}
+	if g.recorder == nil {
+		return CheckRun{}, false, ErrRecorderIdentityRequired
 	}
 	text, err := RenderCheckRunText(record.Marker, record.MachineBlock)
 	if err != nil {
@@ -85,6 +104,9 @@ func (g *Gateway) EnsureCheckRun(ctx context.Context, record CheckRunRecord) (Ch
 	}
 	var matches []CheckRun
 	for _, checkRun := range existing {
+		if checkRun.App.ID != g.recorder.CheckRunApp.ID {
+			continue
+		}
 		markers, parseErr := ParseMarkers(checkRun.Output.Text + "\n" + checkRun.Output.Summary)
 		if parseErr != nil {
 			return CheckRun{}, false, invalidResponse("search check runs", "既存 check run の marker が不正", parseErr)
@@ -134,7 +156,15 @@ func (g *Gateway) EnsureCheckRun(ctx context.Context, record CheckRunRecord) (Ch
 	if err := json.Unmarshal(response.Body, &created); err != nil {
 		return CheckRun{}, false, invalidResponse("POST check run", "created check run response を decode できない", err)
 	}
-	return convertCheckRun(created), true, nil
+	checkRun := convertCheckRun(created)
+	if checkRun.App.ID != g.recorder.CheckRunApp.ID {
+		return CheckRun{}, false, &TransportFailure{
+			Class:     FailurePermission,
+			Operation: "POST check run",
+			Message:   "created check run の App が configured recorder identity と一致しない",
+		}
+	}
+	return checkRun, true, nil
 }
 
 // EnsureLabel は current label set の全 page を確認し、label name が無い場合だけ追加する。

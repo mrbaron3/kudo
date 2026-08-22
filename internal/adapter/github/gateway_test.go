@@ -16,6 +16,10 @@ func testGateway(client *http.Client, baseURL string) *Gateway {
 		BaseURL:    baseURL,
 		APIVersion: "2026-03-10",
 		Repository: Repository{Owner: "acme", Name: "widgets"},
+		RecorderIdentity: &RecorderIdentity{
+			CommentAuthor: Actor{ID: 101, Login: "kudo-actor[bot]"},
+			CheckRunApp:   AppIdentity{ID: 202, Slug: "kudo-actor", Name: "Kudo Actor"},
+		},
 	})
 	if err != nil {
 		panic(err)

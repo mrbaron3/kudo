@@ -84,6 +84,14 @@ func NewGateway(client *http.Client, tokens TokenSource, config Config) (*Gatewa
 	if err := validateRepository(config.Repository); err != nil {
 		return nil, err
 	}
+	var recorder *RecorderIdentity
+	if config.RecorderIdentity != nil {
+		if config.RecorderIdentity.CommentAuthor.ID <= 0 || config.RecorderIdentity.CheckRunApp.ID <= 0 {
+			return nil, errors.New("RecorderIdentity には正の comment author ID と check run App ID が必要")
+		}
+		identity := *config.RecorderIdentity
+		recorder = &identity
+	}
 	baseURL := strings.TrimRight(config.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
@@ -105,6 +113,7 @@ func NewGateway(client *http.Client, tokens TokenSource, config Config) (*Gatewa
 		baseURL:    baseURL,
 		apiVersion: apiVersion,
 		repository: config.Repository.canonical(),
+		recorder:   recorder,
 	}, nil
 }
 
