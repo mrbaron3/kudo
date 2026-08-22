@@ -172,9 +172,12 @@ App を source として** 宣言すると、GitHub 自体が「Reviewer の fin
 構造的に強制する。Implementer App は Reviewer 名義の check run を作れないため、自己承認は規約ではなく
 構造で塞がる。deployment にはこの宣言を推奨する。
 
-verdict を GitHub native の PR Review（APPROVE / REQUEST_CHANGES）としても投影するかは別 decision と
-する。native review は required approving reviews・dismiss-stale と結合するため、導入する場合は gate
-semantics への影響とあわせて決める。
+verdict の正本は両 gate とも check run であり、GitHub native の PR Review（APPROVE /
+REQUEST_CHANGES）は使わない（2026-08-22 決定）。native review は`test_validity`という部分 gate を
+表現できず（APPROVE が required approving reviews を final gate 前に満たしてしまう）、admin による
+dismiss という可変性も持ち込むためである。人間レビュアーと bot レビュアーが同じ PR 上で混在する
+複数人運用が始まった場合に限り、final approve の native review **投影**（正本は check run のまま）を
+再検討する。
 
 ## Human escalation
 
