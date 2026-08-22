@@ -58,12 +58,12 @@ production code より先に test と RED evidence を作り、別の read-only 
 claim時のCompiler versionとIssue Observation / Task Context / Context Manifestのdigest、test plan、command
 evidence、Review Resultを残す。Issue由来contextは各Operationでlive GitHubから再生成し、承認時のidentity
 と一致するかを再計算・検証できるようにする。Issueが後から編集された場合に過去の本文そのものを復元する
-ことは保証しない（[ADR-0006](../../adr/0006-live-context-reconstruction.md)）。
+ことは保証しない（[ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md)）。
 
 ### 4.3. 中断を前提に安全に回復する
 
-workflow stateとqueueをPostgreSQLに置き、外部mutationはidempotency identityとlive state照合を伴って
-行う。processが失われても、structured claim context、live GitHub/source、確定済みcommit、evidence
+workflow stateはGitHubの観測から導出し、外部mutationはidempotency markerとlive state照合を伴って
+行う。processが失われても、claim checkpoint、live GitHub/source、確定済みcommit、evidence
 artifactから新しいattemptを開始する。
 
 ### 4.4. 実装と review の独立性を保つ
@@ -120,7 +120,7 @@ live verification で証明する。
 
 - webhook を失っても polling が同じ候補を発見する。
 - duplicate、遅延、順不同 event が二重 Run または二重 Pull Request を作らない。
-- Controller または Worker の再起動後に、lease と durable state から処理を回復できる。
+- process の再起動後に、GitHub の再観測から処理を回復できる。
 - test review の `request_changes` が fresh session に handoff され、approve まで実装へ進まない。
 - RED、GREEN、refactor 後 checks、二つの review approval が対象 digest と一致する。
 - dependency のない複数 Issue は同時実行でき、同じ Issue は二重実行されない。

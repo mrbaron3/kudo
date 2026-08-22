@@ -33,12 +33,12 @@ Servo の`docs/requirements/lightweight-tdd-issue-to-pr-run/`にあった draft 
 - Webhookをprimary通知、15分pollingを必須fallbackとするunified reconciliation
 - `ai-ready`、`ai-in-progress`、`ai-merged`、`ai-needs-human`のstatus projection
 - model-bearing Operation ごとのfresh Codex/Claude sessionと、Orca handoffに似た明示artifact handoff
-- test reviewに加えたfinal implementation review gate。当初はPR作成をfinal approve後に置いたが、[ADR-0002](../../adr/0002-pr-anchored-review.md)でsupersedeし、RED固定後にdraft PRをpublishして全review roundをPRへ繋留した。さらに[ADR-0005](../../adr/0005-auto-merge.md)で、final approveをready化と自動mergeのgateにし、正常終端をmergeとIssue closeにした
-- PostgreSQLをRun state、Operation queue、lease、inbox/outboxの正本にする構成
-- 一つのGo binaryをrole別containerとして起動するDocker Compose deployment
-- content-addressed artifact volumeとIssue Worker専用workspace volume
+- test reviewに加えたfinal implementation review gate。当初はPR作成をfinal approve後に置いたが、後にclaim時のdraft PR作成へ改め、全review roundをPRへ繋留した。final approveはready化と自動mergeのgateであり、正常終端はmergeとIssue closeである
+- GitHubをworkflow状態の唯一の正本とするstateless reconciler構成（[ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md)）
+- 一つのGo binaryを単一processとして動かす単一container deployment
+- evidence / verdictをcheck runとPR commentへ記録するrecord surface
 
-Compose と PostgreSQL を採用していても、Servo の process topology、table、queue、artifact naming を流用したことを意味しない。Kudo の boundary から独立に設計・testする。
+GitHubを正本にしていても、Servoのprocess topology、queue、artifact namingを流用したことを意味しない。Kudoのboundaryから独立に設計・testする。
 
 ## Review perspective adaptation
 

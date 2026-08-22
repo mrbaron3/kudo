@@ -2,7 +2,7 @@
 
 Milestone 0 の Compose 開発基盤の手順を説明する。host へ Go、PostgreSQL、Kudo daemon を直接 install せず、同じ Docker Compose application で image build・check・PostgreSQL integration test を実行できる。
 
-deployment contract の正本は [Runtime platform](../05_design/03_runtime-platform.md) と [ADR-0001](../../adr/0001-compose-runtime.md) である。本書は開発手順だけを扱い、仕様を再定義しない。
+deployment contract の正本は [Runtime platform](../05_design/03_runtime-platform.md) である。本書は開発手順だけを扱い、仕様を再定義しない。なお [ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md) により PostgreSQL は workflow 正本ではなくなった。本書の PostgreSQL 関連手順は run store 退役の実装が完了するまでの現行手順であり、退役とともに削除する。
 
 ## 前提
 

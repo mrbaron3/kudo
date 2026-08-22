@@ -1,8 +1,8 @@
 # 4.4. Pull Request 確定・Merge 詳細設計
 
 [機能仕様](01_spec.md)を、finalize gate、merge gate、Issue Worker の Pull Request mutation、Controller の
-完了 projection に分けて実現する。merge の判断規則を選んだ理由と代替案は
-[ADR-0005](../../../adr/0005-auto-merge.md) を参照。
+完了記録に分けて実現する。merge の判断規則は [End-to-end workflow](../../05_design/02_workflow.md)
+§8 を正とする。
 
 ## Finalize gate
 
@@ -10,15 +10,15 @@ Controller は次の identity が一致する場合だけ `finalize_pull_request
 
 - Run に固定された repository、base、branch、Pull Request reference
 - live Pull Request の open state、base、head
-- final Review Request / Result が承認した head と Artifact Manifest
+- final Review Request / Result が承認した head（verdict check run の binding）
 - GREEN、required checks、review policy を含む required evidence
 
-PR body や draft / ready 表示だけの差分は observation lineage として扱えるが、head、base、PR identity の
-差分は finalize を止める。
+PR body や draft / ready 表示だけの差分は finalize を止めないが、head、base、PR identity の差分は
+finalize を止める。
 
 加えて `finalize_pull_request` と `merge_pull_request` は Operation 開始時に live Issue / authority から
-Task Context / Context Manifest を再構築し、claim context の期待 digest と照合する
-（[ADR-0005](../../../adr/0005-auto-merge.md) D8）。final approve 後の Issue の意味的編集を
+Task Context / Context Manifest を再構築し、claim checkpoint の期待 digest と照合する。
+final approve 後の Issue の意味的編集を
 検出できる最後の enforcement point であり、不一致は stale として mutation を行わない。
 
 ## Pull Request mutation
@@ -27,7 +27,7 @@ Issue Worker は expected Pull Request observation を入力として live state
 body 更新と draft 解除を行う。Controller は content を生成する材料を route できるが、Pull Request 自体を
 変更しない。
 
-required body は immutable artifact と Result から決定論的に構築し、少なくとも次を参照可能にする。
+required body は record surface の payload と Result から決定論的に構築し、少なくとも次を参照可能にする。
 
 - Task Issue と Acceptance Criteria
 - test plan、RED、GREEN、required checks
@@ -39,10 +39,10 @@ retry が Pull Request を重複作成しないようにする。
 
 ## Merge gate
 
-finalize completion が durable に記録された後、Controller は次がすべて成立する場合だけ `merge_pull_request`
+ready 化の観測後、Controller は次がすべて成立する場合だけ `merge_pull_request`
 Operation を発行する。
 
-- final approve が live PR head と一致する final head と Artifact Manifest へ bind されている
+- final approve の verdict check run が live PR head と一致する final head に存在する
 - live PR が open、base が Context Manifest の base と一致、head が approved head と一致
 - base branch の required status check が同じ head SHA に対して success
 - GitHub が mergeable を返す（conflict が無い）
@@ -66,12 +66,12 @@ durable へ記録する。応答を受け取れなかった retry では、記�
 GitHub が merge を拒否した場合は、品質 verdict にせず、拒否の観測を evidence とした `needs_human` Result と
 して返し、Controller が `merge_blocked` として扱う。
 
-## Durable completion と Projection
+## 完了の記録
 
-Issue Worker Result を受理した transaction で、finalize completion または merge completion と、対応する
-projection intent を記録する。merge completion の projection intent は Task Issue の close と `ai-merged` label を
-含む。outbox consumer が label / comment / close を再送し、projection failure は成立済みの merge や workflow
-completion を巻き戻さない。closing keyword で既に closed の Issue に対する close は no-op として成功にする。
+merge completion は live PR の merged 観測と merge intent comment の一致で確定する。Controller は
+Task Issue の close と `ai-merged` label を冪等に記録する。記録の失敗は成立済みの merge や workflow
+completion を巻き戻さず、次の reconcile が収束させる。closing keyword で既に closed の Issue に対する
+close は no-op として成功にする。
 
 ## 外部干渉
 
@@ -85,15 +85,14 @@ completion を巻き戻さない。closing keyword で既に closed の Issue �
 - head、base、open / draft の組み合わせごとに finalize gate を table-driven test で検証する。
 - merge gate を approve、live head、check status（success / failure / pending）、mergeable の組み合わせで
   table-driven に検証する。
-- body 生成が同じ artifact input から同じ結果になることを検証する。
-- merge / branch 削除 / Issue close の timeout 後 retry と outbox 再送が一つの状態へ収束することを fake GitHub で
-  検証する。intent 有無による merged 観測の解釈差も同じ fake で検証する。
+- body 生成が同じ payload input から同じ結果になることを検証する。
+- merge / branch 削除 / Issue close の timeout 後 retry と記録の再試行が一つの状態へ収束することを fake
+  GitHub で検証する。intent 有無による merged 観測の解釈差も同じ fake で検証する。
 - Controller / Review Worker credential では Pull Request mutation と merge ができない構成を確認する。
 
 ## 参照
 
 - [End-to-end workflow](../../05_design/02_workflow.md) §7–8
-- [ADR-0005](../../../adr/0005-auto-merge.md) — merge gate と failure routing
 - [Architecture](../../05_design/01_architecture.md) — Issue Worker、Mutation authority
 - [GitHub routing policy](../../05_design/04_github-routing.md) — Merge completion
 - [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)

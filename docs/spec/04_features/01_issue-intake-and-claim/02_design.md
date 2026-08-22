@@ -8,25 +8,24 @@ protocol field の厳密な定義は versioned contract、component の権限は
 
 | 境界 | 責務 |
 | --- | --- |
-| Webhook adapter | 署名と payload を検証し、delivery ID と IssueRef を durable inbox へ記録する |
+| Webhook adapter | 署名と payload を検証し、IssueRef の reconcile を trigger する |
 | Poller | 起動時と定期実行で configured repository の候補 IssueRef を列挙する |
-| Controller | trigger を `ReconcileIssue` へ集約し、claim lease、Execution / Escalation Policy の解決、Run transition、status projection を調停する |
-| Issue Worker claim handler | GitHub Reader、Issue Compiler、Context Resolverを調停し、schema/digest/baseだけを持つstructured claim contextを構築する。model sessionは起動しない |
+| Controller | trigger を `ReconcileIssue` へ集約し、phase 導出、Execution / Escalation Policy の解決、label / comment の記録を調停する |
+| Issue Worker claim handler | GitHub Reader、Issue Compiler、Context Resolverを調停し、schema/digest/baseだけを持つclaim contextを構築する。model sessionは起動しない |
 | GitHub / repository reader | API response を typed data へ変換し、live Issue、relationship、dependency、authority、base を取得する。Issue Contract の意味解析は行わない |
 | Issue Compiler | verified Issue identity と raw body だけから Issue Observation、canonical Task Context、Claim Requirements を決定論的に生成する唯一の pure component |
 | Context Resolver | Claim Requirements に従って relationship、dependency completion、authority content、base を live source から解決し、Context Manifest と claim evidence を構築する |
-| Artifact Store | test、patch、source snapshot、command/review evidenceなどlive sourceから再取得できない成果物だけをcontent-addressedかつwrite-onceに保存する |
-| PostgreSQL adapter | inbox、claim排他、structured claim context、Run作成、outboxをtransactionとconstraintで保護する |
+| GitHub recorder | claim checkpoint（PR body machine block）、label、comment を marker で冪等に記録する |
 
 ## Reconciliation
 
-1. ingress は trigger identity と IssueRef を保存し、同じ delivery の重複を吸収する。
-2. Controller は IssueRef 単位の reconciliation を起動する。
-3. candidate 判定は event payload ではなく live GitHub response に対して行う。
-4. 候補外なら terminal な skip result を保存し、Run を作らない。
-5. `merged` terminal の Run を持つ IssueRef は `skipped_already_merged` として終了し、`ai-ready` を外して
-   `ai-merged` と案内 comment を再投影する（[GitHub routing policy](../../05_design/04_github-routing.md)）。
-6. 候補なら IssueRef scoped claim lease を取得して claim Operation を発行する。
+1. ingress は trigger を受けて IssueRef 単位の reconciliation を起動する。重複 trigger は観測の
+   再実行になるだけである。
+2. candidate 判定は event payload ではなく live GitHub response に対して行う。
+3. 候補外なら terminal な skip result として終了し、Run を作らない。
+4. merged な kudo PR を持つ IssueRef は `skipped_already_merged` として終了し、`ai-ready` を外して
+   `ai-merged` と案内 comment を再記録する（[GitHub routing policy](../../05_design/04_github-routing.md)）。
+5. 候補なら claim Operation を dispatch する。排他は branch `kudo/issue-<n>` の ref create が確定する。
 
 Webhook と polling は同じ application operation を呼び、candidate rule を adapter 内へ複製しない。
 
@@ -37,7 +36,7 @@ Issue Worker の claim handler は GitHub Reader が取得した raw Issue body 
 [Issue Contract](../../05_design/contracts/issue-contract-v1alpha1.md)を deterministic に strict parse し、
 次を生成する。
 
-- audit lineage 用の Issue Observation
+- 観測 audit 用の Issue Observation
 - model-bearing Operation の入力になる canonical Task Context
 - relationship と authority 解決に必要な Claim Requirements
 
@@ -65,30 +64,30 @@ Task Context の不足を自然言語要約や provider session で補完しな�
 ## Durable transition と外部投影
 
 claim成功を受理する前に、Issue WorkerはCompiler version、Issue Observation ref/body digest、Task Context
-ref、Context Manifest ref、base SHAからなるstructured claim contextを返す。Controllerはversioned schema、
-digest、Issue identityとのbindingを検証し、Execution / Escalation PolicyとともにRunへ固定する。raw Issue body、
-Issue Observation YAML、Task Context YAML、Context Manifest YAMLは保存しない。
+ref、Context Manifest ref、base SHAからなるclaim contextを返す。Controllerはversioned schema、
+digest、Issue identityとのbindingを検証する。raw Issue body、Issue Observation YAML、Task Context YAML、
+Context Manifest YAMLは保存しない。
 
-claim成功時はRun、structured claim context、policy ref、claim result、次Operationを一つのdatabase
-transactionで確定する。同じtransactionでstatus projection intentを
-outbox へ追加し、GitHub mutation は commit 後に非同期実行する。これにより、一時的な GitHub failure と
-workflow state を分離する。
+claimの確定は次の順で行う。branch `kudo/issue-<n>` のref create（atomic、既存なら claim 失敗）、
+bootstrap commit、draft PRのensure、claim checkpoint（claim context、Execution / Escalation Policy ref）
+のPR body machine blockへの記録。途中でprocessが停止しても、再観測が「branchはあるがPRが無い」等の
+中間状態を導出し、残りの手順を冪等に完了する。label記録の失敗はRunを巻き戻さず、次のreconcileが
+収束させる。
 
-IssueRef に active writer-capable Run を一つだけ許す constraint と claim lease により、並行した
-webhook / polling が別々の Run を作らないようにする。
+branch ref create のatomicityにより、並行したwebhook / pollingが別々のRunを作らないようにする。
 
 ## Failure と Recovery
 
 - GitHub / network の一時障害は同じ logical Operation の新しい attempt として再試行する。
 - contract rejection、authority conflict、dependency blocked は transport failure と分けて保存する。
-- lease expiry後のattemptは以前のprovider sessionに依存せず、structured claim contextとlive
+- process再起動後のattemptは以前のprovider sessionに依存せず、claim checkpointとlive
   GitHub/sourceから入力を再取得・再compileする。
-- status projection は stable identity で再送し、重複 label / comment を作らない。
+- label / comment の記録は marker を検索してから行い、重複を作らない。
 
 ## 検証方針
 
 - webhook と polling が同じ reconciliation result へ収束することを fake GitHub で検証する。
-- duplicate delivery、concurrent claim、outbox 再送を deterministic な store / clock fake で検証する。
+- duplicate delivery、concurrent claim、記録の retry を deterministic な GitHub / clock fake で検証する。
 - contract parser の missing、unknown、duplicate、ambiguous input を fixture で網羅する。
 - live response と event payload が異なる場合に live state が採用されることを検証する。
 - required claim context fieldの欠落、schema/digest/Issue identityの不一致ではclaim successを受理しないことを検証する。
@@ -99,5 +98,5 @@ webhook / polling が別々の Run を作らないようにする。
 ## 参照
 
 - [End-to-end workflow](../../05_design/02_workflow.md) §1〜§2
-- [Architecture](../../05_design/01_architecture.md) — GitHub adapters、Durable model、Queue / lease
+- [Architecture](../../05_design/01_architecture.md) — GitHub adapters、State model
 - [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)

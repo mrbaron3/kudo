@@ -96,14 +96,14 @@ NN_feature-name/
 
 - Controller、Issue Worker、Review Worker、adapter の責務分担
 - Operation と state transition、artifact の流れ
-- external mutation 前後の照合、retry、lease、recovery の方法
+- external mutation 前後の照合、retry、recovery の方法
 - deterministic test で確認する境界
 
 **いずれにも複製しないもの:**
 
 - versioned contract の field と canonical encoding
 - review policy の判定基準
-- PostgreSQL の確定 table / index / SQL
+- record surface の機械表現（marker、machine block の具体 format）
 - provider 固有 prompt や private session state
 - Compose service、volume、secret の共通 runtime contract
 

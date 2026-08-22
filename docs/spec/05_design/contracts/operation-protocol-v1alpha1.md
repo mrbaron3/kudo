@@ -2,9 +2,21 @@
 
 ## Purpose
 
-Controller が Issue Worker へ指示する run-once Operation と、Worker が返す Result の durable handoff を定義する。Controller は concrete Worker や provider process を直接呼び出さず、この protocol を PostgreSQL queue へ記録する。
+Controller が Issue Worker へ指示する run-once Operation と、Worker が返す Result の handoff を定義
+する。transport は in-process call だが、envelope は versioned protocol として strict に検証し、
+unknown version や field を暗黙に解釈しない。
 
-Review Worker への品質評価依頼は [Implementation–Review Protocol](review-protocol-v1alpha1.md) の Review Request / Result を使う。本 protocol の execution failure と review の quality verdict を混在させない。
+Review Worker への品質評価依頼は [Implementation–Review Protocol](review-protocol-v1alpha1.md) の
+Review Request / Result を使う。本 protocol の execution failure と review の quality verdict を
+混在させない。
+
+本 protocol における**artifact**とは、canonical encoding と SHA-256 digest で identity が決まる
+versioned payload である。bytes の永続表現は専用 store ではなく GitHub 上の record surface（check
+run output、marker 付き comment、PR body の machine block）であり、**その発話の主体（payload の
+producer）が自分の App identity で記録する**（[ADR-0001](../../../adr/0001-github-ssot-stateless-reconciler.md)、
+actor と identity の対応は [architecture.md](../01_architecture.md) Actor model）。record surface の
+うち comment と PR body は repository write 権限者が編集できるため、gate 判定は App 所有 check run に
+記録した digest との照合を正とする。
 
 ## Operation envelope
 
@@ -33,34 +45,64 @@ causationId: transition-01
 createdAt: 2026-08-11T00:00:00Z
 ```
 
-`operationId`はlogical Operationのstable identity、database上のexecution attemptは別identityとする。retryのたびにOperationを複製せず、同じOperationへattemptを追加する。
+`operationId`は logical Operation の stable identity、execution attempt は別 identity とする。retry の
+たびに Operation を複製せず、同じ Operation へ attempt を追加する。`runId`は claim が確定した後は
+kudo Pull Request の番号で識別される Run を指す。
 
-Operation digestは、schema、kind、Run、repository、Issue、Context Manifest ref、Execution Policy ref、head SHA、input artifact digest、policy refs、causation identityから計算するcontent identityである。`operationId`、`createdAt`、lease owner、attempt number、provider session ID、workspace pathをdigestへ含めない。
+Operation digest は、schema、kind、Run、repository、Issue、Context Manifest ref、Execution Policy
+ref、head SHA、input artifact digest、policy refs、causation identity から計算する content identity
+である。`operationId`、`createdAt`、attempt number、provider session ID、workspace path を digest へ
+含めない。
 
-`issueObservation`と`bodyDigest`はexact観測のaudit lineageであり、Operation digestへ含めない。raw bodyの非意味的差分でTask ContextとContext Manifestが変わらない場合、Operation identityは変わらず、新しい観測をlineageへ追記する。意味のある変更はTask Context refを変え、Task Context refはContext Manifestに含まれるため、semantic stalenessはContext Manifest refの比較だけで判定できる。validatorはContext Manifest refをschemaとdigestのopaque valueとして扱い、Task Context YAMLやIssue Contractをparseしない。Workerは`runId`でstructured claim contextを読み、live sourceからcanonical inputを再構築する。
+`issueObservation`は exact 観測の audit 情報であり、Operation digest へ含めない。raw body の非意味的
+差分で Task Context と Context Manifest が変わらない場合、Operation identity は変わらず、新しい観測は
+telemetry に残す。意味のある変更は Task Context ref を変え、Task Context ref は Context Manifest に
+含まれるため、semantic staleness は Context Manifest ref の比較だけで判定できる。validator は Context
+Manifest ref を schema と digest の opaque value として扱い、Task Context YAML や Issue Contract を
+parse しない。Worker は claim checkpoint（PR body の machine block）を読み、live source から canonical
+input を再構築する。
 
-`repository`はIssue referenceから導出し、同じenvelopeへ食い違いうるidentityを二重に持たせない。`baseSha`も同じ理由でenvelopeに置かない。baseはclaimがContext Manifestへpinする解決結果であり、validatorはmanifest refをopaqueに扱うため、envelopeへ複製するとcross-check不能な二重identityになる。baseの変更はContext Manifest refの変化として検出する。`inputArtifacts`と`policyRefs`は順序を持たない集合として扱い、canonical順（lexicographic）へ正規化したうえで重複を拒否する。並び順の違いだけでOperation identityを変えない。
+`repository`は Issue reference から導出し、同じ envelope へ食い違いうる identity を二重に持たせない。
+`baseSha`も同じ理由で envelope に置かない。base は claim が Context Manifest へ pin する解決結果で
+あり、validator は manifest ref を opaque に扱うため、envelope へ複製すると cross-check 不能な二重
+identity になる。base の変更は Context Manifest ref の変化として検出する。`inputArtifacts`と
+`policyRefs`は順序を持たない集合として扱い、canonical 順（lexicographic）へ正規化したうえで重複を
+拒否する。並び順の違いだけで Operation identity を変えない。
 
-Issue Observation、Task Context、Context Manifest、Execution Policyのschema、canonicalization、refは[Task Context Protocol](task-context-v1alpha1.md)を正とする。Execution PolicyはIssue Worker/Review Workerのprovider adapter、model identifier、adapter version、tool permission、timeout policyを固定し、credential、secret path、session IDを含めない。同じRunの途中でdeployment defaultが変わっても、既存Operationへ暗黙に適用しない。
+Issue Observation、Task Context、Context Manifest、Execution Policy の schema、canonicalization、ref
+は [Task Context Protocol](task-context-v1alpha1.md) を正とする。Execution Policy は Issue Worker /
+Review Worker の provider adapter、model identifier、adapter version、tool permission、timeout policy
+を固定し、credential、secret path、session ID を含めない。同じ Run の途中で deployment default が
+変わっても、既存 Operation へ暗黙に適用しない。
 
 ## Issue Worker operation kinds
 
 | Kind | Model session | Required input | Output |
 | --- | --- | --- | --- |
-| `claim` | no | repository、IssueRef、candidate policy | Compiler/schema/digest/baseだけを持つstructured claim contextまたはstructured rejection |
-| `author_tests` | fresh | claimed context（baseはContext Manifestがpin）、head | test plan、test-only head、RED evidence、source bundle |
-| `revise_tests` | fresh | current test head、blocking Review Resultまたは`test-revision-report`、prior artifacts | revised test plan、revised test head、new RED evidence、source bundle |
-| `implement` | fresh | approved test validity Result、test head、Issue context | implementation head、GREEN/refactor/check evidence、Pull Request draft、source bundle |
-| `repair_implementation` | fresh | current implementation head、blocking final Review Result | repaired head、new GREEN/refactor/check evidence、revised Pull Request draft、source bundle |
-| `publish_head` | no | 固定済みhead、source bundle、idempotency identity | branch push、draft PRのensure/update、GitHub PR number、URL、observed head、pull request observation |
-| `finalize_pull_request` | no | final approved head、approved final Review Result、PR body artifact、idempotency identity | required PR bodyの確定、draft解除、GitHub PR number、URL、observed head、pull request observation |
-| `merge_pull_request` | no | final approved head、approved final Review Result、finalize済みPull Request reference、期待head SHA、idempotency identity | 期待headへ束縛したmerge commit、head branch削除の結果、GitHub PR number、URL、observed head、merged状態のpull request observation |
+| `claim` | no | repository、IssueRef、candidate policy | branch + draft PR の作成、claim checkpoint（structured claim context）または structured rejection |
+| `author_tests` | fresh | claimed context（base は Context Manifest が pin）、head | test plan、test-only head、RED evidence |
+| `revise_tests` | fresh | current test head、blocking Review Result または`test-revision-report`、prior payloads | revised test plan、revised test head、new RED evidence |
+| `implement` | fresh | approved test validity Result、test head、Issue context | implementation head、GREEN/refactor/check evidence、Pull Request draft |
+| `repair_implementation` | fresh | current implementation head、blocking final Review Result | repaired head、new GREEN/refactor/check evidence、revised Pull Request draft |
+| `publish_head` | no | 固定済み head、idempotency identity | compare-and-push による branch 反映、observed head |
+| `finalize_pull_request` | no | final approved head、approved final Review Result、PR body draft、idempotency identity | required PR body の確定、draft 解除、observed head |
+| `merge_pull_request` | no | final approved head、approved final Review Result、finalize 済み Pull Request reference、期待 head SHA、idempotency identity | merge intent comment、期待 head へ束縛した merge commit、head branch 削除の結果、merged 状態の観測 |
 
-`claim`ではControllerがRun IDを予約するが、claim成功まではactive Runとして公開しない。また、Issue Observation、Context Manifest、headはまだ存在しないため、envelope上の該当fieldを省略する。Execution Policyはclaim成功時にRunへ固定する。それ以外のOperationではkindに必要なfieldを省略しない。空文字や直前Runの値から推測しない。Task Contextの期待identityはstructured claim contextから取得し、実体はlive Issueから再compileする。digestだけでschemaを推測しない。
+`claim`では branch `kudo/issue-<n>`の ref create が排他を確定し、成功時に draft PR を ensure して
+claim checkpoint を PR body の machine block へ記録する。Issue Observation、Context Manifest、head は
+claim 開始時点では存在しないため、envelope 上の該当 field を省略する。Execution Policy は claim 成功
+時に Run へ固定する。それ以外の Operation では kind に必要な field を省略しない。空文字や直前 Run の
+値から推測しない。Task Context の期待 identity は claim checkpoint から取得し、実体は live Issue から
+再 compile する。digest だけで schema を推測しない。
 
-`ClaimRequirements`はIssue Compilerが返し、Issue Workerがclaimの中でreadiness、dependency、authorityを解決してContext Manifestを構築するために使う中間projectionである。Worker Resultのfieldまたはoutput artifactとしてprocess間へ渡さない。claim成功後のdurable handoffはstructured claim contextが担う。Controllerはraw Issue bodyから`ClaimRequirements`を再構築せず、Issue Workerが返したversioned identityとstructuredなclaim結果だけを使う。
+`ClaimRequirements`は Issue Compiler が返し、Issue Worker が claim の中で readiness、dependency、
+authority を解決して Context Manifest を構築するために使う中間 projection である。Worker Result の
+field として process 間へ渡さない。claim 成功後の durable handoff は claim checkpoint が担う。
+Controller は raw Issue body から`ClaimRequirements`を再構築せず、Issue Worker が返した versioned
+identity と structured な claim 結果だけを使う。
 
-kindごとのfield要件は次のとおりとする。validatorは省略だけでなく、kindが持てないfieldの混入もrejectする。
+kind ごとの field 要件は次のとおりとする。validator は省略だけでなく、kind が持てない field の混入も
+reject する。
 
 | Kind | `issueObservation`、`contextManifest`、`headSha` | `inputArtifacts` |
 | --- | --- | --- |
@@ -68,9 +110,19 @@ kindごとのfield要件は次のとおりとする。validatorは省略だけ�
 | `author_tests` | 必須 | 任意 |
 | `revise_tests`、`implement`、`repair_implementation`、`publish_head`、`finalize_pull_request`、`merge_pull_request` | 必須 | 1件以上必須 |
 
-`publish_head`はRED evidence固定後とGREEN/refactor evidence固定後の両方で使い、同じdraft PRへheadを再publishする。publishはreview approveをgateにしない。`finalize_pull_request`はfinal approveにbindされたheadに対してだけ発行され、required PR bodyの確定とready化を行う。`merge_pull_request`はready化の後、final approveに加えてlive headの一致、required status checkのsuccess、mergeableが揃った場合だけ発行される（gate規則は[Implementation–Review Protocol](review-protocol-v1alpha1.md)と[ADR-0005](../../../adr/0005-auto-merge.md)を正とする）。いずれもmutation前に期待headとlive branch headを照合し（compare-and-push、compare-and-merge）、外部pushによるhead不一致を検出した場合はblind mutationせず`stale_input`として返す。`merge_pull_request`は期待head SHAをmerge要求自体にも載せ、照合とmergeの間に入る外部pushをGitHub側でも弾く。
+`publish_head`は RED evidence 固定後と GREEN/refactor evidence 固定後の両方で使い、同じ draft PR へ
+head を再 publish する。publish は review approve を gate にしない。`finalize_pull_request`は final
+approve に bind された head に対してだけ発行され、required PR body の確定と ready 化を行う。
+`merge_pull_request`は ready 化の後、final approve に加えて live head の一致、required status check の
+success、mergeable が揃った場合だけ発行される（gate 規則は [workflow.md](../02_workflow.md) を正と
+する）。いずれも mutation 前に期待 head と live branch head を照合し（compare-and-push、SHA 指定
+merge）、外部 push による head 不一致を検出した場合は blind mutation せず`stale_input`として返す。
+`merge_pull_request`は期待 head SHA を merge 要求自体にも載せ、照合と merge の間に入る外部 push を
+GitHub 側でも弾く。
 
-model-bearing Operationは、同じRun/worktreeを扱う場合もfresh provider process/sessionを作る。継続に必要な情報はcurrent commit、input artifact、versioned Review Resultとして渡し、resume tokenやconversation transcriptを渡さない。
+model-bearing Operation は、同じ Run / worktree を扱う場合も fresh provider process/session を作る。
+継続に必要な情報は current commit、input payload、versioned Review Result として渡し、resume token や
+conversation transcript を渡さない。
 
 ## Operation Result
 
@@ -82,7 +134,7 @@ outcome: succeeded
 headSha: <git-commit-sha>
 claimContext: null
 changedInputFields: []
-outputArtifacts:
+outputs:
   - name: test-plan
     digest: sha256:<digest>
   - name: red-evidence
@@ -91,8 +143,8 @@ externalRefs: []
 completedAt: 2026-08-11T00:01:00Z
 ```
 
-`claim`の`succeeded` Resultだけは`claimContext`を必須とし、`headSha`とIssue由来の
-`outputArtifacts`を持たない。
+`claim`の`succeeded` Result だけは`claimContext`を必須とし、`headSha`と Issue 由来の`outputs`を
+持たない。
 
 ```yaml
 claimContext:
@@ -110,164 +162,261 @@ claimContext:
   baseSha: <git-commit-sha>
 ```
 
-`issueObservation`はIssue identityと`bodyDigest`から再計算したrefと一致しなければならない。
-`claimContext`はPostgreSQLへtyped dataとして保存するRun input checkpointであり、canonical YAML fileを
-Artifact Storeへ保存する指示ではない。claim以外、または`succeeded`以外のResultは`claimContext`を持てない。
-Controllerがclaim成功をRunへ適用するときは、claim context、Execution Policy、Escalation Policy、次Operationを
-同じdurable transitionへ固定する。workflow eventへContext Manifest digestだけを投影して、Compiler version、
-Task Context ref、body digest、base SHAを失ってはならない。
+`issueObservation`は Issue identity と`bodyDigest`から再計算した ref と一致しなければならない。
+`claimContext`は claim checkpoint として PR body の machine block へ記録される typed data であり、
+canonical YAML file を保存する指示ではない。claim 以外、または`succeeded`以外の Result は
+`claimContext`を持てない。workflow event へ Context Manifest digest だけを投影して、Compiler
+version、Task Context ref、body digest、base SHA を失ってはならない。
 
-`outputArtifacts`はdigestの列ではなくlogical nameで引くtableである。nameが無いと、Controllerは「このOperationが何を残したか」をdigestからしか判断できず、kindが要求する成果物を残したかを検証できない。nameは`artifact-manifest`のentry nameと同じ語彙・同じ形式規則を使い、重複を拒否する。canonical encodeではnameのlexicographic順へ並べ替えるため、producerの列挙順はResult identityを変えない。
+`outputs`は digest の列ではなく logical name で引く table である。name が無いと、Controller は
+「この Operation が何を残したか」を digest からしか判断できず、kind が要求する成果物を残したかを
+検証できない。name は後述の語彙・形式規則を使い、重複を拒否する。canonical encode では name の
+lexicographic 順へ並べ替えるため、producer の列挙順は Result identity を変えない。各 output の
+payload は Result と同時に in-process で Controller へ渡り、Controller が record surface へ記録する。
+producer は record surface への記録を終えてから Result を返し、Controller は記録の存在・digest・
+作成 identity を検証するまで次の transition を発行しない。
 
-terminalな`outcome`は次のいずれかとする。
+terminal な`outcome`は次のいずれかとする。
 
-- `succeeded`: Operation contractを満たすoutputがimmutableに固定された
-- `stale_input`: 開始時または完了時に再取得・再compileしたContext Manifest ref、Execution Policy ref、head、input artifact、policy refが期待値と一致しない（Issue Observationだけの差分はstaleにしない）
-- `needs_human`: Issue Workerだけでは選べないauthority、安全、仕様判断が必要
-- `test_revision_required`: `implement`または`repair_implementation`が「承認済みtestの変更が必要」と判断して停止した
-- `failed_terminal`: retry policyを適用しても自動継続できないexecution failure
+- `succeeded`: Operation contract を満たす output が固定された
+- `stale_input`: 開始時または完了時に再取得・再 compile した Context Manifest ref、Execution Policy
+  ref、head、input payload、policy ref が期待値と一致しない（Issue Observation だけの差分は stale に
+  しない）
+- `needs_human`: Issue Worker だけでは選べない authority、安全、仕様判断が必要
+- `test_revision_required`: `implement`または`repair_implementation`が「承認済み test の変更が必要」と
+  判断して停止した
+- `failed_terminal`: retry policy を適用しても自動継続できない execution failure
 
-`test_revision_required`を返せるのは`implement`と`repair_implementation`だけである。testを所有する`author_tests` / `revise_tests`は自分のtestへ差し戻しを返せず、publish系と`claim`はtestを評価しない。他kindからのこのoutcomeはbinding境界で`protocol_kind_constraint`としてrejectする。このResultの`headSha`は、未承認のtest/production変更を最後に承認されたtest checkpointへrollbackした後のheadであり、省略できない。Controllerはこのheadが承認済みtest headと一致することをreview bindingから検証したうえで、`test-revision-report`を入力に`revise_tests`をdispatchする。差し戻しはquality verdictでもexecution failureでもなく、attempt retry budgetを消費しない。無人区間の予算は`test_validity` gateのround counterが担い、差し戻しの確定ごとに1を消費する（[ADR-0003](../../../adr/0003-review-round-limit.md)）。
+`test_revision_required`を返せるのは`implement`と`repair_implementation`だけである。test を所有する
+`author_tests` / `revise_tests`は自分の test へ差し戻しを返せず、publish 系と`claim`は test を評価
+しない。他 kind からのこの outcome は binding 境界で`protocol_kind_constraint`として reject する。
+この Result の`headSha`は、未承認の test/production 変更を最後に承認された test checkpoint へ
+rollback した後の head であり、省略できない。Controller はこの head が承認済み test head と一致する
+ことを verdict check run の binding から検証したうえで、`test-revision-report`を入力に`revise_tests`
+を dispatch する。差し戻しは quality verdict でも execution failure でもなく、attempt retry budget を
+消費しない。無人区間の予算は`test_validity` gate の round counter が担い、差し戻しの確定ごとに1を
+消費する（[workflow.md](../02_workflow.md)）。
 
-retry可能なtimeout、rate limit、network/process failureはterminal Resultにせず、attempt failureとしてerror class、evidence、次回eligible timeを記録する。bounded retryを使い切った場合だけpolicyに従って`failed_terminal`またはoperator escalationへ進む。attempt failure recordがrequired fieldを欠く、あるいはclassが未知の場合は、retry継続にもterminal outcomeにも倒さずvalidation errorとして返す。判定不能なrecordをretry継続へ倒すと、bounded retryが無効化されたままattemptが積み続けられ、caller側からは検知できない。attempt failureはquality verdictのfieldを持たない別の型で表現し、`approve`、`request_changes`、`needs_human`へ変換しない。
+retry 可能な timeout、rate limit、network/process failure は terminal Result にせず、attempt failure
+として error class、evidence、次回 eligible time を記録する。bounded retry を使い切った場合だけ
+policy に従って`failed_terminal`または operator escalation へ進む。attempt failure record が required
+field を欠く、あるいは class が未知の場合は、retry 継続にも terminal outcome にも倒さず validation
+error として返す。判定不能な record を retry 継続へ倒すと、bounded retry が無効化されたまま attempt
+が積み続けられ、caller 側からは検知できない。attempt failure は quality verdict の field を持たない
+別の型で表現し、`approve`、`request_changes`、`needs_human`へ変換しない。
 
-`request_changes`と`approve`は本Resultのoutcomeにしない。Review WorkerだけがReview Resultとして返す。
+`request_changes`と`approve`は本 Result の outcome にしない。Review Worker だけが Review Result と
+して返す。
 
-1回のattemptの結末はterminal Resultかattempt failureのどちらか一方だけを持つ。両方を持てる表現にすると、失敗したattemptがterminal Resultとしてcommitされうる。この制約はIssue Worker側とReview Worker側の双方で型として表現する。
+1回の attempt の結末は terminal Result か attempt failure のどちらか一方だけを持つ。両方を持てる
+表現にすると、失敗した attempt が terminal Result として commit されうる。この制約は Issue Worker 側
+と Review Worker 側の双方で型として表現する。
 
-`changedInputFields`は`stale_input`の根拠であり、semantic comparisonが返した変更field名をそのまま載せる。`stale_input`では1件以上必須、それ以外のoutcomeでは空とする。値はcomparisonと同じ語彙（`contextManifest`、`executionPolicy`、`headSha`、`inputArtifacts`、`policyRefs`）に限り、自由文字列を許さない。語彙を共有しないと、Controllerは受け取った記録をcomparison結果と突き合わせられない。
+`changedInputFields`は`stale_input`の根拠であり、semantic comparison が返した変更 field 名をそのまま
+載せる。`stale_input`では1件以上必須、それ以外の outcome では空とする。値は comparison と同じ語彙
+（`contextManifest`、`executionPolicy`、`headSha`、`inputArtifacts`、`policyRefs`）に限り、自由文字列
+を許さない。語彙を共有しないと、Controller は受け取った記録を comparison 結果と突き合わせられない。
 
-Result digestは、schema、参照するOperation digest、outcome、head SHA、claim context、changed input fields、output artifact、external refから計算する。`attemptId`と`completedAt`は含めないため、同じ入力から同じ結果を再生成したattemptは同じcontent identityを持つ。
+Result digest は、schema、参照する Operation digest、outcome、head SHA、claim context、changed input
+fields、outputs、external refs から計算する。`attemptId`と`completedAt`は含めないため、同じ入力から
+同じ結果を再生成した attempt は同じ content identity を持つ。
 
-`headSha`はOperationが新しく固定または観測したheadであり、headを進めるkindでは入力`headSha`と一致するとは限らない。したがってbinding検証は、Resultが参照するOperation digestの一致と、次のkindごとの`succeeded`要件で行う。
+`headSha`は Operation が新しく固定または観測した head であり、head を進める kind では入力`headSha`と
+一致するとは限らない。したがって binding 検証は、Result が参照する Operation digest の一致と、次の
+kind ごとの`succeeded`要件で行う。
 
-| Kind | `headSha` | `outputArtifacts` | `externalRefs` |
+| Kind | `headSha` | `outputs` | `externalRefs` |
 | --- | --- | --- | --- |
-| `claim` | 返さない | 空。代わりに`claimContext`必須 | 任意 |
-| `author_tests`、`revise_tests`、`implement`、`repair_implementation` | 必須 | 必須logical nameを満たす | 任意 |
-| `publish_head`、`finalize_pull_request`、`merge_pull_request` | 入力`headSha`と一致 | 必須logical nameを満たす | 同じrepositoryのPR referenceを1件以上必須 |
+| `claim` | 返さない | 空。代わりに`claimContext`必須 | 同じ repository の PR reference を1件必須 |
+| `author_tests`、`revise_tests` | 必須 | 必須 logical name を満たす | 任意 |
+| `implement`、`repair_implementation` | 必須 | 必須 logical name を満たす | 任意 |
+| `publish_head`、`finalize_pull_request`、`merge_pull_request` | 入力`headSha`と一致 | 必須 logical name を満たす | 同じ repository の PR reference を1件以上必須 |
 
-外部referenceは`github://owner/repository/pull/<number>`形式のcanonicalなPull Request referenceとする。非空判定だけでは、成功と主張するResultからPR numberとURLを復元できず、retry時の既存PR照合とdurable handoffが成立しない。Issue referenceと同じく、numberは先頭0や符号を含まない十進表記だけを許可し、owner/repositoryはcase-insensitiveに正規化する。Operationが対象とするrepository以外のPR referenceは成功の根拠にしない。
+外部 reference は`github://owner/repository/pull/<number>`形式の canonical な Pull Request reference
+とする。非空判定だけでは、成功と主張する Result から PR number と URL を復元できず、retry 時の既存
+PR 照合と durable handoff が成立しない。Issue reference と同じく、number は先頭0や符号を含まない
+十進表記だけを許可し、owner/repository は case-insensitive に正規化する。Operation が対象とする
+repository 以外の PR reference は成功の根拠にしない。
 
-`succeeded`は「Operation contractを満たすoutputがimmutableに固定された」ことを意味する。kindが要求するlogical nameを欠いた成功を受理すると、後続Operationとreviewが存在しないartifactを前提に進む。必須集合は後述のArtifact logical names節が定める。`publish_head`、`finalize_pull_request`、`merge_pull_request`はsource headを進めず固定済みheadをbranch、PR、baseへ反映するOperationなので、Result headが入力headと一致しないことは、reviewしていないheadへ外部mutationを行ったことを意味する。binding境界で拒否する。merge commit SHAはbase側に生まれる新しいcommitであり、`headSha`へ載せない。
+`succeeded`は「Operation contract を満たす output が固定された」ことを意味する。kind が要求する
+logical name を欠いた成功を受理すると、後続 Operation と review が存在しない payload を前提に進む。
+必須集合は後述の Record surface vocabulary 節が定める。`publish_head`、`finalize_pull_request`、
+`merge_pull_request`は source head を進めず固定済み head を branch、PR、base へ反映する Operation
+なので、Result head が入力 head と一致しないことは、review していない head へ外部 mutation を行った
+ことを意味する。binding 境界で拒否する。merge commit SHA は base 側に生まれる新しい commit であり、
+`headSha`へ載せない。
 
-## Artifact logical names
+## Record surface vocabulary
 
-artifactはcontent addressで一意になるが、digestだけでは「そのbytesが何であるか」を表せない。Operation Resultの`outputArtifacts`とArtifact Manifestの`entries`は、どちらもlogical nameで引くtableであり、次の語彙を共有する。
+payload は content address で一意になるが、digest だけでは「その bytes が何であるか」を表せない。
+Operation Result の`outputs`は logical name で引く table であり、name ごとに記録先の record surface
+が決まる。記録者は payload の producer 自身である（Implementer は自分の evidence を、Reviewer は
+自分の verdict / finding を、自分の名義で書く）。
 
-| logical name | 内容 | 主なproducer |
-| --- | --- | --- |
-| `test-plan` | Acceptance Criteriaとtestの対応 | `author_tests`、`revise_tests` |
-| `red-evidence` | 実装前にtestが失敗したことの実行証跡 | `author_tests`、`revise_tests` |
-| `green-evidence` | 実装後にtestが通ったことの実行証跡 | `implement`、`repair_implementation` |
-| `check-evidence` | refactor後のrequired checksとIssue Verificationの証跡 | `implement`、`repair_implementation` |
-| `pull-request-draft` | PRへ載せるsummary、risk、manual verificationの草稿 | `implement`、`repair_implementation` |
-| `pull-request-observation` | publish済みPRのexact observation record（PR ref、state、draft、head、base、body digest、mergedのときはmerge commit SHA） | `publish_head`、`finalize_pull_request`、`merge_pull_request` |
-| `performance-evidence` | performance bound宣言時の測定証跡（command、実行条件、環境identity、複数回実行の要約） | `implement`、`repair_implementation` |
-| `source-bundle` | head SHAを再構築・検証できるimmutable snapshot | headを生成するIssue Worker Operation |
-| `test-validity-result` | final reviewが前提とする承認済みtest validity verdict。bytesはReview WorkerがResult作成時に固定し、Controllerはmanifestへの参照だけをrouteする | Review Worker |
-| `test-revision-report` | `test_revision_required`の根拠。どのtest / Acceptance Criteriaがなぜ誤りかをexpected / observed形式で示し、`revise_tests` sessionの入力になる | `implement`、`repair_implementation` |
+| logical name | 内容 | 記録先 | 主な producer |
+| --- | --- | --- | --- |
+| `test-plan` | Acceptance Criteria と test の対応 | marker 付き PR comment | `author_tests`、`revise_tests` |
+| `red-evidence` | 実装前に test が失敗したことの実行証跡（command、exit status、抜粋、environment identity） | `kudo/evidence-red` check run（test head） | `author_tests`、`revise_tests` |
+| `green-evidence` | 実装後に test が通ったことの実行証跡 | `kudo/evidence-green` check run（final head） | `implement`、`repair_implementation` |
+| `check-evidence` | refactor 後の required checks と Issue Verification の証跡 | `kudo/evidence-checks` check run（final head） | `implement`、`repair_implementation` |
+| `pull-request-draft` | PR へ載せる summary、risk、manual verification の草稿 | marker 付き PR comment | `implement`、`repair_implementation` |
+| `performance-evidence` | performance bound 宣言時の測定証跡（command、実行条件、環境 identity、複数回実行の要約） | `kudo/evidence-performance` check run（final head） | `implement`、`repair_implementation` |
+| `test-revision-report` | `test_revision_required`の根拠。どの test / Acceptance Criteria がなぜ誤りかを expected / observed 形式で示し、`revise_tests` session の入力になる | marker 付き PR comment | `implement`、`repair_implementation` |
 
-nameの形式規則はArtifact Manifestのentry nameと同一とする（`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`、relative pathとして正規形、128 byte以内）。
+source snapshot はこの語彙に無い。head を再構築・検証できる snapshot は git commit そのものであり、
+compare-and-push された branch と PR が正本である。review verdict もこの語彙に無い。verdict は
+[Implementation–Review Protocol](review-protocol-v1alpha1.md) の Review Result として返り、Controller
+が verdict check run へ記録する。
 
-この語彙はartifactの`kind`とは別の値空間である。`kind`はbytes自体の規則（versioned schemaとmedia type）を決めるが、logical nameはtableの中での役割を決める。Issue由来のraw body、Issue Observation、Task Context、Context Manifestはlive sourceから再構築するため、この語彙とArtifact Manifestへ含めない。`raw-issue-body`、`issue-observation`、`task-context`、`context-manifest`を追加のlogical nameとして指定したResult / Manifestもbinding境界でrejectする。
+name の形式規則は`[a-z0-9]`で始まる小文字英数字と`-`、`.`、`/`、`_`、relative path として正規形、
+128 byte 以内とする。
 
-必須集合はprotocolの一部としてcore実装へ固定し、Execution Policyのような配備側artifactへ持たせない。Execution Policyはproducerが作ってOperationへ添えるartifactであり、そこへ必須集合を置くと、producerが自分に課されるgate条件を自分で緩められる。
+この語彙は payload の`kind`とは別の値空間である。`kind`は bytes 自体の規則（versioned schema と
+media type）を決めるが、logical name は table の中での役割を決める。Issue 由来の raw body、Issue
+Observation、Task Context、Context Manifest は live source から再構築するため、この語彙へ含めない。
+`raw-issue-body`、`issue-observation`、`task-context`、`context-manifest`を追加の logical name として
+指定した Result も binding 境界で reject する。
 
-### Required output artifacts
+必須集合は protocol の一部として core 実装へ固定し、Execution Policy のような配備側 payload へ
+持たせない。Execution Policy は producer が作って Operation へ添える payload であり、そこへ必須集合を
+置くと、producer が自分に課される gate 条件を自分で緩められる。
 
-kindごとの`succeeded` Resultは、次のlogical nameをすべて`outputArtifacts`に持たなければならない。必須集合は下限であって上限ではなく、語彙外のnameを追加してよい。kind別集合とは別に、`test_revision_required`のResultはoutcomeに紐付く必須集合として`test-revision-report`を持たなければならない。差し戻しはblocking Review Resultを作らないため、reportを欠くと修正sessionへ渡す根拠が存在しない。
+### Required outputs
 
-| Kind | 必須logical name |
+kind ごとの`succeeded` Result は、次の logical name をすべて`outputs`に持たなければならない。必須
+集合は下限であって上限ではなく、語彙外の name を追加してよい。kind 別集合とは別に、
+`test_revision_required`の Result は outcome に紐付く必須集合として`test-revision-report`を持たなければ
+ならない。差し戻しは blocking Review Result を作らないため、report を欠くと修正 session へ渡す根拠が
+存在しない。
+
+| Kind | 必須 logical name |
 | --- | --- |
-| `claim` | なし。`claimContext`をstructured fieldとして必須にする |
-| `author_tests`、`revise_tests` | `test-plan`、`red-evidence`、`source-bundle` |
-| `implement`、`repair_implementation` | `green-evidence`、`check-evidence`、`pull-request-draft`、`source-bundle` |
-| `publish_head`、`finalize_pull_request`、`merge_pull_request` | `pull-request-observation` |
+| `claim` | なし。`claimContext`を structured field として必須にする |
+| `author_tests`、`revise_tests` | `test-plan`、`red-evidence` |
+| `implement`、`repair_implementation` | `green-evidence`、`check-evidence`、`pull-request-draft` |
+| `publish_head`、`finalize_pull_request`、`merge_pull_request` | なし。`externalRefs`の PR reference と live 観測が成功の根拠になる |
 
-集合はkind表のOutput列にあるartifactから、head SHA、external reference、structured rejectionのように別fieldまたは別outcomeが担うものを除いて決める。`publish_head`、`finalize_pull_request`、`merge_pull_request`が`pull-request-observation`を必須にするのは、publishの成否とPRの状態遷移（draftのensure、ready化、merged）をControllerが観測recordから検証できなければ、Review Requestのlineageとmerge完了の根拠を用意できないためである。merge成立の根拠をResultの真偽値ではなく観測recordに置くのは、応答を失ったretryが同じ観測から自分のmergeを再確認できるようにするためである。`pull-request-draft`を実装側kindの必須outputに含めるのは、`finalize_pull_request`のRequired inputがPR body artifactを名指ししており、それを作るOperationが他に無いためである。`performance-evidence`はperformance boundが宣言されたTaskでのみ要求される条件付きoutputであり、静的な必須集合には含めない。条件の判定はreviewのdeterministic prerequisiteが行う。`source-bundle`はmodelの成果ではないが、headを生成したIssue Workerだけがreview前のlocal checkpointを読めるため、そのOperationの成功に含める。ControllerはIssue Worker workspaceもartifact bytesもmountせず、欠落したbundleを後から生成しない。
+`performance-evidence`は performance bound が宣言された Task でのみ要求される条件付き output であり、
+静的な必須集合には含めない。条件の判定は review の deterministic prerequisite が行う。
 
-非空判定では足りない。protocolはkindごとに「何を」残すかまで定めており、test planの代わりに任意の1件を置いたResultも非空判定なら通る。binding境界は欠落したlogical nameをすべてerrorへ載せ、`protocol_kind_constraint`として分類する。
+非空判定では足りない。protocol は kind ごとに「何を」残すかまで定めており、test plan の代わりに任意の
+1件を置いた Result も非空判定なら通る。binding 境界は欠落した logical name をすべて error へ載せ、
+`protocol_kind_constraint`として分類する。
 
-## Attempt and lease
+### Payload size
 
-Workerはroleとkindが一致するqueued Operationだけをleaseする。attemptには少なくともattempt ID、worker instance、lease expiry、heartbeat、start/end time、provider、exit/error classを記録する。
+record surface には上限がある（check run output と comment はそれぞれ 64KiB）。canonical payload は
+記録先の上限に収まるよう producer 側で構成し、収まらない payload は protocol 境界で
+`protocol_field_too_long`として reject する。command の stdout/stderr は capture 時に bounded な抜粋へ
+redaction とともに縮め、全文は telemetry にのみ流す。記録後の truncation は digest と bytes の対応を
+壊すため行わない。
 
-- lease取得前にprovider processやworkspace mutationを開始しない。
-- heartbeat更新失敗時は外部mutation前にownershipを再確認する。
-- lease expiry後に別attemptが開始できるが、以前のprocess/sessionは再利用しない。
-- late ResultはOperationの現在versionとlease ownershipが一致しなければcommitしない。
-- Result commitと次transitionはControllerがbindingを検証して行う。WorkerがRun stateを直接進めない。
+## Attempt rules
+
+- 同じ logical Operation の実行は process 内で単一 flight とする。
+- attempt には少なくとも attempt ID、start/end time、provider、exit/error class を telemetry へ記録する。
+- 新しい attempt は以前の provider process / session を再利用しない。
+- Result の commit（record surface への記録と次 transition）は Controller が binding を検証して行う。
+  Worker が phase を直接進めない。
+- process 再起動で進行中の attempt は消える。再観測が同じ phase を導出すれば、新しい fresh attempt と
+  して再実行される。
 
 ## Freshness and mutation
 
-各Operationは開始時にinput artifactのdigest/lengthとschemaを検証する。Task Contextを必要とするOperationは、
-開始時と完了時にlive Issue/authorityを再取得し、claim contextに固定したCompiler versionでTask Contextと
-Context Manifestを再生成する。sourceを変更するOperationは専用worktreeのcurrent headが`headSha`と一致する
-ことも確認する。
+各 Operation は開始時に input payload の digest と schema を検証する。Task Context を必要とする
+Operation は、開始時と完了時に live Issue / authority を再取得し、claim checkpoint に固定した
+Compiler version で Task Context と Context Manifest を再生成する。source を変更する Operation は
+専用 worktree の current head が`headSha`と一致することも確認する。
 
-`finalize_pull_request`と`merge_pull_request`はmodel sessionを持たないが、開始時に同じlive再構築と
-Context Manifest照合を必須とする。final review完了からmergeまでの間にIssueが意味的に編集される窓を
-検出できるのはこの2つのOperationだけであり、mergeは取り消せないmutationだからである。照合は開始時のみで
-よい。完了時にはmutationが確定済みで、staleを検出しても取り消せない。不一致は他のOperationと同じく
-`stale_input`として返す。`publish_head`にはこの照合を要求しない。publish後のstalenessは、次のReview
-Requestが開始時の再構築で検出する。
+`finalize_pull_request`と`merge_pull_request`は model session を持たないが、開始時に同じ live 再構築
+と Context Manifest 照合を必須とする。final review 完了から merge までの間に Issue が意味的に編集
+される窓を検出できるのはこの2つの Operation だけであり、merge は取り消せない mutation だからである。
+照合は開始時のみでよい。完了時には mutation が確定済みで、stale を検出しても取り消せない。不一致は
+他の Operation と同じく`stale_input`として返す。`publish_head`にはこの照合を要求しない。publish 後の
+staleness は、次の Review Request が開始時の再構築で検出する。
 
-再生成した最新のIssue Observation ref、Context Manifest ref、Execution Policy ref、head SHA、input artifact、
-policy refをsemantic comparisonへ渡し、結果に従う。live body digestの不一致だけではstaleと判定しない。
+再生成した最新の Issue Observation ref、Context Manifest ref、Execution Policy ref、head SHA、input
+payload、policy ref を semantic comparison へ渡し、結果に従う。live body digest の不一致だけでは
+stale と判定しない。
 
-- `SameSemanticInput`: Operation identityとquality approvalを維持し、新しいIssue Observationをaudit lineageへ追記して続行する
-- `ChangedSemanticInput`: `stale_input`として返し、どのfieldが変わったかを記録する
+- `SameSemanticInput`: Operation identity と quality approval を維持し、新しい観測を telemetry に
+  残して続行する
+- `ChangedSemanticInput`: `stale_input`として返し、どの field が変わったかを記録する
 
-comparisonはpure functionであり、最新入力を既存Operation、approval、reviewへ書き戻さない。書き戻すと、古いapprovalが新しい入力のapprovalとして黙って再利用される。新しい入力で続けるには新しいOperationを作る。一致したcanonical bytesはそのAttemptのmodel inputにだけ使い、完了後に破棄する。
+comparison は pure function であり、最新入力を既存 Operation、approval、review へ書き戻さない。
+書き戻すと、古い approval が新しい入力の approval として黙って再利用される。新しい入力で続けるには
+新しい Operation を作る。一致した canonical bytes はその Attempt の model input にだけ使い、完了後に
+破棄する。
 
-GitHub mutationを伴う`publish_head`、`finalize_pull_request`、`merge_pull_request`は、repository、Run、Issue、headを含むstable idempotency markerをPR bodyまたは検索可能なmetadataへ記録する。responseを受け取る前にprocessが停止した場合、retry時は既存PRを検索・照合してからcreate/update/mergeする。`merge_pull_request`のretryでは、記録済みidempotency identityとmerge commitの親が期待headであることを照合して自分のmergeを再確認し、identityの無いmerged観測を自分の成功として扱わない。
+GitHub mutation を伴う`publish_head`、`finalize_pull_request`、`merge_pull_request`は、repository、
+Run、Issue、head を含む stable idempotency marker を PR body または marker comment へ記録する。
+response を受け取る前に process が停止した場合、retry 時は既存 PR / comment を検索・照合してから
+create/update/merge する。`merge_pull_request`は mutation 前に merge intent comment（対象 head SHA を
+含む marker）を記録し、retry では記録済み intent と merge commit の親が期待 head であることを照合して
+自分の merge を再確認する。intent の無い merged 観測を自分の成功として扱わない。
 
-Issue Workerだけがimplementation worktree、branch、commit、Pull Requestを変更できる。ControllerはOperationをenqueueできてもmutationを代行しない。
-
-Artifact Storeへpayloadをputする境界は、logical nameだけでなくpayload kindも検証する。`raw-issue-body`、
-`issue-observation`、`task-context`、`context-manifest` kindはcanonical identity計算用の一時payloadであり、
-別のlogical nameを付けても永続化を拒否する。
+Issue Worker だけが implementation worktree、branch、commit、Pull Request を変更できる。Controller は
+Operation を dispatch できても mutation を代行しない。
 
 ## Validation
 
-unknown schema/version、unknown kind、欠落required field、kindに許されないfield combination、digest/bytes不一致をrejectする。invalid payloadをproviderへ渡さず、retry可能なtransport failureにも変換しない。
+unknown schema/version、unknown kind、欠落 required field、kind に許されない field combination、
+digest/bytes 不一致を reject する。invalid payload を provider へ渡さず、retry 可能な transport
+failure にも変換しない。
 
 ### Validation error classification
 
-拒否理由は機械可読なcodeで分類する。Controllerはerror文字列の一致で分岐しない。文字列に依存すると、message表現を変えただけでControllerの分岐が壊れ、逆に分岐を保つためにmessageを固定する必要が生じる。
+拒否理由は機械可読な code で分類する。Controller は error 文字列の一致で分岐しない。文字列に依存
+すると、message 表現を変えただけで Controller の分岐が壊れ、逆に分岐を保つために message を固定する
+必要が生じる。
 
 | code | 意味 |
 | --- | --- |
-| `protocol_schema_unknown` | envelope自身のschemaが既知versionでない、またはversioned refのschema namespace／形式が不正（refのversion部分はopaqueとして保持する） |
-| `protocol_kind_unknown` | Operation kindまたはReview kindが語彙に無い |
-| `protocol_field_missing` | required fieldまたはrefが欠落している |
-| `protocol_field_invalid` | fieldの値が形式規則を満たさない（空のcanonical textを含む） |
-| `protocol_field_duplicate` | 集合として扱うfieldに重複がある |
-| `protocol_field_too_long` | canonical textの上限を超えている |
-| `protocol_kind_constraint` | 個々のfieldは妥当だが、そのkindでは持てないか省略できない |
-| `protocol_identity_mismatch` | 再計算したdigestと参照されたidentityが一致しない |
-| `protocol_outcome_conflict` | 結末の排他規則違反（verdictとfailureの同時保持、verdictとfindingの矛盾等） |
+| `protocol_schema_unknown` | envelope 自身の schema が既知 version でない、または versioned ref の schema namespace／形式が不正（ref の version 部分は opaque として保持する） |
+| `protocol_kind_unknown` | Operation kind または Review kind が語彙に無い |
+| `protocol_field_missing` | required field または ref が欠落している |
+| `protocol_field_invalid` | field の値が形式規則を満たさない（空の canonical text を含む） |
+| `protocol_field_duplicate` | 集合として扱う field に重複がある |
+| `protocol_field_too_long` | canonical text の上限を超えている |
+| `protocol_kind_constraint` | 個々の field は妥当だが、その kind では持てないか省略できない |
+| `protocol_identity_mismatch` | 再計算した digest と参照された identity が一致しない |
+| `protocol_outcome_conflict` | 結末の排他規則違反（verdict と failure の同時保持、verdict と finding の矛盾等） |
 
-この分類はprotocol validation専用であり、Issue Contract parserのclaim rejection codeとは別の値空間である。parserのcodeはIssue bodyの行・section・fieldを指すtext由来の診断であり、protocol validationは解決済みの値に対する判定で行番号を持たない。
+この分類は protocol validation 専用であり、Issue Contract parser の claim rejection code とは別の
+値空間である。parser の code は Issue body の行・section・field を指す text 由来の診断であり、
+protocol validation は解決済みの値に対する判定で行番号を持たない。
 
-いずれのcodeもretry可能なtransport failureではない。protocol validationの失敗はimmutableな入力に対するpermanentな契約違反であり、同じ入力でretryしても結果は変わらない。分類できない失敗をretry可能側の既定へ倒すと、契約違反を無限にretryしうるため、既定はretryしない側とする。
+いずれの code も retry 可能な transport failure ではない。protocol validation の失敗は immutable な
+入力に対する permanent な契約違反であり、同じ入力で retry しても結果は変わらない。分類できない失敗を
+retry 可能側の既定へ倒すと、契約違反を無限に retry しうるため、既定は retry しない側とする。
 
 ### Canonical text limits
 
-canonical textには上限を定める。これらの値はmodel providerの出力に由来し、canonical bytesとPostgreSQL textの両方へそのまま載る。上限が無いと、単一のattemptがrow sizeとdigest計算量を通じて後続の全Operationへ影響しうる。
+canonical text には上限を定める。これらの値は model provider の出力に由来し、canonical bytes と
+record surface の両方へそのまま載る。上限が無いと、単一の attempt が記録先の容量制限と digest 計算量を
+通じて後続の全 Operation へ影響しうる。
 
 | 対象 | 上限 |
 | --- | --- |
-| 複数行本文（attempt failureの`evidence`、findingの`expected`／`observed`） | 65536 byte |
-| 単一行の値（findingの`summary`、artifact manifestの`mediaType`、`externalRefs`の各要素、Execution Policyの各field、repository-relative path） | 1024 byte |
+| 複数行本文（attempt failure の`evidence`、finding の`expected`／`observed`） | 65536 byte |
+| 単一行の値（finding の`summary`、`mediaType`、`externalRefs`の各要素、Execution Policy の各 field、repository-relative path） | 1024 byte |
 
-上限は受理可否だけに影響し、canonical bytesの構成方法とdigestの計算方法を変えない。上限ちょうどの値は受理する。上限超過は`protocol_field_too_long`として分類し、control character混入や空文字による`protocol_field_invalid`と区別する。producer側が本文を切り詰めれば通る失敗と、値そのものが不正な失敗は対処が違う。
+上限は受理可否だけに影響し、canonical bytes の構成方法と digest の計算方法を変えない。上限ちょうどの
+値は受理する。上限超過は`protocol_field_too_long`として分類し、control character 混入や空文字による
+`protocol_field_invalid`と区別する。producer 側が本文を切り詰めれば通る失敗と、値そのものが不正な
+失敗は対処が違う。
 
-`policyRefs`と`authorityRefs`のrepository-relative pathは、canonicalな単一行であることを要求する。改行やcontrol characterを含む値はcanonical bytesとPostgreSQL textの両方へ載るため、protocol層で拒否する。
+`policyRefs`と`authorityRefs`の repository-relative path は、canonical な単一行であることを要求する。
+改行や control character を含む値は canonical bytes と record surface の両方へ載るため、protocol 層で
+拒否する。
 
-`operationId`、`runId`、`attemptId`、`causationId`等のidentifierは、英数字で始まり、英数字と`-`、`_`、`.`だけを含む128文字以内の値とする。Runはworkspaceを持つためidentifierはpath segmentへも載りうる。`.`や`..`のような値をprotocol層で通すと、拒否がfilesystem層まで遅れる。
+`operationId`、`runId`、`attemptId`、`causationId`等の identifier は、英数字で始まり、英数字と`-`、
+`_`、`.`だけを含む128文字以内の値とする。Run は workspace を持つため identifier は path segment へも
+載りうる。`.`や`..`のような値を protocol 層で通すと、拒否が filesystem 層まで遅れる。
 
-versioned refはschemaとdigestの組で検証・比較する。digestが同じでもschemaが異なるrefを同一視しない。ref schemaのversion部分はopaqueに扱い、既知versionでなくても組として保持・比較できるが、envelope自身のschemaは既知versionだけを受理する。
+versioned ref は schema と digest の組で検証・比較する。digest が同じでも schema が異なる ref を
+同一視しない。ref schema の version 部分は opaque に扱い、既知 version でなくても組として保持・比較
+できるが、envelope 自身の schema は既知 version だけを受理する。
 
-Operation/Resultのcanonicalizationとvalidation ruleはfixtureで固定する。protocolを変更する場合、本書、parser、fixture、testを同じchangeで更新する。
+Operation / Result の canonicalization と validation rule は fixture で固定する。protocol を変更する
+場合、本書、parser、fixture、test を同じ change で更新する。

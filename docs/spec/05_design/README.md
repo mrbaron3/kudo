@@ -10,7 +10,7 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 | --- | --- | --- |
 | Component / package architecture | [Architecture](01_architecture.md) | Controller / Worker、port / adapter、永続化、並行性、権限境界 |
 | Workflow / state machine | [End-to-end workflow](02_workflow.md) | Issue 受付から merge 完了までの順序、retry、stale、escalation |
-| Runtime / deployment | [Runtime platform](03_runtime-platform.md) | Compose service、PostgreSQL、volume、secret、backup / recovery |
+| Runtime / deployment | [Runtime platform](03_runtime-platform.md) | 単一container、secret、workspace、復旧運用 |
 | GitHub integration | [GitHub routing policy](04_github-routing.md) | candidate、webhook / polling、label / comment projection |
 | Issue input | [Issue Contract](contracts/issue-contract-v1alpha1.md) | Task Issue の構造と authority semantics |
 | Context compilation | [Task Context Protocol](contracts/task-context-v1alpha1.md) | Observation、Task Context、Manifest、Policy |
@@ -18,13 +18,7 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 | Review messaging | [Implementation–Review Protocol](contracts/review-protocol-v1alpha1.md) | Request / Result、manifest、verdict、staleness |
 | Test review policy | [Test Validity Review Policy](review-policies/test-validity-v1alpha1.md) | RED と test validity の評価観点 |
 | Final review policy | [Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md) | final head の必須 / 条件付き評価観点 |
-| Compose 採用判断 | [ADR-0001](../../adr/0001-compose-runtime.md) | Compose を canonical runtime とする理由と再検討条件 |
-| PR-anchored review | [ADR-0002](../../adr/0002-pr-anchored-review.md) | review を publish 済み draft PR へ繋留する判断 |
-| Review round 上限 | [ADR-0003](../../adr/0003-review-round-limit.md) | 自動修正 loop の上限と escalation policy |
-| 文書の単一ルート | [ADR-0004](../../adr/0004-single-documentation-root.md) | `docs/spec/` への正本集約と protocol path 移行 |
-| 自動 merge | [ADR-0005](../../adr/0005-auto-merge.md) | 承認済み head の自動 merge、完了 terminal、merge gate |
-| Live context再構築 | [ADR-0006](../../adr/0006-live-context-reconstruction.md) | Issue由来YAMLを保存せず、各Operationで再取得・再compileする判断 |
-| ADRの置き場所 | [ADR-0008](../../adr/0008-adr-directory-outside-spec.md) | ADRを`docs/spec/`体系の外の`docs/adr/`に置く判断 |
+| GitHub SSOT / reconciler | [ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md) | GitHubを唯一の正本とし、独自永続層を持たない判断 |
 
 ```text
 05_design/
@@ -43,7 +37,7 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
     └── final-implementation-v1alpha1.md
 ```
 
-ADR は [docs/adr/](../../adr/) に置く（[ADR-0008](../../adr/0008-adr-directory-outside-spec.md)）。
+ADR は [docs/adr/](../../adr/) に置く。
 
 ## 機能設計との分担
 
@@ -65,7 +59,7 @@ ADR は [docs/adr/](../../adr/) に置く（[ADR-0008](../../adr/0008-adr-direct
 - Controller は transition と routing を行い、review judgment や provider session を所有しない。
 - GitHub ingress / polling / API は run-once application operation の薄い adapter に保つ。
 - Issue Worker だけに implementation mutation を許可し、Review Worker は read-only に保つ。
-- PostgreSQL を durable workflow state と queue の正本にし、外部 observability storage で代替しない。
+- GitHub を workflow state の唯一の正本にし、外部 observability storage で代替しない。
 - artifact は content-addressed かつ immutable とし、mutable worktree を role 間で共有しない。
 - interface は利用側に置き、GitHub、process、clock、filesystem、provider、telemetry を fake で検証可能にする。
 - Go standard library を優先し、依存追加は明示的な boundary と理由がある場合に限定する。

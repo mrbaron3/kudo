@@ -1,8 +1,7 @@
 # Kudo 仕様書
 
 Kudo のプロダクト仕様、機能別 Acceptance Criteria、詳細設計、versioned contract、実装計画を格納する、
-リポジトリ内で唯一の文書体系である。文書への入口は本ファイルに集約し、ADR を置く [docs/adr/](../adr/)
-（[ADR-0008](../adr/0008-adr-directory-outside-spec.md)）を唯一の例外として、`docs/spec/` の
+リポジトリ内で唯一の文書体系である。文書への入口は本ファイルに集約し、ADR を置く [docs/adr/](../adr/) を唯一の例外として、`docs/spec/` の
 外に別の正本や補足文書を作らない。
 
 完成形の **Why / What / How** と、現在地を示す project 文書を同じ体系内で分離する。
@@ -71,7 +70,7 @@ docs/
 | 機能ごとの振る舞いと実現方法 | [04. 機能仕様と詳細設計](04_features/) |
 | Issue から merge 完了までの規範的な順序 | [End-to-end workflow](05_design/02_workflow.md) |
 | Controller / Worker の責務と権限 | [Architecture](05_design/01_architecture.md) |
-| Compose、PostgreSQL、volume、secret、復旧運用 | [Runtime platform](05_design/03_runtime-platform.md) |
+| container、secret、workspace、復旧運用 | [Runtime platform](05_design/03_runtime-platform.md) |
 | GitHub candidate、webhook / polling、label | [GitHub routing policy](05_design/04_github-routing.md) |
 | machine-readable protocol | [contracts/](05_design/contracts/) |
 | Review Worker の品質判断基準 | [review-policies/](05_design/review-policies/) |

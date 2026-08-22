@@ -32,7 +32,7 @@ test approval の対象を書き換えて進行してはならない。
 
 Issue Worker は対象 test、必要な regression test、Issue Verification、repository required checks を実行する。
 Task Contextまたはauthorityにperformance boundが宣言されている場合は、Taskが指定する測定commandを固定した条件で複数回実行し、結果要約とbound比較を`performance-evidence`として生成する。bound宣言がない場合、標準harnessを推測して測定を必須化しない。
-各 evidence は command、result、environment、producer、final head とともに Artifact Manifest へ記録する。
+各 evidence は command、result、environment、producer とともに final head の evidence check run へ記録する。
 
 すべての required evidence が揃った後に `publish_head` を実行する。expected branch head と live state を
 照合し、外部 push がある場合は blind overwrite せず stale とする。published final head と PR observation の
