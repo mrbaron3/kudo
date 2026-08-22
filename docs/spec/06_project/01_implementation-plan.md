@@ -23,7 +23,7 @@ target document が完成形を定義していることと、code が完成し�
 
 ## Delivery order
 
-[ADR-0007](../../adr/0007-vertical-slice-delivery.md)により、**milestoneは「完成の定義」であって実行順序の単位ではない**。実行は縦の貫通sliceを単位とし、各milestoneの貫通に必要な最小部分を横断して先に通し、残りを後から幅として戻す。
+**milestoneは「完成の定義」であって実行順序の単位ではない**（2026-08-19決定）。実行は縦の貫通sliceを単位とし、各milestoneの貫通に必要な最小部分を横断して先に通し、残りを後から幅として戻す。
 
 | slice | 到達点 | 開始するmilestone |
 | --- | --- | --- |
@@ -45,7 +45,36 @@ M0とM1は完了扱いのまま変わらない。M2はRunStoreまで到達して
 | M5 | `revise_tests`、`needs_human` escalation / resumption、staleness全経路 |
 | M6 | `repair_implementation`、test mutation detection、required checks統合、PR body validator |
 
-各sliceの範囲は次のとおり定義する（この順序を選んだ理由と実測根拠 → [ADR-0007](../../adr/0007-vertical-slice-delivery.md)）。
+各sliceの範囲は次のとおり定義する（この順序を選んだ理由は「この順序にした理由」節）。
+
+### この順序にした理由
+
+2026-08-19時点（`5815cdf`）で、非テストGo行数6,301のうち`internal/contract`が4,579行（73%）を占める一方、GitHub adapter、provider adapter、Artifact Store、Run workspace、Issue Worker、Review Worker、Controllerはいずれも未実装であり、**Kudoは自身のIssueを1件もPull Requestにしたことがなかった**。11個のversioned protocolはv1alpha1として完成度高く作り込まれていたが、製品境界そのものはまだ動く可能性があった。層ごとに横へ厚く作る順序が、「target documentの完成」と「codeの完成」の混同を構造的に許していた。
+
+contract層を作ったこと自体は誤りではない。canonical encoding、digest規則、identity binding、staleness判定は、後から入れると過去のartifactとdigestが再現しなくなる種類の設計である。結論は「**contract層はもう十分であり、これ以上磨かず動くものへ接続すべき**」の一点であり、これがcontract feature freeze（Delivery rules）の根拠でもある。
+
+**S3到達（人間の見えるdraft PR）をもって、製品境界の疑義を実物に対して再評価する**ことがこの順序の主目的である。S4以降は貫通後の話であり、S3の結果によって順序を組み直してよい。
+
+決定に際して次を検討し、退けた。
+
+- **層ごとのmilestone順（従来）**: 「Issueが1件もPRになっていない」という最大のリスクを解消する時点が最も遅い。文書とコードの完成の混同を構造的に許し続ける。
+- **contract層の追加整備を先に完了させる**: 動きうる製品境界に対して、外部consumerを持たないalpha protocolを磨き続けることになる。貫通で「実際に詰まった箇所」を根拠に変更するほうが精度が高い。
+- **S1〜S5を1つの大きな貫通として一気に通す**: S3で製品境界を再評価する機会を失う。S4以降の内訳はS3の実測を見てから決めるほうが手戻りが小さい。
+
+引き継がれるのは実装コードとartifactであってRun instanceではない。provider adapter実装でExecution Policy digestが変わるとS1のRunは`SemanticInputChanged`でsupersedeされるため、S2はS1のRunを再開せず再claimから始まる。貫通で作るRunは捨てる前提であり、最初のRunが「本物の履歴」にならないことは受け入れる。
+
+**この順序の最大のリスクは、milestone exit criteriaの一部が長期間未達のまま残ることである。** 上の未達台帳の追跡が形骸化すると「動いたから完成」という誤読が起きる。あわせて層ごとの品質が非対称になる（contract層はテスト充実、adapter層は薄いtestで開始）ため、reviewで「同じ厚さ」を期待しない合意が要る。
+
+### この順序を見直す条件
+
+次のいずれかが成立した場合、delivery orderを再検討する。
+
+- S3へ到達しても製品境界の疑義が解消しない。この場合、貫通の対象そのものを再定義する必要がある。
+- 貫通がS1〜S3で到達できず、原因が**contract層の不足**であると判明した。この場合はcontract feature freezeを解く。
+- 貫通の過程で**使われないcontractが体系的に見つかった**。alphaで外部consumerを持たないため削除は可能であり、何を削るかを別途決める。
+- provider CLIのheadless契約（structured output、project doc無効化flag、state directory env）が上流変更で壊れ、session isolationがCLI flagでは実現できなくなった。
+- 幅を戻す段で、exit criteria未達台帳が追跡不能な規模へ膨らんだ。sliceの薄さが過剰であったことを意味する。
+
 
 ### 各sliceの範囲
 
@@ -106,7 +135,7 @@ M0とM1は完了扱いのまま変わらない。M2はRunStoreまで到達して
 
 #### S4 / S5
 
-S3の実測結果を見てから内訳を確定する（[ADR-0007](../../adr/0007-vertical-slice-delivery.md) Revisit conditions）。それまで該当Taskはmilestone Epicに置く。
+S3の実測結果を見てから内訳を確定する。それまで該当Taskはmilestone Epicに置く。
 
 ### 貫通でも落とさないもの
 
@@ -157,7 +186,7 @@ S3の実測結果を見てから内訳を確定する（[ADR-0007](../../adr/000
 
 ### 貫通で必ず踏むcontract空白
 
-contract freeze（[ADR-0007](../../adr/0007-vertical-slice-delivery.md) D2）の例外である。踏んだ実装PRの中で、文書・parser・fixture・testを同時に更新する。
+contract feature freeze（Delivery rules）の例外である。踏んだ実装PRの中で、文書・parser・fixture・testを同時に更新する。
 
 1. **`test-plan` / `red-evidence` / `source-bundle`が`artifactKindRules`に無い。** `requiredOperationOutputs[author_tests]`はこの3本を要求するが、`ArtifactPayload.Validate()`は`protocol_kind_unknown`で弾く。S2の実装前に「opaque kindとして追加する」か「Artifact Storeが`ArtifactPayload`を経由しない別経路を持つ」かを決める。
 2. **checkpoint commitのidentity規則が[contracts/](../05_design/contracts/)に無い。** [Operation Protocol](../05_design/contracts/operation-protocol-v1alpha1.md)の「同じ入力から同じ結果を再生成したattemptは同じcontent identityを持つ」がhead SHA経由で壊れないよう、S2の実装PRと同じchangeで文書化する。
@@ -205,7 +234,7 @@ contract freeze（[ADR-0007](../../adr/0007-vertical-slice-delivery.md) D2）の
 | [M6](https://github.com/mrbaron3/kudo/issues/6) | 未達台帳／S5予定 | #27、#28、#53、#60、#62 |
 | [M7](https://github.com/mrbaron3/kudo/issues/36)、[M8](https://github.com/mrbaron3/kudo/issues/8) | 貫通の影響を受けない | 変更なし |
 
-S4とS5のEpicは作らない。ADR-0007が「S4 / S5の内訳はS3の実測結果を見てから確定する」としているため、S3到達後に切る。それまで該当Taskはmilestone Epicに置く。
+S4とS5のEpicは作らない。S4 / S5の内訳はS3の実測結果を見てから確定するため、S3到達後に切る。それまで該当Taskはmilestone Epicに置く。
 
 Task Issueは必ず1つのEpicに属する。Epic所属は実行順序を作らない——依存のgateは[Issue Contract](../05_design/contracts/issue-contract-v1alpha1.md)のとおり`dependsOn`だけである。
 
@@ -217,7 +246,7 @@ Task Issueは必ず1つのEpicに属する。Epic所属は実行順序を作ら�
 - transport/execution failure と quality verdict を別 type として保つ。
 - model-bearing Operation は常に fresh session factory を通す。
 - 一つの milestone の temporary shortcut を target architecture として文書化しない。貫通slice中に意図して雑にしたものは実装PRと[Evaluation harness — deferred](04_evaluation-harness.md)へ記録し、`architecture.md`や`contracts/`へは書かない。
-- `internal/contract`はfeature freezeする（[ADR-0007](../../adr/0007-vertical-slice-delivery.md) D2）。変更は「貫通で実際に詰まった箇所」だけを理由に行い、網羅性や対称性を理由に追加しない。
+- `internal/contract`はfeature freezeする（根拠は Delivery order の「この順序にした理由」）。変更は「貫通で実際に詰まった箇所」だけを理由に行い、網羅性や対称性を理由に追加しない。
 - Milestone 0以降の実装とintegration testは、host固有のdaemonではなくCompose基盤で再現できる状態を維持する。
 - 各 milestone の merge 前に`mise run check`を通す。
 
@@ -295,7 +324,7 @@ PostgreSQL に authoritative Run state、Operation queue、lease、inbox/outbox 
 
 Webhook と必須 polling fallback を同じ`ReconcileIssue`へ接続し、実行可能な Issue を durable claim する。
 
-実行順序は[ADR-0007](../../adr/0007-vertical-slice-delivery.md)のS1が先行し、webhookとlabel lifecycleの残りは幅を戻す段で満たす。
+実行順序はS1が先行し、webhookとlabel lifecycleの残りは幅を戻す段で満たす。
 
 ### Milestone 3 deliverables
 
@@ -330,7 +359,7 @@ Webhook と必須 polling fallback を同じ`ReconcileIssue`へ接続し、実�
 
 Worker が provider と repository command を安全に実行し、session 間を immutable artifact で handoff できる基盤を作る。
 
-実行順序は[ADR-0007](../../adr/0007-vertical-slice-delivery.md)のS2が先行する。provider session isolation、Artifact Store のlayout / durability / streaming API、checkpoint commit identity は後入れできないため、最小形でも落とさない。
+実行順序はS2が先行する。provider session isolation、Artifact Store のlayout / durability / streaming API、checkpoint commit identity は後入れできないため、最小形でも落とさない。
 
 ### Milestone 4 deliverables
 
@@ -357,7 +386,7 @@ Worker が provider と repository command を安全に実行し、session 間�
 
 Issue claim から test validity approval までの完全な TDD 前半を実装する。
 
-実行順序は[ADR-0007](../../adr/0007-vertical-slice-delivery.md)のS2（RED evidence）、S3（draft PR publish）、S4（test validity review 1 round）に分割される。S3到達が貫通の主目的である。
+実行順序はS2（RED evidence）、S3（draft PR publish）、S4（test validity review 1 round）に分割される。S3到達が貫通の主目的である。
 
 ### Milestone 5 deliverables
 
@@ -383,7 +412,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 
 承認済み test から implementation を完成させ、承認済み head を merge して Task Issue を close する。
 
-実行順序は[ADR-0007](../../adr/0007-vertical-slice-delivery.md)のS5に対応する。
+実行順序はS5に対応する。
 
 ### Milestone 6 deliverables
 
