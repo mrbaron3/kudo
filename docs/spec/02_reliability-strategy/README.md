@@ -57,7 +57,7 @@ test validity が承認された後だけ implementation を開始する。実�
 
 ## 4. Immutable evidence と freshness
 
-期待input identityはPostgreSQLへ固定し、再取得できない主要な証跡だけをcontent-addressed artifactとして
+期待input identityはclaim checkpointとcheck runへ固定し、再取得できない主要な証跡だけをrecord surfaceのpayloadとして
 保存してReview Requestを入力digestへbindする。raw Issue body、Issue Observation、Task Context、Context
 ManifestのYAMLは保存しない。
 
@@ -76,21 +76,21 @@ flowchart LR
     PR --> MG[Compare-and-merge + merged observation]
 ```
 
-Context Manifest、Execution Policy、head commit、Artifact Manifest、policy reference のいずれかが
+Context Manifest、Execution Policy、head commit、input payload、policy reference のいずれかが
 変われば、以前の review result は stale になる。Issue Observation だけが変わり、canonical Task
 Context と Context Manifest が同一なら、その変化は audit lineage への追記であり approval を
 stale にしない。
 
 ## 5. Durable execution と冪等性
 
-PostgreSQL を Run、Operation、attempt、lease、inbox、outbox、review binding の authoritative
+GitHub の record surface（branch、PR、check run、comment、label）を workflow 状態の authoritative
 workflow store とする。GitHub label と comment は durable state の投影であり、workflow の正本ではない。
 
 - webhook と polling は同じ冪等な reconciliation へ集約する。
 - logical Operation と execution attempt を分け、retry で provider session を再利用しない。
 - transition と次 Operation / projection intent を同一 transaction で記録する。
 - branch、commit、Pull Request の mutation 前後で期待値と live state を照合する。
-- lease失効後はstructured claim contextとlive GitHub/sourceから別attemptがcontextを再構築する。
+- process再起動後はclaim checkpointとlive GitHub/sourceから新しいattemptがcontextを再構築する。
 
 transport failure、protocol validation failure、quality verdict は別の結果として保持する。
 通信失敗を `request_changes` に変換せず、review finding を retry 対象の通信失敗として扱わない。
@@ -106,7 +106,7 @@ round 上限を置く。上限は品質基準ではなく、無人区間を有�
 
 ## 7. Scoped concurrency と最小権限
 
-dependency のない Issue は、Issue / Run scoped lease と専用 workspace で並行実行できる。
+dependency のない Issue は、Issue scoped な branch claim と専用 workspace で並行実行できる。
 repository global lock は置かない。一方、同じ Issue に writer-capable な Run を二つ作らず、
 一つの worktree を同時に複数 Worker が変更しない。
 
@@ -118,5 +118,5 @@ repository global lock は置かない。一方、同じ Issue に writer-capabl
 | Issue Worker | implementation worktree、branch、commit、Pull Request |
 | Review Worker | 新しい review evidence / result の追加のみ |
 
-Controller と Review Worker へ Issue Worker workspace や Docker socket を渡さず、artifact の共有は
+Controller と Review Worker へ Issue Worker workspace や Docker socket を渡さず、payload の共有は
 content-addressed かつ immutable に限定する。

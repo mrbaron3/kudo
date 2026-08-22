@@ -2,257 +2,181 @@
 
 ## Decision summary
 
-Kudo の正式な deployment unit は Docker Compose application とする。すべての Kudo application process と PostgreSQL を OCI container で動かし、macOS host 上へ Kudo daemon を直接常駐させない。
+Kudo の deployment unit は単一の`kudo` process を動かす単一の OCI container とする。Docker Compose
+は volume、secret、restart policy の宣言に使う packaging であり、service は一つである。macOS host 上へ
+Kudo daemon を直接常駐させない。
 
-同じ Go binary を mode 別に起動する。role ごとに container、filesystem mount、credential、resource limit を分けるが、別 repository や別 Go module には分割しない。
+Kudo は自前の database も artifact volume も持たない（[ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md)）。
+workflow 状態は GitHub の観測から導出するため、platform が守るべき永続資産は GitHub credential と
+設定だけである。Controller、Issue Worker、Review Worker は同一 process 内の role であり、権限境界は
+container ではなく role-scoped installation token と operation ごとの fresh provider child process で作る。
 
 ## Technology stack
 
 | Concern | Standard |
 | --- | --- |
-| Application | Go 1.26.5、single module、single `kudo` binary |
+| Application | Go 1.26.5、single module、single `kudo` binary、single process |
 | Image | OCI image、`linux/arm64`と`linux/amd64` |
-| Orchestration | Compose Specification、`docker compose` |
+| Orchestration | Compose Specification、`docker compose`（単一 service） |
 | macOS reference host | Docker Desktop 上の Compose |
 | Linux reference host | Docker Engine と Compose plugin |
-| Durable state / queue | PostgreSQL 18.4。18系minorを計画的に更新 |
-| Artifact bytes | local content-addressed filesystem on a named volume |
+| Durable state | GitHub（branch、PR、check run、comment、label）。local には持たない |
 | Source control | Git と GitHub App |
 | Model providers | Codex CLI または Claude Code CLI の headless child process |
 | Logs | JSON structured logs to stdout/stderr |
 | Metrics/traces | OpenTelemetry-compatible export。任意であり workflow state ではない |
 | CI / image distribution | GitHub Actions と GHCR を標準候補とする |
 
-PostgreSQL の image は`18.4`を起点とし、release tag だけで浮動させず実際のCompose fileではmanifest digestもpinする。Kudo imageとprovider CLI versionもimmutable versionで固定し、更新手順を持つ。
+Kudo image と provider CLI version は immutable version で固定し、更新手順を持つ。
 
 ## Delivery order
 
-Composeは完成後に付加するpackagingではなく、最初のimplementation milestoneから開発・testの実行境界として使う。ただし、まだ存在しないControllerやWorkerをdummy processとして先に実装しない。
+Compose は完成後に付加する packaging ではなく、最初の implementation milestone から開発・test の
+実行境界として使う。最初の foundation は次に限定する。
 
-最初のCompose foundationは次に限定する。
+- 現在の Go binary と test を build・実行する non-root application/test image
+- container 内の`mise run check`入口
+- 後続で共有する configuration、workspace volume、network naming
 
-- 現在のGo binaryとtestをbuild・実行するnon-root application/test image
-- PostgreSQL 18.4、healthcheck、named volume、internal network
-- container内の`mise run check`とPostgreSQL integration test入口
-- 後続serviceが共有するconfiguration、volume、network naming
-
-Controller、Issue Worker、Review Worker、migration commandが実装されるたびに同じCompose applicationへserviceを追加する。end-to-end workflow完成後、role別credential、provider CLIを含むworker image、resource/security policy、backup/restore、GHCR releaseをproduction hardeningとして完了する。
-
-この二段階は別runtimeを作ることを意味しない。development foundationとproduction profileは同じDockerfile、Compose project、PostgreSQL/artifact contractを継続利用し、host native daemonへのfallbackを作らない。
-
-## Compose services
-
-正式な Compose model は次の service からなる。
-
-| Service | Command | Replicas | Responsibility |
-| --- | --- | --- | --- |
-| `controller` | `kudo controller` | 通常1、設計上は複数可 | HTTP ingress、polling、reconcile、state transition、dispatch、outbox projection |
-| `issue-worker` | `kudo worker issue` | 1以上 | claim、test、implementation、command、worktree、branch、PR mutation |
-| `review-worker` | `kudo worker review` | 1以上 | test validity / final implementation review |
-| `postgres` | official PostgreSQL 18.4 entrypoint | 1 | workflow state、queue、lease、inbox/outbox、artifact metadata |
-| `migrate` | `kudo migrate up` | one-shot | backward-compatible database migration |
-
-Controller と Worker 間に private HTTP API や message broker を追加しない。PostgreSQL queue と versioned payload が通信境界である。`migrate`の成功と PostgreSQL health を、application service の readiness 条件にする。
-
-概念上の Compose topology は次のとおりである。実際の`compose.yaml`は implementation milestone でこの contract に従って追加する。
-
-```yaml
-services:
-  migrate:
-    image: ghcr.io/mrbaron3/kudo:<immutable-version>
-    command: ["kudo", "migrate", "up"]
-
-  controller:
-    image: ghcr.io/mrbaron3/kudo:<immutable-version>
-    command: ["kudo", "controller"]
-    ports:
-      - "8080:8080"
-
-  issue-worker:
-    image: ghcr.io/mrbaron3/kudo-worker:<immutable-version>
-    command: ["kudo", "worker", "issue"]
-    volumes:
-      - issue-workspaces:/var/lib/kudo/workspaces
-      - artifacts:/var/lib/kudo/artifacts
-
-  review-worker:
-    image: ghcr.io/mrbaron3/kudo-worker:<immutable-version>
-    command: ["kudo", "worker", "review"]
-    volumes:
-      - artifacts:/var/lib/kudo/artifacts
-
-  postgres:
-    image: postgres:18.4
-    volumes:
-      - postgres-data:/var/lib/postgresql
-```
-
-この snippet は topology を示す仕様例であり、そのまま実行可能であることを主張しない。実際のimage referenceにはdigestを追加する。healthcheck、secret、network、read-only root filesystem、resource limit、backupは実装時のcompose fileに必須である。PostgreSQL 18 の official image は PGDATA を`/var/lib/postgresql/18/<dir>`に置き`VOLUME /var/lib/postgresql`を宣言するため、named volume は`/var/lib/postgresql`全体へ mount する。`/var/lib/postgresql/data`を mount すると実データが anonymous volume へ落ちる。
+workflow の実装が進んでも service は増えない。end-to-end workflow 完成後、provider CLI を含む
+image、resource/security policy、GHCR release を production hardening として完了する。
 
 ## Images and toolchains
 
-Controller image は Kudo binary と CA certificate だけを中心にした小さい image とする。Worker image は、Kudo binary、Git、選択した provider CLI、managed repository の required checks に必要な toolchain を含む。
+image は Kudo binary、Git、選択した provider CLI、managed repository の required checks に必要な
+toolchain を含む。対象 repository ごとに toolchain が異なる場合は、共通 image を無制限に肥大化させず、
+Kudo base image を継承した deployment-specific image を build し、一つの deployment に互換 toolchain の
+repository だけを割り当てる。
 
-対象 repository ごとに toolchain が異なる場合は、共通 worker image を無制限に肥大化させない。Kudo worker base image を継承した deployment-specific image を build し、一つの Compose project に互換 toolchain の repository だけを割り当てる。
+runtime に Docker socket を mount して sibling build container を作る設計にはしない。
+Docker-in-Docker も標準にしない。container build 自体が Task の必須要件になる repository は、
+限定された remote builder または専用 runner boundary を別途設計する。
 
-runtime に Docker socket を mount して、Issue Worker が sibling build container を自由に作る設計にはしない。Docker-in-Docker も標準にしない。container build 自体が Task の必須要件になる repository は、限定された remote builder または専用 runner boundary を別途設計する。
+## Filesystem
 
-## Volumes and filesystem authority
+| Filesystem | Rule |
+| --- | --- |
+| issue workspaces | Run scoped clone/worktree。disposable であり、失われたら base と published head から再構築する |
+| review checkout | head SHA から毎回再構築し、Operation 終了時に破棄する ephemeral checkout |
+| operation temp | provider session/state、command temp。handoff に使用しない |
 
-| Volume / filesystem | Mount | Rule |
-| --- | --- | --- |
-| `postgres-data` | PostgreSQLのみ read/write | durable workflow state。定期 backup の対象 |
-| `artifacts` | Issue/Review Workerがappend/read。ControllerはmountせずDB metadataだけ参照 | digest key の write-once bytes。既存内容の変更禁止 |
-| `issue-workspaces` | Issue Workerのみ read/write | Run scoped clone/worktree。Controller/Review Workerはmount禁止 |
-| Review checkout | Review Worker containerのephemeral filesystem | head SHAから毎回再構築し、Operation終了時に破棄 |
-| operation temp | 各Workerのephemeral filesystem | provider session/state、command temp。handoffに使用しない |
-
-workspaceはcrash recoveryのためnamed volumeに置くが、唯一のcheckpointにはしない。重要な段階はcommit、
-source bundle/snapshot artifact、Operation Resultとして固定する。Issue由来contextは保存せず、PostgreSQLの
-structured claim contextとlive GitHub/sourceから再構築する。workspaceを失った場合に、固定commit、evidence
-artifact、remote branch、live contextから安全に再構築できる状態を目指す。
-
-Artifact Storeは複数Workerからappendされるため、temporary fileへの書き込み、fsync、digest/length検証、
-同一filesystem内のatomic renameを使う。対象はtest、patch/source snapshot、command/review evidenceなど
-live sourceから再取得できないbytesに限定し、raw Issue body、Issue Observation、Task Context、Context
-Manifestは保存しない。metadataをPostgreSQLへ登録する前にbytesのdurabilityを確認し、orphan cleanupは
-digest referenceを検証してから行う。
+workspace volume は再起動をまたぐ cache として named volume に置いてよいが、checkpoint にはしない。
+重要な段階は commit（compare-and-push）と record surface（check run / comment）へ固定する。backup は
+不要である。GitHub 側に正本があるため、disaster recovery は「新しい host で起動して再観測する」である。
 
 ## Network
 
-Compose では external ingress と internal service network を分ける。
+- host へ publish する port は webhook/health endpoint だけ。
+- provider session endpoint を公開しない。
+- process は GitHub、provider API、language package registry など必要な outbound access を持つ。
 
-- host へ publish する application port は Controller の webhook/health endpoint だけ。
-- PostgreSQL port は host へ公開しない。
-- Worker は GitHub、provider API、language package registry など必要な outbound access を持つ。
-- Review Worker は GitHub read-only token を使い、Issue Worker の write token を共有しない。
-- service 間で provider session endpoint を公開しない。
+Kudo は既定で`:8080`を listen し、次の endpoint を持つ。
 
-Controller は既定で`:8080`を listen し、次の endpoint を持つ。
-
-- `POST /webhooks/github`: GitHub signature 検証後に inbox へ記録する。application work の完了を待たず、durable acceptance 後に応答する。
+- `POST /webhooks/github`: GitHub signature 検証後に reconcile を trigger する。application work の
+  完了を待たずに応答する。webhook は配送保証がないため、fallback polling が取りこぼしを回収する。
 - `GET /healthz`: process liveness。
-- `GET /readyz`: migration version、PostgreSQL、required configuration を確認する readiness。
+- `GET /readyz`: required configuration と GitHub App 認証を確認する readiness。
 
-public deployment では TLS termination と request size/rate limit を reverse proxy または managed ingress に置く。Webhook secret の検証を TLS termination の代わりにしない。
+public deployment では TLS termination と request size/rate limit を reverse proxy または managed
+ingress に置く。Webhook secret の検証を TLS termination の代わりにしない。
 
 ## Secrets and credentials
 
-secret は image、Git repository、plain environment file に埋め込まない。Compose secrets または権限を制限した read-only file として mount し、`*_FILE` configuration から読む。
+secret は image、Git repository、plain environment file に埋め込まない。Compose secrets または
+権限を制限した read-only file として mount し、`*_FILE` configuration から読む。
 
 最低限、次を分離する。
 
 - GitHub App ID、private key、webhook secret
-- PostgreSQL application/migration credential
 - Codex provider credential
 - Claude provider credential
 
-GitHub は PAT ではなく GitHub App を標準とする。installation token は短命にし、role ごとに必要な permission subset を要求する。
+GitHub は PAT ではなく GitHub App を標準とする。check run の記録は GitHub App でなければ行えず、
+App 所有 check run の改竄不能性が verdict の記録面の前提である。installation token は短命にし、
+role ごとに必要な permission subset だけを要求して operation 単位で発行する。
 
 | Role | GitHub authority |
 | --- | --- |
-| Controller | metadata read、Issues read/write、pull requests read、checks read。label/comment projection、merge完了時のIssue close、merge / finalize gateの外形条件評価用。branch / PR / contentsへのwriteは持たない |
-| Issue Worker | metadata/issues read、contents write、pull requests write、required check read。PRのmergeとhead branch削除を含む |
+| Controller | metadata read、issues read/write、pull requests read、checks write。label / comment / check run の記録と gate の外形条件評価用。contents への write は持たない |
+| Issue Worker | metadata/issues read、contents write、pull requests write。PR の merge と head branch 削除を含む |
 | Review Worker | metadata/issues/contents/pull requests read-only |
 
-credential と provider config directory を Worker 間で共有しない。log、artifact、Review Result に token、private key、credential path を含めない。
+role 間で credential と provider config directory を共有しない。同一 process 内でも、各 operation へ
+渡す token はその role の subset に限定し、provider child process の環境には該当 role の credential
+だけを注入する。log と record surface に token、private key、credential path を含めない。
 
 ## Configuration contract
 
-configuration は command flag より environment / mounted config を基本とし、起動時に strict validation する。少なくとも次を持つ。
+configuration は command flag より environment / mounted config を基本とし、起動時に strict
+validation する。少なくとも次を持つ。
 
 | Key | Meaning |
 | --- | --- |
-| `KUDO_DATABASE_URL_FILE` | role別 PostgreSQL connection string を読む file |
 | `KUDO_REPOSITORIES` | 許可された`owner/repository`一覧 |
 | `KUDO_TARGET_ASSIGNEE` | 既定`mrbaron3` |
 | `KUDO_READY_LABEL` | 既定`ai-ready` |
-| `KUDO_POLL_INTERVAL` | 既定`15m`。正数かつ最低値を検証する。未認証GitHub readは60 req/hour（IP単位）のため、認証を持たない構成で短くしすぎるとclaim用の枠が残らない |
-| `KUDO_ARTIFACT_ROOT` | 既定`/var/lib/kudo/artifacts` |
-| `KUDO_WORKSPACE_ROOT` | Issue Worker専用。既定`/var/lib/kudo/workspaces` |
+| `KUDO_POLL_INTERVAL` | 既定`15m`。正数かつ最低値を検証する |
+| `KUDO_WORKSPACE_ROOT` | 既定`/var/lib/kudo/workspaces` |
 | `KUDO_PROVIDER_ALLOWLIST` | `codex`、`claude`の許可集合 |
-| `KUDO_ISSUE_PROVIDER` | Issue Worker Operationに使うrequired provider。`codex`または`claude` |
-| `KUDO_REVIEW_PROVIDER` | Review Requestに使うrequired provider。`codex`または`claude` |
-| `KUDO_MAX_CONCURRENCY` | role containerごとの同時Operation上限 |
-| `KUDO_OPERATION_TIMEOUT` | Operation kindごとのdeadline policy参照 |
-| `KUDO_ATTEMPT_RETRIES` | Controller専用。一つのlogical Operationで初回後に許す追加Attempt数。既定`3`、許容範囲`1`〜`10` |
-| `KUDO_REVIEW_ROUNDS_TEST_VALIDITY` | Controller専用。`test_validity` gateのreview round上限。既定`3`、許容範囲`1`〜`10` |
-| `KUDO_REVIEW_ROUNDS_FINAL_IMPLEMENTATION` | Controller専用。`final_implementation` gateのreview round上限。既定`3`、許容範囲`1`〜`10` |
+| `KUDO_ISSUE_PROVIDER` | Issue Worker Operation に使う required provider。`codex`または`claude` |
+| `KUDO_REVIEW_PROVIDER` | Review Request に使う required provider。`codex`または`claude` |
+| `KUDO_MAX_CONCURRENCY` | 同時 Operation 上限（in-process semaphore） |
+| `KUDO_OPERATION_TIMEOUT` | Operation kind ごとの deadline policy 参照 |
+| `KUDO_ATTEMPT_RETRIES` | 一つの logical Operation で初回後に許す追加 attempt 数。既定`3`、許容範囲`1`〜`10` |
+| `KUDO_REVIEW_ROUNDS_TEST_VALIDITY` | `test_validity` gate の review round 上限。既定`3`、許容範囲`1`〜`10` |
+| `KUDO_REVIEW_ROUNDS_FINAL_IMPLEMENTATION` | `final_implementation` gate の review round 上限。既定`3`、許容範囲`1`〜`10` |
 
-IssueとReviewに同じproviderを指定してもよいが、session、credential、filesystem、contextはroleごとに分離する。選択したprovider/model/adapter version/tool/timeout policyはRun開始時にExecution Policy artifactとして固定する。attempt retry上限とreview round上限は同じくRun開始時にEscalation Policy artifactとして固定するが、semantic inputではないため値の変更は進行中Runをsupersedeせず、次のclaimから有効になる。
+Issue と Review に同じ provider を指定してもよいが、session、credential、filesystem、context は
+role ごとに分離する。選択した provider/model/adapter version/tool/timeout policy は Run 開始時に
+Execution Policy として固定し、その digest を claim checkpoint へ記録する。attempt retry 上限と
+review round 上限は Escalation Policy として同時に pin するが、semantic input ではないため値の変更は
+進行中 Run を supersede せず、次の claim から有効になる。
 
-secret-specific key と provider-specific setting は adapter 実装時に versioned configuration reference を追加する。unknown key、欠落した required key、不正 duration を warning だけで継続しない。
+タスク種別ごとの model 割り当てなど、設定が構造化されて environment 変数で表現しきれなくなった
+場合は、versioned configuration file または設定用 database の導入を検討する。設定は正本性を持つ
+workflow state ではないため、database の利用は [ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md)
+と矛盾しない。
+
+unknown key、欠落した required key、不正 duration を warning だけで継続しない。
 
 ## Process supervision
 
-Worker は provider CLI と test command を direct child process として起動し、次を保証する。
+Worker role は provider CLI と test command を direct child process として起動し、次を保証する。
 
 - Operation ごとに fresh process、working directory、temporary state を作る。
-- stdout/stderr を bounded streaming capture し、完全版は secret redaction 後に artifact 化する。
+- stdout/stderr を bounded streaming capture し、evidence には secret redaction 後の抜粋を記録する。
 - deadline 超過または shutdown 時は process group へ graceful signal を送り、猶予後に終了させる。
-- child exit と artifact flush が完了するまで Operation を succeeded にしない。
+- child exit と record surface への書き込みが完了するまで Operation を succeeded にしない。
 - invalid structured output と non-zero exit を分類し、review verdict に偽装しない。
-- heartbeat が止まった attempt は lease expiry 後に recovery 対象にする。
 
-長時間動くCompose serviceは`restart: unless-stopped`相当のlifecycle policyを持つ。one-shotの`migrate`にはrestart policyを適用しない。applicationはSIGTERMを受けると新規leaseを停止し、実行中Operationを設定済みgrace period内でcheckpointまたは中断し、leaseを安全に解放する。
-
-## Database migration and compatibility
-
-schema migration は`migrate` service が application 起動前に行う。migration は少なくとも直前の released version から forward upgrade でき、rolling しない単一 host deployment でも backup、migration、application start の順序を固定する。
-
-- destructive migration を application startup に暗黙実行しない。
-- migration 実行前に PostgreSQL backup を取得できる手順を持つ。
-- rolling deployment を行わない現行構成では、binary は適用済み schema version が自身の
-  `CurrentSchemaVersion` と完全一致することを readiness で検証する。
-- queue payload、artifact manifest、Review protocol は schema version を持ち、DB migration だけで無断変換しない。
-
-### Migration runner
-
-migration の適用と履歴管理は [goose](https://github.com/pressly/goose) が担う。「Prefer the Go standard library」の例外として依存を追加したのは、migration runner が version 順序、部分適用からの再開、同時起動の直列化を持つ well-known な boundary であり、自作すると同じ問題を再実装したうえで検証コストを自分で負うことになるためである。SQL は binary へ embed し、`migrate` service は同じ image から起動する。
-
-goose の履歴 table 名は `goose_db_version` とする。慣習名の `schema_migrations` は Rails、Ecto、golang-migrate がいずれも既定で作るため、同一 schema に別 tool の履歴があると存在確認は成功したうえで列の型が合わず、「未初期化」でも「version 不一致」でもない診断不能な失敗になる。
-
-goose の履歴は version 番号だけを持ち、適用済み migration の中身が後から書き換えられたことを runtime では検出できない。この検出は build 時の golden test（`internal/adapter/postgres/migrate_test.go` の `migrationDigests`）が担う。適用済み file を変更すると CI が落ちるため、schema 変更は必ず新しい migration として追加する。
-
-table 名に application prefix は付けない。この database は Kudo 専用である。同居が必要になった場合の分離は identifier ではなく PostgreSQL schema（`CREATE SCHEMA kudo` と `search_path`）で行う。**この分離機構は未実装であり、production の接続設定を作る時点で決める。**
-
-## Backup and recovery
-
-authoritative backup set は PostgreSQL と artifact volume である。issue workspace volume も短期 recovery を速めるため backup 対象にできるが、長期的な正本にはしない。
-
-運用手順は次を検証する。
-
-1. new Operation lease を停止する。
-2. PostgreSQL の整合した backup と artifact snapshot を取得する。
-3. 別の disposable Compose project へ restore する。
-4. artifact digest と metadata reference を検証する。
-5. expired lease を recovery し、二重 PR/projection が発生しないことを確認する。
-
-backup が存在するだけで完了とせず、定期 restore test を行う。
+Kudo service は`restart: unless-stopped`相当の lifecycle policy を持つ。SIGTERM を受けると新規
+Operation の開始を停止し、実行中 Operation を設定済み grace period 内で完了または中断してから
+終了する。中断された Operation は再起動後の再観測で新しい attempt として再実行される。
 
 ## Observability and operations
 
-すべての log に service role、instance、Run ID、Operation ID、attempt、IssueRef を可能な範囲で含める。health は process、readiness は依存関係、workflow alert は durable queue/state から判定する。
+すべての log に Run（PR 番号）、Operation、attempt、IssueRef を可能な範囲で含める。health は
+process、readiness は設定と認証、workflow alert は導出 phase の滞留から判定する。
 
 最低限、次を監視対象とする。
 
-- queued Operation の age と件数
-- lease expiry、retry、terminal execution failure
-- webhook signature failure と inbox lag
-- polling success time、GitHub rate-limit remaining
-- outbox backlog と label/PR projection failure
-- Run phase duration と`needs_human`件数
-- PostgreSQL/volume capacity
+- reconcile の実行時刻、対象件数、失敗
+- webhook signature failure
+- GitHub API の rate-limit remaining と conditional request の hit 率
+- phase 滞留時間と`needs_human`件数
 - provider duration、exit class、rate limit。品質 score とは分離する
+- workspace filesystem capacity
 
 ## Scaling boundary
 
-Compose の同一 host 上で Issue Worker と Review Worker を複数 replica にできる。PostgreSQL queue、scoped lease、workspace ownership が replica 数に依存しない設計にする。
-
-複数 host へ広げる場合は、local named volume と Run workspace ownership が境界になる。その時点で object storage、remote workspace、scheduler を別 ADR で設計する。Kubernetes や external broker を先回りして導入しない。
+同一 repository への Kudo instance は一つとする。並行度は`KUDO_MAX_CONCURRENCY`と host resource の
+増強で上げる。複数 instance、複数 host、外部 queue が必要になった場合は
+[ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md) の revisit conditions に該当するため、
+新しい ADR で設計する。Kubernetes や external broker を先回りして導入しない。
 
 ## Apple Container compatibility
 
-Apple Container は正式 orchestrator には採用しない。ただし Kudo image は OCI-compliant な`linux/arm64` image として build し、基本 command の compatibility test 対象にできる。将来、macOS 固有の per-Operation sandbox として使う場合も、Controller workflow へ runtime 固有 command を埋め込まず、Worker 内の Sandbox Runner adapter として追加する。
-
-判断の根拠と再検討条件は [ADR-0001](../../adr/0001-compose-runtime.md) を参照する。
+Apple Container は正式 orchestrator には採用しない。ただし Kudo image は OCI-compliant な
+`linux/arm64` image として build し、基本 command の compatibility test 対象にできる。将来、macOS
+固有の per-Operation sandbox として使う場合も、workflow へ runtime 固有 command を埋め込まず、
+Worker 内の Sandbox Runner adapter として追加する。

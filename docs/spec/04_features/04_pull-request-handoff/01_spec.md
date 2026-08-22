@@ -22,7 +22,7 @@ finalize gate、merge gate、Pull Request mutation、完了 projection の実現
 **事前条件**
 
 - Test Validity Review と Final Review がいずれも `approve` である。
-- final head、required checks の evidence、Pull Request reference が durable state に固定されている。
+- final head への verdict / evidence check run と Pull Request reference が record surface に固定されている。
 
 **受け入れ基準**
 
@@ -175,10 +175,10 @@ finalize gate、merge gate、Pull Request mutation、完了 projection の実現
   - Then Task Issue が close され、`ai-in-progress` を外して `ai-merged` が投影される。closing keyword で
     既に close 済みの場合は no-op として成功にする。
 
-- **回復系: Projection Failure**
+- **回復系: 記録の失敗**
   - Given merge completion 後に label、comment、close の更新が一時的に失敗する。
-  - When outbox projection を再試行する。
-  - Then 成立済みの merge と completion は巻き戻されず、同じ状態が重複なく投影される。
+  - When 次の reconcile が記録を再試行する。
+  - Then 成立済みの merge と completion は巻き戻されず、同じ状態へ重複なく収束する。
 
 - **境界: Release と Revert の非実行**
   - Given merge が成立している。
@@ -201,7 +201,6 @@ finalize gate、merge gate、Pull Request mutation、完了 projection の実現
 ## 参照する正本
 
 - [End-to-end workflow](../../05_design/02_workflow.md) §7–8
-- [ADR-0005](../../../adr/0005-auto-merge.md) — merge gate、failure routing、完了 terminal
 - [GitHub routing policy](../../05_design/04_github-routing.md) — Merge completion
 - [Architecture](../../05_design/01_architecture.md) — Mutation authority
 - [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)

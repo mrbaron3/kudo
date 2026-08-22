@@ -25,7 +25,7 @@ ControllerはTask Context / Context Manifestの期待digest、base / head、Exec
 作り、repository が規定する command を実行する。
 
 RED evidence は command、exit status、bounded output、environment identity、対象 head を含み、
-Artifact Manifest から一意に参照できるようにする。RED の因果を確認できない Result は publish や
+record surface から一意に参照できるようにする。RED の因果を確認できない Result は publish や
 review の入力として受理しない。
 
 ## Publish と Review binding
@@ -34,7 +34,7 @@ Issue Worker の `publish_head` は expected head と live branch head を照合
 draft Pull Request を冪等に ensure する。Controller は published head、PR reference、PR observation が
 durable に記録された後にだけ Review Request を発行する。
 
-Review Request は exact head、Context Manifest、Execution Policy、Artifact Manifest、policy ref へ bind する。
+Review Request は exact head、Context Manifest、Execution Policy、required inputs、policy ref へ bind する。
 Review Worker は live Issue / PR freshness を決定論的に照合した後、disposable read-only checkout と fresh
 provider session で [Test Validity Review Policy](../../05_design/review-policies/test-validity-v1alpha1.md) を適用する。
 

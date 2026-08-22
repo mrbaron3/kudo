@@ -21,7 +21,7 @@ Operation、artifact binding、review isolation の実現方法は [詳細設計
 
 **事前条件**
 
-- Claimが成功し、Task Context / Context Manifestの期待digest、Compiler version、base SHAがstructured claim contextへ固定されている。
+- Claimが成功し、Task Context / Context Manifestの期待digest、Compiler version、base SHAがclaim checkpointへ固定されている。
 - Issue Worker が Run 専用 worktree を使用できる。
 
 **受け入れ基準**
@@ -66,7 +66,7 @@ Operation、artifact binding、review isolation の実現方法は [詳細設計
 **完了条件**
 
 - 自動テスト: AC traceability / production差分拒否 / fresh session / revision input を検証する。
-- 証跡: test plan、test patch、test-only commit が同じ Artifact Manifest から参照できる。
+- 証跡: test plan、RED evidence が test head へ束縛された record surface（check run / comment）から参照できる。
 
 ## 4.2.2. RED Evidence
 
@@ -150,7 +150,7 @@ Operation、artifact binding、review isolation の実現方法は [詳細設計
   - Then `needs_human` Result が固定され、implementation は開始されない。
 
 - **鮮度: Head または Manifest の変更**
-  - Given Request 作成後に head、Context Manifest、Execution Policy、Artifact Manifest、policy ref のいずれかが変わる。
+  - Given Request 作成後に head、Context Manifest、Execution Policy、input payload、policy ref のいずれかが変わる。
   - When review 前提を照合する。
   - Then 以前の approval を再利用せず、品質 verdict と区別した stale result になる。
 
@@ -181,4 +181,3 @@ Operation、artifact binding、review isolation の実現方法は [詳細設計
 - [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)
 - [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)
 - [Test Validity Review Policy](../../05_design/review-policies/test-validity-v1alpha1.md)
-- [ADR-0002](../../../adr/0002-pr-anchored-review.md)

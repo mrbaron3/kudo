@@ -1,7 +1,7 @@
 # 4.1. Issue 受付・Contract 検証・Claim 受け入れ要件
 
 [03. システム仕様](../../03_system-spec/) F-01 / F-02 に対する Why / What の受け入れ基準である。
-component、transaction、lease、adapter の実現方法は [詳細設計](02_design.md) で扱い、protocol field と
+component、adapter の実現方法は [詳細設計](02_design.md) で扱い、protocol field と
 canonical encoding は versioned contract を正本とする。
 
 ## サブ機能一覧
@@ -153,7 +153,7 @@ canonical encoding は versioned contract を正本とする。
 - **回復系: Status 投影失敗**
   - Given Run と claim が durable に確定した後、GitHub label 更新が一時的に失敗する。
   - When projection を再試行する。
-  - Then Run は巻き戻されず、outbox から `ai-in-progress` への投影が冪等に再送される。
+  - Then Run は巻き戻されず、次の reconcile が `ai-in-progress` の記録を冪等に収束させる。
 
 - **異常系: Authority または Base の競合**
   - Given authority の内容が整合しない、または期待 base と live base が一致しない。

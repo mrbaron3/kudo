@@ -34,7 +34,7 @@ Kudoがclaimできるのは、[GitHub routing policy](../04_github-routing.md)�
 - code fenceはbacktickまたはtildeを3個以上使って開き、同じ文字を同じ長さ以上並べたinfo stringを持たない列0の行だけが閉じる。
 - HTML commentは行全体がcommentである行だけに書く。可視内容と同一行に混在させない。inline code spanも可視内容であり、`` `AGENTS.md` <!-- 補足 --> ``のように可視内容がcode spanだけの行も混在として扱う。
 - inline code spanとHTML commentは、同一行では先に現れた側が優先される。code spanが先ならその内側の`<!--`はHTML commentではなく通常の本文として扱い、`<!--`が先ならその内側のbacktickはcode spanを開かない（commentは`-->`で閉じる）。
-- 本文にcontrol characterを含めない。改行（LFまたはCRLF）とTABだけを許可し、NUL、ESC、単独のCR、DELを含むその他のC0 controlはclaim rejectionとする。これらはcanonical artifactとPostgreSQLのtext / jsonbへ格納できず、受理すると失敗がcompile後の保存時点まで遅れる。
+- 本文にcontrol characterを含めない。改行（LFまたはCRLF）とTABだけを許可し、NUL、ESC、単独のCR、DELを含むその他のC0 controlはclaim rejectionとする。これらはcanonical bytesとrecord surfaceへ格納できず、受理すると失敗がcompile後の記録時点まで遅れる。
 
 ## Contract block
 
@@ -158,7 +158,7 @@ claim operationはrepository identityとIssue numberを入力にし、次を行�
 3. native relationshipとContract blockを照合する
 4. parent identity、dependency completion、authority referenceを解決する
 5. base commitを固定し、referenceごとのdigestを計算する
-6. Compiler version、Issue Observation / Task Context / Context Manifestのref、body digest、base SHAをstructured claim contextとしてPostgreSQLへ固定する
+6. Compiler version、Issue Observation / Task Context / Context Manifestのref、body digest、base SHAをclaim checkpointとしてdraft PR bodyのmachine blockへ固定する
 7. model-bearing Worker Operationの開始時と完了時にIssueとauthorityを再取得・再compileし、Task Context / Context Manifest refがclaim contextと一致することを検証する
 
 ### Issue Observation and Task Context

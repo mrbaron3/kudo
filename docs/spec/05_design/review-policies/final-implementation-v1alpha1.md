@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`final_implementation` reviewで、承認済みテストとIssue Contractに対してfinal headが正しく、回帰、scope逸脱、重大なriskを残していないかを判定する標準観点を定義する。本policyはPRのready化（draft解除）とmergeの前に置く独立quality gateである。approveはmerge gateの品質側条件であり、live headの一致、required check、conflict、branch protectionという外形条件は[ADR-0005](../../../adr/0005-auto-merge.md)に従いControllerとIssue Workerが判定する。reviewerにmergeの可否そのものを判断させない。release、deploy、merge後のrevert判断は代替しない。
+`final_implementation` reviewで、承認済みテストとIssue Contractに対してfinal headが正しく、回帰、scope逸脱、重大なriskを残していないかを判定する標準観点を定義する。本policyはPRのready化（draft解除）とmergeの前に置く独立quality gateである。approveはmerge gateの品質側条件であり、live headの一致、required check、conflict、branch protectionという外形条件は[workflow.md](../02_workflow.md)に従いControllerとIssue Workerが判定する。reviewerにmergeの可否そのものを判断させない。release、deploy、merge後のrevert判断は代替しない。
 
 ## Applicability and binding
 
@@ -34,7 +34,7 @@ live Issueの取得とTask Context / Context Manifest identityの照合はfreshn
 
 Review handlerはsemantic reviewを開始する前に、少なくとも次を検証する。
 
-- Review Request、Context Manifest、Execution Policy、Artifact Manifest、final headのbindingが一致する。
+- Review Request、Context Manifest、Execution Policy、required inputs、final headのbindingが一致する。
 - live Issue/authorityから再生成したTask Context / Context Manifest identityがclaim時の期待digestと一致する。
 - approved test validity Resultが同じIssue context、test-only head、test artifactへbindされている。
 - approved test、fixture、helper、test commandに変更がある場合、その版に対するtest validity approvalが存在する。

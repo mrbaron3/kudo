@@ -1,7 +1,7 @@
 # 4.5. Retry・Recovery・Human Escalation 受け入れ要件
 
 [03. システム仕様](../../03_system-spec/) F-08 に対する Why / What の受け入れ基準である。
-Operation、Attempt、lease、error routing、resumption の実現方法は [詳細設計](02_design.md) で扱う。
+Operation、Attempt、error routing、resumption の実現方法は [詳細設計](02_design.md) で扱う。
 
 ## サブ機能一覧
 
@@ -56,17 +56,17 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
   - Given unsupported version、missing required field、unknown kind、ref/digest不一致等を、immutable inputのbinding boundaryで検出する。
   - When protocol validation errorを処理する。
   - Then provider invalid outputまたはtransport failureへ読み替えず、Worker Result / AttemptFailureとして受理しない。
-  - And `ProtocolError`をdurable evidenceとして記録し、retry budgetを消費せずOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ遷移させる。
+  - And `ProtocolError`をevidenceとして記録し、retry budgetを消費せずOperationを`failed_terminal`とし、Runを`protocol_validation_failed`の`needs_human`へ遷移させる。
 
 - **上限: Retry Budget 超過**
   - Given 同じ logical Operation が retry budget を使い切っている。
   - When 再び retryable failure が発生する。
-  - Then 無限再試行せず、停止理由と attempts の evidence が durable に残る。
+  - Then 無限再試行せず、停止理由が escalation comment に、attempts の evidence が telemetry に残る。
   - And human escalationで無人区間counterを0へ戻しても、Attempt lineageと生涯Attempt数は保持する。
 
 **非機能要件**
 
-- 回復性: retry は process-local counter ではなく durable Attempt history に基づく。
+- 回復性: 再実行は保存した状態ではなく、record surface の再観測から導出する。
 - 安全性: 同じ input identity の retry だけを許可する。
 - 可観測性: Operation、Attempt、error class、backoff、terminal reason を追跡できる。
 
@@ -85,25 +85,25 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 
 **事前条件**
 
-- Run、structured claim context、Operation、Attempt、lease、commit、artifact referenceがdurableに記録されている。
+- claim checkpoint、commit、evidence / verdict が record surface（PR、check run、comment）に記録されている。
 - 外部 mutation に stable identity と expected state がある。
 
 **受け入れ基準**
 
-- **回復系: Lease Expiry 後の再取得**
-  - Given Operation 実行中に worker process が停止し、heartbeat が途絶える。
-  - When lease が期限切れになり reaper が処理する。
-  - Then 別の eligible worker が同じ Operation を新しい Attempt として取得できる。
+- **回復系: Process 停止後の再実行**
+  - Given Operation 実行中に process が停止する。
+  - When restart 後の再観測が同じ phase を導出する。
+  - Then 同じ logical Operation が新しい fresh Attempt として再実行される。
 
 - **再構築: Immutable Checkpoint**
   - Given 以前の provider process と mutable memory が失われている。
   - When 新しい Attempt を開始する。
-  - Then structured claim context、live GitHub/source、commit、Execution Policy、artifact referenceから必要な入力を再構築し、期待digestとの一致を確認する。
+  - Then claim checkpoint、live GitHub/source、commit、Execution Policy、record surfaceのpayloadから必要な入力を再構築し、期待digestとの一致を確認する。
 
-- **整合性: State Commit 後の停止**
-  - Given durable transition は commit 済みだが、次の dispatch または GitHub projection 前に process が停止する。
+- **整合性: 記録後の停止**
+  - Given record surface への記録は完了しているが、次の dispatch 前に process が停止する。
   - When Controller が再起動する。
-  - Then 確定済み state を正として dispatch / outbox を再開し、前 phase へ巻き戻らない。
+  - Then 再観測が記録済みの状態から同じ phase を導出し、前 phase へ巻き戻らない。
 
 - **冪等性: Mutation 結果不明**
   - Given GitHub mutation 後、response 受信前に connection が切れる。
@@ -111,20 +111,20 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
   - Then live state で desired mutation の成立を確認してから再実行し、副作用を重複させない。
 
 - **異常系: Immutable Input の欠損**
-  - Given recovery に必要な commit または artifact digest を取得できない。
+  - Given recovery に必要な commit または record surface の payload を取得できない。
   - When Attempt を再構築する。
   - Then 推測した入力で継続せず、terminal failure または human escalation として停止する。
 
 **非機能要件**
 
-- 永続性: PostgreSQL を workflow state と queue の正本にする。
-- 完全性: artifact は content-addressed かつ write-once とする。
-- 可観測性: crash 前後の lease owner、checkpoint、Attempt lineage を追跡できる。
+- 永続性: GitHub の record surface を workflow state の正本にする。
+- 完全性: gate に使う記録は App 所有 check run の digest と照合できる。
+- 可観測性: crash 前後の checkpoint と Attempt lineage を telemetry で追跡できる。
 
 **完了条件**
 
 - 障害テスト: state commit 前後、external mutation 前後、Result保存前後の停止を検証する。
-- 自動テスト: lease expiry 後の再取得が同じ logical Operation に収束する。
+- 自動テスト: process 停止後の再実行が同じ logical Operation に収束する。
 
 ## 4.5.3. Human Escalation と再開
 
@@ -154,12 +154,12 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 
 - **再開: Resume Identity が同一**
   - Given 人間が必要な対応を行い、`ai-ready`を再付与する。
-  - When reconciliationが停止時の`ContextManifestRef`、`ExecutionPolicyRef`、停止phase、該当head、`ArtifactManifestRef`、ordered `policyRefs`、Pull Request ref、既存approval bindingから成るResume Identityを再構築し、live stateと比較する。
+  - When reconciliationが停止時の`ContextManifestRef`、`ExecutionPolicyRef`、停止phase、該当head、ordered `policyRefs`、Pull Request ref、既存approval binding（verdict check run）から成るResume Identityを再構築し、live stateと比較する。
   - Then 全fieldが同一の場合だけ、安全な停止phaseへ同じRunをresumeし、attempt retryとreview roundの無人区間counterは満額から再開する。
-  - And Issue ObservationまたはPull Request Observationだけの差分はaudit lineageへ追記し、Resume Identityを変えない。
+  - And Issueのraw bodyだけの非意味的差分はtelemetryへ記録し、Resume Identityを変えない。
 
 - **再開: Semantic Input または Checkpoint が変更**
-  - Given Context Manifest、Execution Policy、head、artifact manifest、policy ref、Pull Request ref、approval bindingのいずれかが変更されている。
+  - Given Context Manifest、Execution Policy、head、input payload、policy ref、Pull Request ref、approval bindingのいずれかが変更されている。
   - When `ai-ready` 再付与後に reconciliation する。
   - Then semantic inputが変わり新しいvalid inputを構築できる場合は旧Runをsupersededとし、新しいRunとreview lineageを作り、以前のapprovalを移さない。
   - And intentに紐付かない外部close/merge等で安全なcheckpointを構築できない場合は同じRunをresumeせず、`needs_human`のまま停止する。
@@ -167,7 +167,7 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 - **排他: Concurrent Resumption**
   - Given 複数 trigger が paused Run の再開を同時に試みる。
   - When resume / supersede を確定する。
-  - Then 同じ Issue に writer-capable Run が二つ存在しない。
+  - Then 同じ Issue に active Run（open な kudo branch / PR）が二つ存在しない。
 
 - **境界: 明示操作なしの再開防止**
   - Given Issue が `ai-needs-human` のままである。
@@ -188,6 +188,5 @@ Operation、Attempt、lease、error routing、resumption の実現方法は [詳
 ## 参照する正本
 
 - [End-to-end workflow](../../05_design/02_workflow.md) — Durable states、Escalation and resumption、Recovery
-- [Architecture](../../05_design/01_architecture.md) — Queue、lease、recovery
+- [Architecture](../../05_design/01_architecture.md) — Recovery and failure taxonomy
 - [Worker Operation Protocol](../../05_design/contracts/operation-protocol-v1alpha1.md)
-- [ADR-0003](../../../adr/0003-review-round-limit.md)

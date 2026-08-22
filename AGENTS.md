@@ -23,22 +23,23 @@ Use deterministic unit tests with fakes at GitHub, process, clock, filesystem, m
 - Keep GitHub polling, webhook, and API code as thin adapters around run-once application operations.
 - Only the Issue Worker may mutate the implementation worktree, branch, or pull request.
 - The Review Worker is read-only and returns a versioned verdict for immutable inputs.
-- The Controller validates transitions and routes artifacts; it does not replace review judgment.
+- The Controller derives phases from observations, validates transitions, and records results; it does not replace review judgment.
 - Treat the Task Issue as the execution-context root. Parent Issues are hierarchy, dependencies are readiness gates, and neither contributes prose or session context unless the Task explicitly declares it as authority.
 - Implementation and review may run in the same OS process, but must not share mutable worktrees, provider sessions, conversational memory, or application-private state.
-- Start a fresh provider session for every model-bearing worker operation and pass only explicit Issue context, versioned results, and immutable artifact references across operations.
-- Allow dependency-free ready Issues to run concurrently in isolated Runs. Scope claims and execution leases to an Issue or Run; do not serialize the repository with a global lock.
+- Start a fresh provider session for every model-bearing worker operation and pass only explicit Issue context, versioned results, and digest-verified payload references across operations.
+- Allow dependency-free ready Issues to run concurrently in isolated Runs. Scope claims to an Issue via atomic branch creation; do not serialize the repository with a global lock.
 - Prefer one Go module and one deployable binary until measured constraints justify another boundary.
 - Prefer the Go standard library. Add dependencies only at explicit boundaries and explain why.
-- Use Docker Compose as the canonical runtime. Run the same binary as separate Controller, Issue Worker, Review Worker, and migration containers, with PostgreSQL as authoritative workflow state and queue.
-- Do not mount the Docker socket or the Issue Worker workspace into Controller or Review Worker containers. Artifact sharing must remain content-addressed and immutable.
+- GitHub is the single source of truth. Kudo is a stateless reconciler in one process with no application database and no artifact store: derive workflow state from GitHub observations (branch, PR, check runs, comments, labels) and fence mutations with GitHub CAS primitives (ref create, compare-and-push, SHA-conditioned merge).
+- Record evidence and review verdicts as App-owned check runs and finding comments through the Controller. Comments and PR bodies are human-editable, so gate decisions must verify digests against App-owned check runs.
+- Do not mount the Docker socket. Run as a single container; local disk is a disposable workspace, never authoritative state.
 
 ## Contract discipline
 
 - Treat files under `docs/spec/05_design/contracts/` as protocol baselines. Change documentation, parsing, and tests together.
 - Reject missing or ambiguous required input; do not infer contract fields from conversational context.
 - Keep transport failures separate from review verdicts.
-- A changed Context Manifest, Execution Policy, commit, artifact manifest, or policy reference makes the previous review result stale. A changed Issue Observation alone does not: it is audit lineage, not semantic input.
+- A changed Context Manifest, Execution Policy, commit, input payload, or policy reference makes the previous review result stale. A changed Issue Observation alone does not: it is audit information, not semantic input.
 
 ## コードコメント
 

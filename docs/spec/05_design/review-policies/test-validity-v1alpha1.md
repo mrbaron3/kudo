@@ -36,7 +36,7 @@ Review handlerはsemantic reviewの開始時と完了時に、Request binding、
 Issue/authorityの再compile結果を検証する。欠落、破損、別head、stale inputはfindingで補わず、protocol、
 staleness、execution上の失敗を区別して返す。
 
-保存されたRED evidenceの内容が期待するREDを示すかは品質判断である。commandが実行済みというmetadataだけを理由にapproveしない。
+記録されたRED evidenceの内容が期待するREDを示すかは品質判断である。commandが実行済みというmetadataだけを理由にapproveしない。
 
 ### 2. Contract traceability and scope
 

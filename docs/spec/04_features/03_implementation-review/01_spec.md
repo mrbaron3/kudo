@@ -120,7 +120,7 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
 **完了条件**
 
 - 自動テスト: GREEN / refactor後の再検証 / check failure / evidence不足に加え、bound宣言時の`performance-evidence`必須化を検証する。
-- 証跡: final head、GREEN、required checks、条件付き`performance-evidence`が一つの Artifact Manifest へ bind される。
+- 証跡: GREEN、required checks、条件付き`performance-evidence`が final head の evidence check run へ bind される。
 
 ## 4.3.3. Final Review
 
@@ -150,7 +150,7 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
 - **再評価: Repair 後の Head**
   - Given `request_changes` に対応して production code が修正された。
   - When checks と publish が完了する。
-  - Then 新しい head と Artifact Manifest に対する別の final review が必須となる。
+  - Then 新しい head と evidence に対する別の final review が必須となる。
 
 - **停止系: Needs Human**
   - Given authority conflict または自動化の判断境界を越える residual risk がある。
@@ -183,4 +183,3 @@ implementation lane、evidence binding、review routing の実現方法は [詳�
 - [End-to-end workflow](../../05_design/02_workflow.md) §5〜§6
 - [Implementation–Review Protocol](../../05_design/contracts/review-protocol-v1alpha1.md)
 - [Final Implementation Review Policy](../../05_design/review-policies/final-implementation-v1alpha1.md)
-- [ADR-0002](../../../adr/0002-pr-anchored-review.md)

@@ -1,7 +1,7 @@
 # 4.6. Dependency・並行実行・冪等性 受け入れ要件
 
 [03. システム仕様](../../03_system-spec/) F-09 に対する Why / What の受け入れ基準である。
-dependency graph、constraint、lease、stable identity の実現方法は [詳細設計](02_design.md) で扱う。
+dependency graph、GitHub CAS、stable identity の実現方法は [詳細設計](02_design.md) で扱う。
 
 ## サブ機能一覧
 
@@ -60,7 +60,7 @@ dependency graph、constraint、lease、stable identity の実現方法は [詳�
 
 - 決定性: 同じ dependency graph と live completion state から同じ readiness result を得る。
 - 可観測性: blocked edge と capacity wait reason を区別して追跡できる。
-- 拡張性: dependency-free Issue の数を一つの global queue lock で直列化しない。
+- 拡張性: dependency-free Issue の数を一つの global lock で直列化しない。
 
 **完了条件**
 
@@ -78,14 +78,14 @@ dependency graph、constraint、lease、stable identity の実現方法は [詳�
 **事前条件**
 
 - 各 Task の readiness が確定している。
-- Run、Operation、workspace に scoped identity と lease がある。
+- Run、Operation、workspace に scoped identity がある。
 
 **受け入れ基準**
 
 - **正常系: 独立 Issue の並行実行**
   - Given dependency のない複数の ready Issue がある。
   - When configured capacity に空きがある。
-  - Then それぞれが異なる Run、lease、workspace を持ち、同時に実行できる。
+  - Then それぞれが異なる Run（branch / PR）、workspace を持ち、同時に実行できる。
 
 - **排他: 同一 Issue の Run**
   - Given 同じ IssueRef に複数の claim request がある。
@@ -94,8 +94,8 @@ dependency graph、constraint、lease、stable identity の実現方法は [詳�
 
 - **排他: 同一 Run の Operation**
   - Given 同じ Run に複数の state-advancing Operation が同時に eligible になる。
-  - When worker が lease を取得する。
-  - Then 同時に一つだけが state を進め、obsolete Result は current state を上書きしない。
+  - When dispatch を行う。
+  - Then 同時に一つだけが実行され、obsolete Result は current state を上書きしない。
 
 - **隔離: Worktree と Review**
   - Given 複数 Run の implementation と review が並行している。
@@ -110,13 +110,13 @@ dependency graph、constraint、lease、stable identity の実現方法は [詳�
 **非機能要件**
 
 - 隔離性: worktree、provider session、private state、write credential を Run / role 間で共有しない。
-- 整合性: process-local lock ではなく durable constraint と lease を排他の根拠にする。
-- 可観測性: capacity、lease owner、Run / Operation identity を追跡できる。
+- 整合性: 破壊を防ぐ排他の根拠は GitHub の CAS（ref create、compare-and-push、SHA 指定 merge）に置く。
+- 可観測性: capacity、Run / Operation identity を追跡できる。
 
 **完了条件**
 
 - 並行テスト: 異なる Issue が同時進行し、同じ Issue / Run は排他されることを検証する。
-- 境界テスト: Review Worker が implementation workspace volume を参照できないことを確認する。
+- 境界テスト: Review Worker が implementation workspace を参照できないことを確認する。
 
 ## 4.6.3. Idempotency と外部干渉
 
@@ -128,7 +128,7 @@ dependency graph、constraint、lease、stable identity の実現方法は [詳�
 
 **事前条件**
 
-- inbox、reconciliation、Operation、GitHub mutation、projection に stable identity がある。
+- reconciliation、Operation、GitHub mutation、記録に stable identity（marker）がある。
 - mutation input に expected live state と desired state が含まれている。
 
 **受け入れ基準**
@@ -139,9 +139,9 @@ dependency graph、constraint、lease、stable identity の実現方法は [詳�
   - Then 一つの logical trigger / Run result に収束する。
 
 - **冪等性: Duplicate Dispatch**
-  - Given 同じ Operation identity が timeout または queue redelivery で複数回配信される。
+  - Given 同じ Operation identity が timeout または再観測で複数回 dispatch される。
   - When Worker が Result を確定する。
-  - Then 同じ input に対する terminal Result は一つだけ記録され、副作用を重複させない。
+  - Then 同じ input に対する記録は marker により一つへ収束し、副作用を重複させない。
 
 - **冪等性: GitHub Mutation の再試行**
   - Given branch push、Pull Request ensure、body update、または status projection の response が失われる。

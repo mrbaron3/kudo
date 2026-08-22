@@ -10,7 +10,7 @@ strict parse済みのTask Issueから、GitHub上で観測したexactな本文�
 
 authority、dependency completion、base commitはCompilerの外で解決し、`kudo.context-manifest/v1alpha1`の
 canonical identityを計算する。claim時はCompiler version、各schema/digest、body digest、base SHAを
-PostgreSQLのstructured claim contextへ固定する。raw bodyとIssue Observation / Task Context / Context
+claim checkpoint（draft PR bodyのmachine block）へ固定する。raw bodyとIssue Observation / Task Context / Context
 Manifestのcanonical YAMLは保存せず、Task Contextを必要とする各Operationがlive sourceから再生成する。
 provider/model/adapter/tool/timeoutの選択は`kudo.execution-policy/v1alpha1`へ、Controllerが自動継続をやめるまでの予算は`kudo.escalation-policy/v1alpha1`へ固定する。
 
@@ -23,7 +23,7 @@ Compilerの入力は次の二つだけである。
 
 Compilerは`kudo.issue/v1alpha1`のContract field、H2 section title、Acceptance Criterionを解釈する唯一のapplication-facing boundaryである。Controllerはparserの`Task`、`Contract`、section titleを読まない。Issue WorkerとReview Workerは独自parserを持たず、各Operationで同じCompiler versionを呼び出してcanonical Task Contextを再生成する。
 
-CompilerはGitHub、repository、filesystem、clock、provider、Artifact Storeへ接続しない。bodyがUTF-8でない、bodyがcontrol characterを含む、Issue identityが欠落・不正、またはIssue Contractがstrict parseに失敗した場合はcanonical outputを返さず、構造化されたvalidation errorを返す。
+CompilerはGitHub、repository、filesystem、clock、providerへ接続しない。bodyがUTF-8でない、bodyがcontrol characterを含む、Issue identityが欠落・不正、またはIssue Contractがstrict parseに失敗した場合はcanonical outputを返さず、構造化されたvalidation errorを返す。
 
 body中のcontrol characterは信頼境界で拒否する。許可するのは改行（LFまたはCRLF）とTABだけであり、NUL、ESC、単独のCR、DELを含むその他のC0 controlは`body_control_character`として拒否する。これらはcanonical YAMLとmodel inputを壊すため、compile後まで失敗を遅らせない。
 
@@ -43,8 +43,8 @@ bodyDigest: "sha256:<digest>"
 
 `bodyDigest`はraw body stringを追加の改行・空白正規化なしにUTF-8 bytesへ変換して計算する。raw body
 bytesは保存しない。Issue identityとbody digestをcanonical encodeしたbytesのSHA-256とschemaを組にした
-`IssueObservationRef{schema,digest}`を公開し、body digestとともにPostgreSQLのaudit lineageへ記録する。
-このrefはArtifact Store上のlocatorではなく、同じ観測を識別するcontent identityである。
+`IssueObservationRef{schema,digest}`を公開し、body digestとともにtelemetryへ記録する。
+このrefは保存objectへのlocatorではなく、同じ観測を識別するcontent identityである。
 
 取得時刻、delivery ID、Run ID、label、assignee、commentはObservation identityへ含めない。同じIssue identityとraw bodyは同じObservation refを持ち、CRLF/LF、template HTML comment、末尾改行を含むraw bodyのbyte差分はObservation refを変える。
 
@@ -132,7 +132,7 @@ Context Manifestは`TaskContextRef`、base、parent identity、dependency comple
 
 ## Live reconstruction and freshness
 
-claim成功時は次だけをstructured claim contextとしてPostgreSQLへ固定する。
+claim成功時は次だけをclaim checkpointとしてdraft PR bodyのmachine blockへ固定する。
 
 ```yaml
 compiler: "kudo.issue-compiler/v1alpha1"
@@ -149,8 +149,10 @@ contextManifest:
 baseSha: "<git-commit-sha>"
 ```
 
-この表示はprotocolのcanonical identityを説明するものであり、YAML fileまたはYAML columnとして保存する
-要件ではない。PostgreSQL adapterはtyped column / rowとして保存してよい。
+この表示はprotocolのcanonical identityを説明するものであり、機械表現を固定する要件ではない。
+machine blockの表現形式はGitHub adapterが所有し、再encodeしてrefと照合できる限り自由である。machine
+blockはrepository write権限者が編集できるため、gateに使うdigestはverdict check runのmachine blockにも
+記録し、照合の正はcheck run側に置く。
 
 Task Contextを使う各Issue Worker / Review Worker Operationは開始時と完了時に次を実行する。
 
@@ -161,11 +163,11 @@ Task Contextを使う各Issue Worker / Review Worker Operationは開始時と完
 
 一致した場合だけ、そのAttemptで生成したcanonical Task Contextと取得したauthority bytesをmodelへ渡す。
 不一致はquality verdictやtransport failureへ変換せず`stale_input`として返す。raw bodyだけが変わっても
-Task Context / Context Manifest identityが同じなら、新しいbody digestをaudit lineageへ追記して継続する。
+Task Context / Context Manifest identityが同じなら、新しいbody digestをtelemetryへ記録して継続する。
 canonical bytesとauthority bytesはAttempt終了時に破棄し、次Operationは再度live sourceから取得する。
 Compilerはclaim contextの`compiler`でversionを明示選択する。対応versionが無い場合にdeployment既定のCompilerへ
 fallbackせず、unsupported versionとして停止する。
-この保存境界を選んだ理由とトレードオフは[ADR-0006](../../../adr/0006-live-context-reconstruction.md)を参照。
+この保存境界を選んだ理由とトレードオフは[ADR-0001](../../../adr/0001-github-ssot-stateless-reconciler.md)を参照。
 
 ## Execution Policy
 
@@ -206,15 +208,15 @@ reviewRounds:
   finalImplementation: "3"
 ```
 
-`attemptRetries`は、一つのlogical Operationについて初回Attemptの後に作成できる追加Attempt数である。既定は`3`、許容範囲は`1`以上`10`以下で、既定では初回を含め最大4 Attemptになる。retryableなAttempt failureをdurableに確定して次のAttemptを作成するたびに1を消費し、timeout、rate limit、一時network failure、provider crash、GitHub transport failure、providerのinvalid structured outputで同じ予算を共有する。failure classが途中で変わってもcounterを分けない。quality verdict、stale input、immutableなprotocol validation errorは消費対象ではない。protocol validation errorはWorker Result / AttemptFailureとして受理せず`ProtocolError`を別記録し、同じinputをretryせずOperation queue stateを`failed_terminal`、Runを`protocol_validation_failed`の`needs_human`へ送る。
+`attemptRetries`は、一つのlogical Operationについて初回Attemptの後に作成できる追加Attempt数である。既定は`3`、許容範囲は`1`以上`10`以下で、既定では初回を含め最大4 Attemptになる。retryableなAttempt failureをdurableに確定して次のAttemptを作成するたびに1を消費し、timeout、rate limit、一時network failure、provider crash、GitHub transport failure、providerのinvalid structured outputで同じ予算を共有する。failure classが途中で変わってもcounterを分けない。quality verdict、stale input、immutableなprotocol validation errorは消費対象ではない。protocol validation errorはWorker Result / AttemptFailureとして受理せず`ProtocolError`を別記録し、同じinputをretryせずOperationを`failed_terminal`とし、Runを`protocol_validation_failed`の`needs_human`へ送る。
 
 attempt retryのcounterはlogical Operationかつ無人区間ごとに独立して持つ。初回Attemptは予算を消費せず、escalation時に区間counterを0へ戻すが、Attempt lineageと生涯Attempt数は戻さない。人間が`ai-ready`を再付与して同じRunをresumeした場合は、新しい無人区間の初回Attemptから開始する。
 
-`reviewRounds`はreview gateごとに無人の自動修正loopを続けるround数の上限である。`test_validity`と`final_implementation`は独立した上限と独立したcounterを持ち、通算しない。`test_validity`のcounterはquality verdictの確定に加え、`implement` / `repair_implementation`が返す`test_revision_required`の確定でも1を消費する。どちらもtest gateを再び開く差し戻しであり、無人区間のchurnを有限にするという予算の意図は同じである（[ADR-0003](../../../adr/0003-review-round-limit.md)）。各値は`1`以上`10`以下でなければならず、範囲はprotocol coreが固定してconfigurableにしない。下限`1`は「自動修正を行わず最初の差し戻しで即escalate」という最小のgateである。`0`は`>=`比較の下で`1`と挙動が変わらず、予算未設定と識別もできないため受理しない。過大な値は事実上の無制限でありgateの意味を失わせる。`attemptRetries`を含む整数はArtifact Manifestの`length`と同じくdecimal stringとしてencodeする。
+`reviewRounds`はreview gateごとに無人の自動修正loopを続けるround数の上限である。`test_validity`と`final_implementation`は独立した上限と独立したcounterを持ち、通算しない。`test_validity`のcounterはquality verdictの確定に加え、`implement` / `repair_implementation`が返す`test_revision_required`の確定でも1を消費する。どちらもtest gateを再び開く差し戻しであり、無人区間のchurnを有限にするという予算の意図は同じである（[workflow.md](../02_workflow.md)）。各値は`1`以上`10`以下でなければならず、範囲はprotocol coreが固定してconfigurableにしない。下限`1`は「自動修正を行わず最初の差し戻しで即escalate」という最小のgateである。`0`は`>=`比較の下で`1`と挙動が変わらず、予算未設定と識別もできないため受理しない。過大な値は事実上の無制限でありgateの意味を失わせる。`attemptRetries`を含む整数はdecimal stringとしてencodeする。
 
 Escalation PolicyはControllerのdeployment configurationからだけ解決する。Task Issue本文、`authorityRefs`、変更対象repositoryの内容、Worker Resultからは読まない。gateされる側がgate条件を供給できる経路を作らない。
 
-`EscalationPolicyRef{schema,digest}`はRunへ記録するが、Runのsemantic input identityには含めない。attempt retry上限とreview round上限はController側の自動継続判断だけに使い、Workerまたはreviewerの判断入力へ渡さないため、値の変更は既存のOperation identity、Review Request、approvalをstaleにしない。deployment configurationの変更は次のclaimから有効になり、進行中のRunはpin済みの値を使い切る。この置き場所を選んだ理由と代替案は[ADR-0003](../../../adr/0003-review-round-limit.md)を参照。
+`EscalationPolicyRef{schema,digest}`はRunへ記録するが、Runのsemantic input identityには含めない。attempt retry上限とreview round上限はController側の自動継続判断だけに使い、Workerまたはreviewerの判断入力へ渡さないため、値の変更は既存のOperation identity、Review Request、approvalをstaleにしない。deployment configurationの変更は次のclaimから有効になり、進行中のRunはpin済みの値を使い切る。
 
 provider、model、adapter version、tool permission、timeout、credential、secret path、session IDをfieldとして持たない。実行境界はExecution Policyが固定し、両者の役割を重ねない。
 
@@ -234,32 +236,31 @@ byte-levelの正本は`internal/contract/testdata/canonical/`のgolden fixture�
 
 golden fixtureはencoder自身の出力から生成するため、変化検出器ではあってもYAMLとしての正しさの検出器ではない。canonical bytesが実際にYAMLとしてparseでき、string scalarがescape前の値へ戻ることは、独立実装のYAML parserを差分オラクルとして検証する。CIでは`KUDO_YAML_ORACLE=required`を設定し、oracleが見つからない場合にskipせず失敗させる。
 
-## Canonical payload and persistence boundary
+## Canonical payload and record boundary
 
 encoderはcanonical identityの計算とmodel inputの構築に使う一時payloadを生成できる。payloadは少なくとも
 kind、schema、media type、digest、exact bytesを持ち、digest/dataとschemaのbindingを検証する。
 
-ただし次のpayloadはArtifact Storeへ保存しない。
+ただし次のpayloadはrecord surface（check run、comment、PR body machine block）へ記録しない。
 
 - raw Issue body
 - Issue Observation
 - Task Context
 - Context Manifest
 
-これらはGitHubまたは固定baseから再取得・再生成でき、永続化するとGitHubと別のcontent storeを維持する
+これらはGitHubまたは固定baseから再取得・再生成でき、記録するとGitHub上のliveな正本と別のコピーを維持する
 必要が生じるためである。`IssueObservationRef`、`TaskContextRef`、`ContextManifestRef`の`Ref`は
 content identityを意味し、保存objectの存在を意味しない。
 
-durable化が必要なpayloadは、producerのmutation authorityに従って保存先を分ける。
+durable化が必要なpayloadの記録先は[Worker Operation Protocol](operation-protocol-v1alpha1.md)の
+Record surface vocabularyを正とする。記録はControllerだけが行う。
 
-- Pull Request Observation、evidence、Review Resultなど、Issue Worker / Review Workerが生成するpayloadには
-  Artifact Storeのwrite-once bindingを適用する。
-- Execution Policy、Escalation Policy、Artifact ManifestはControllerがclaimまたはReview Request作成時に
-  構築する。ControllerはArtifact Store volumeをmountしないため、これらのbytesはArtifact Storeへ置かない。
-  canonical encodeはidentity計算とbinding検証にだけ使い、内容はstructured claim contextと同じく
-  PostgreSQLのtyped dataとしてRun / Requestへ固定する。WorkerとreviewerはPostgreSQLのtyped dataから
-  同じcanonical bytesを再encodeし、refと照合してから使う。
-- kind / schema bindingは保存先にかかわらず検証する。Escalation Policy payloadのkindは
+- evidence、Review Result（verdict）はApp所有のcheck runへ、finding、test plan、PR draft等の散文は
+  marker付きcommentへ記録する。
+- Execution PolicyとEscalation Policyはdeployment configurationから構築し、そのdigestをclaim
+  checkpointへ固定する。WorkerとreviewerはConfigurationから同じcanonical bytesを再encodeし、refと
+  照合してから使う。
+- kind / schema bindingは記録先にかかわらず検証する。Escalation Policy payloadのkindは
   `escalation-policy`、schemaは`kudo.escalation-policy/v1alpha1`であり、`execution-policy` kindへ
   紐付けない。
 
