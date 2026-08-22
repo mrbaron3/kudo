@@ -1,0 +1,4 @@
+レビュー結果です。
+
+<!-- kudo-marker {"schema":"kudo.record-marker/v1alpha1","repository":"github://acme/widgets","issue":16,"run":"42","kind":"review-finding","round":2,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"} -->
+<!-- kudo-machine {"schema":"kudo.machine-block/v1alpha1","kind":"review-result","mediaType":"application/yaml","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","payload":"c2NoZW1hOiBrdWRvLnJldmlldy1yZXN1bHQvdjFhbHBoYTEKdmVyZGljdDogYXBwcm92ZQo="} -->
