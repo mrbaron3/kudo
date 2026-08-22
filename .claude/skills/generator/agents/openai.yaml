@@ -1,0 +1,5 @@
+# Codex用設定。$generator の明示的メンションでのみ起動し、
+# ユーザーpromptとdescriptionの一致による暗黙起動を禁止する
+# （Claude Code側の disable-model-invocation: true と対になる設定）。
+policy:
+  allow_implicit_invocation: false

@@ -3,7 +3,8 @@ name: generator
 description: >-
   Task IssueをKudo設計のTDDワークフロー（claim → テスト作成+RED → test validity
   review → 実装+GREEN → refactor → final implementation review → PR finalize）で
-  実装し、Pull Requestを作成する。/generator <issue番号|URL> の明示的呼び出し専用。
+  実装し、Pull Requestを作成する。明示的呼び出し専用:
+  Claude Codeでは /generator <issue番号|URL>、Codexでは $generator メンション。
 argument-hint: "[issue番号またはURL]"
 disable-model-invocation: true
 ---
@@ -20,8 +21,21 @@ disable-model-invocation: true
 | Kudo設計上のactor | このスキルでの担い手 |
 | --- | --- |
 | Issue Worker（Implementer） | このセッション本体。worktree・branch・PRを変更できる唯一の主体 |
-| Review Worker（Reviewer） | 読み取り専用サブエージェント。roundごとにfresh起動し、判定対象headに固定したdetached worktreeだけを見る |
+| Review Worker（Reviewer） | 読み取り専用のfresh reviewerセッション。roundごとに新規起動し、判定対象headに固定したdetached worktreeだけを見る |
 | Controller | このセッションが手順として代行。escalation先は人間（ユーザー） |
+
+## ハーネス対応（Claude Code / Codex）
+
+このスキルは両ハーネスで同一手順を実行する。差分は2点だけ:
+
+- **呼び出しと引数**: Claude Codeは `/generator <issue>`（引数は本文へ展開される）。
+  Codexは `$generator` メンションで、同じユーザーメッセージ中のissue番号/URLが引数。
+- **reviewerの起動方法**: Claude Codeはread-only指示付きサブエージェント（Agent tool）。
+  Codexは `codex exec` によるfreshなサブプロセス。具体的な起動手順は
+  `references/review-prompts.md` の冒頭に従う。
+
+どちらの場合もreviewerがfreshなsession（この会話の文脈を持たない）であることが設計上の
+要件であり、会話内で自問自答するreviewはreviewとして認めない。
 
 設計との既知の乖離（単一credential実行に伴う縮約。これ以外の逸脱はしない）:
 
@@ -33,8 +47,14 @@ disable-model-invocation: true
 
 ## 入力
 
-`$ARGUMENTS` をissue番号またはURLとして解釈する。欠落・曖昧なら会話文脈から推測して補完せず、
-必要な入力を指摘して停止する（contract discipline）。
+呼び出し引数をissue番号またはURLとして解釈する。
+
+- 引数: $ARGUMENTS
+- 上の行に `$ARGUMENTS` が文字どおり残っている場合（Codex等、引数展開のないハーネス）は、
+  呼び出し時のユーザーメッセージからissue番号/URLを読み取る。
+
+欠落・曖昧なら会話文脈から推測して補完せず、必要な入力を指摘して停止する
+（contract discipline）。
 
 ## 予算と失敗の分類
 
@@ -99,8 +119,8 @@ disable-model-invocation: true
    `stale_input` として停止・報告する（formatting/typoのみの差分は記録して続行してよい。
    Issue Observationの変化はauditであってsemantic inputの変化ではない）。
 2. 判定対象を不変にする: `git worktree add --detach .worktrees/review-issue-<n> <testHead>`。
-3. reviewerサブエージェントをfresh起動する。promptは `references/review-prompts.md` の
-   test_validity用テンプレートに従う。reviewerは
+3. reviewerセッションをfresh起動する（起動方法は `references/review-prompts.md` 冒頭の
+   ハーネス別手順）。promptは同ファイルのtest_validity用テンプレートに従う。reviewerは
    `docs/spec/05_design/review-policies/test-validity-v1alpha1.md` を自分で読んで適用する。
    read-only（fileの変更・git/gh mutation禁止）で、渡された明示的入力以外
    （親Issueのprose、実装側worktree、この会話の文脈）を評価根拠にしない。
@@ -109,8 +129,8 @@ disable-model-invocation: true
 5. gate判定:
    - `approve`（blocking findingゼロのときのみ有効）→ Step 4へ。approve済みtest head SHAを固定する。
    - `request_changes` → findingsに対応してテストを修正し、新しいRED evidenceを取り、push
-     して**新しいroundとして3から再実行**する。前roundのreviewerサブエージェントは再利用せず、
-     必ずfresh起動する（session再開をしない設計）。round予算を1消費。
+     して**新しいroundとして3から再実行**する。前roundのreviewerは再利用せず、必ず
+     fresh起動する（session再開をしない設計）。round予算を1消費。
    - `needs_human`、または予算超過 → escalation。
 
 ## Step 4: 実装とGREEN（implement → refactor）
@@ -134,7 +154,7 @@ test validity approveより前にproduction実装を開始しない（順序不�
      Step 3の再承認を先に得る。gate迂回の検出）
    - final headで `mise run check` が成功している
    - staleness check
-2. detached review worktreeをfinal headで作り、reviewerサブエージェントをfresh起動する。
+2. detached review worktreeをfinal headで作り、reviewerセッションをfresh起動する。
    promptは `references/review-prompts.md` のfinal_implementation用テンプレート。policyは
    `docs/spec/05_design/review-policies/final-implementation-v1alpha1.md`。条件付き観点
    （UX / Accessibility / Type design / Performance）はそれぞれ適用可否の宣言を1件ずつ

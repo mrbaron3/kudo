@@ -1,11 +1,35 @@
-# Reviewerサブエージェント用promptテンプレート
+# Reviewer用promptテンプレートと起動手順
 
-roundごとに新しいサブエージェントをfresh起動し、以下のテンプレートを埋めて渡す。
-`<...>` を実値に置換する。前roundのreviewerへの追記・再利用（SendMessage等）はしない。
+roundごとに新しいreviewerセッションをfresh起動し、以下のテンプレートを埋めて渡す。
+`<...>` を実値に置換する。前roundのreviewerへの追記・再利用はしない。
 reviewerがこの会話の文脈を一切持たないことが、fresh session設計の縮約としての意味を持つ。
 
-サブエージェントには汎用エージェント（general-purpose相当）を使う。read-only制約は
-prompt内の指示で課す。
+## 起動手順（ハーネス別）
+
+### Claude Code
+
+サブエージェント（Agent tool、general-purpose相当）を起動し、promptテンプレートを渡す。
+read-only制約はprompt内の指示で課す。
+
+### Codex
+
+freshなサブプロセスとして起動する。promptをscratchファイルへ書き出してから:
+
+```sh
+codex exec --cd <repoRoot>/.worktrees/review-issue-<n> \
+  --sandbox workspace-write \
+  "$(cat <promptファイル>)"
+```
+
+- sandboxのworkspaceはdetached review worktreeに限定される。共有object store
+  （メインrepoの `.git/`）はworkspace外なので、commit・push等のgit mutationは構造的に
+  遮断される。worktree内のファイル変更は可能だが、worktreeは使い捨てでverdict後に
+  削除するため判定の完全性には影響しない。
+- `go test` はbuild cacheへの書き込みを必要とするため、promptの末尾に
+  「テスト実行時は `GOCACHE=$PWD/.gocache go test ./...` を使う」と1行追記する
+  （worktree外への書き込みがsandboxで遮断されるため）。
+- reviewerの最終メッセージが標準出力に出る。YAML部分を改変せず記録する。
+- flagはversionによって異なり得るため、失敗したら `codex exec --help` で確認する。
 
 ## 共通末尾ブロック（両kindのprompt末尾に必ず含める）
 
