@@ -30,9 +30,9 @@ Kudo は webhook 欠落、重複 event、process restart、provider failure、�
 | --- | --- |
 | Human Author | Issue Contract、authority、受け入れ条件を確定し、`ai-ready`で実行を依頼する |
 | Repository Owner | branch protection、required check、merge 対象 base branch で Kudo の merge 境界を設定し、merge 後の release / revert を判断する |
-| Controller | candidate reconciliation、phase 導出、Operation dispatch、retry / escalation、label / comment / check run の記録を行う |
-| Issue Worker | live Issue のcompile、claim、test、implementation、worktree、branch、Pull Request mutation を所有する唯一の writer |
-| Review Worker | live Issue のcompile結果と独立checkoutからtest validity / final implementation verdictを返す |
+| Controller（Coordinator） | candidate reconciliation、phase 導出、Operation dispatch、retry / escalation、label / status comment の記録を行う。evidence / verdict は代筆しない |
+| Issue Worker（Implementer） | 変更の author。live Issue のcompile、claim、test、implementation、worktree、branch、Pull Request mutation を所有し、自分の evidence を自名義で記録する |
+| Review Worker（Reviewer） | 判定の author。live Issue のcompile結果と独立checkoutから判定し、verdict / finding を自名義で記録する。判定対象には不可侵 |
 | GitHub | live Issue、repository、branch、Pull Request の source of truth であり、workflow 状態の唯一の永続表現（record surface） |
 
 ## 3. システム構成
@@ -46,7 +46,9 @@ flowchart LR
     H[Human] -->|Issue / repository 設定| GH[GitHub]
     GH -->|webhook| C[Controller]
     C -->|fallback polling / 観測| GH
-    C -->|label / comment / check run 記録| GH
+    C -->|label / status comment 記録| GH
+    IW -->|evidence 記録| GH
+    RW -->|verdict / finding 記録| GH
     C -->|dispatch| IW[Issue Worker]
     C -->|dispatch| RW[Review Worker]
     IW -.->|in-process call| LC[Issue Compiler + Context Resolver<br/>shared Go module]
@@ -85,7 +87,7 @@ Issue Contractの意味解析はIssue Compilerだけが所有し、Controllerは
 
 - Controller は model session と implementation worktree を持たない。
 - Issue Worker だけが implementation worktree、branch、commit、Pull Request を変更できる。
-- Review Worker は implementation workspace を参照せず、GitHub write credential を持たない。
+- Review Worker は implementation workspace を参照せず、判定対象（contents、branch、PR 状態）への write を持たない。書けるのは自名義の verdict / finding だけである。
 - Docker socket を mount しない。
 - Worker 間では mutable state や conversation を共有せず、claim checkpoint の digest、versioned
   message、record surface 上の digest 検証済み payload を渡す。

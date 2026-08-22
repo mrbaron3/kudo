@@ -10,13 +10,16 @@ Issue を close するまでの規範的な順序を定義する。外部 protoc
 ## Actors
 
 - Human Author: Issue Contract を完成させ、`mrbaron3`を assign し、`ai-ready`で実行を依頼する。
-- Controller: GitHub を観測して phase を導出し、Operation を in-process dispatch し、evidence /
-  verdict check run、finding comment、label を記録する。model session は持たない。
-- Issue Worker: implementation 側の唯一の writer。各 Operation で live Issue を compile し、専用
-  worktree、branch、test、source、commit、Pull Request を変更できる。
-- Review Worker: 各 Review Operation で live Issue を compile し、read-only checkout と head に
-  束縛された evidence から test validity と最終実装を判定する。implementation の source、branch、
-  PR は変更できない。
+- Controller（Coordinator）: GitHub を観測して phase を導出し、Operation を in-process dispatch し、
+  label と status comment を記録する。evidence や verdict を代筆せず、model session も持たない。
+- Issue Worker（Implementer）: 変更の author。各 Operation で live Issue を compile し、専用
+  worktree、branch、test、source、commit、Pull Request を変更できる。自分の実行証跡（evidence
+  check run）を自分の名義で記録する。
+- Review Worker（Reviewer）: 判定の author。各 Review Operation で live Issue を compile し、
+  read-only checkout と head に束縛された evidence から判定し、verdict check run と finding comment
+  を自分の名義で記録する。判定対象（source、branch、PR の状態・本文）には不可侵である。
+- actor と発話の対応、identity 分離の規範は [architecture.md](01_architecture.md) の Actor model を
+  正とする。
 - GitHub: live Issue、repository、Pull Request の source of truth であり、同時に workflow 状態の
   唯一の永続表現（record surface）である（[ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md)）。
 
@@ -61,12 +64,12 @@ sequenceDiagram
     IW-->>C: test plan + RED evidenceを含むResult
     C->>IW: publish_headをdispatch
     IW->>GH: compare-and-pushでtest headをPRへ
-    C->>GH: RED evidence check runをheadへ記録
+    IW->>GH: RED evidence check run + test plan commentを自名義で記録
     C->>RW: test_validity Review Requestをdispatch
     RW->>GH: live Issue/authority/PRを再取得・照合
     RW->>IC: 再compileしてcheckpoint digestと照合
+    RW->>GH: verdict check run + finding commentを自名義で記録
     RW-->>C: Review Result（verdict + findings）
-    C->>GH: verdict check run + finding commentを記録
     alt test request_changes（round上限未満）
         C->>IW: revise_testsをdispatch（以後同じloop）
     else test approve
@@ -74,10 +77,10 @@ sequenceDiagram
         IW-->>C: GREEN + refactor/check evidenceを含むResult
         C->>IW: publish_headをdispatch
         IW->>GH: compare-and-pushでfinal headをPRへ
-        C->>GH: GREEN/check evidence check runをheadへ記録
+        IW->>GH: GREEN/check evidence check runを自名義で記録
         C->>RW: final Review Requestをdispatch
+        RW->>GH: verdict check run + finding commentを自名義で記録
         RW-->>C: Review Result
-        C->>GH: verdict check run + finding commentを記録
         alt final request_changes（round上限未満）
             C->>IW: repair_implementationをdispatch（以後同じloop）
         else final approve
@@ -97,9 +100,10 @@ sequenceDiagram
 
 Controller と Worker の間に queue はない。Controller が「Operation を発行する」とは、導出した phase
 から versioned Operation / Review Request の envelope を組み立て、in-process の該当 handler を呼ぶ
-ことをいう。Worker は Result または Attempt Failure を in-process で返し、record surface への記録は
-Controller だけが行う。process が途中で消えた場合、restart 後の再観測が同じ phase を導出し、同じ
-action を新しい fresh attempt として再実行する。重複は marker と CAS が防ぐ。
+ことをいう。record surface への記録は発話の主体が自分の identity で行い、Worker は記録を終えてから
+Result または Attempt Failure を in-process で返す。Controller は記録の存在・binding・作成 identity を
+検証して次の transition を決める。process が途中で消えた場合、restart 後の再観測が同じ phase を導出
+し、同じ action を新しい fresh attempt として再実行する。重複は marker と CAS が防ぐ。
 
 ### 1. Discovery and reconciliation
 
@@ -163,9 +167,9 @@ test plan は各 Acceptance Criteria と test case の対応を示す。テス�
 compile infrastructure failure、無関係な既存 failure を RED とみなさない。
 
 RED 固定後、Controller は`publish_head`を発行する。Issue Worker は期待 head と live branch head を
-照合してから push する（compare-and-push）。push の完了後、Controller は test plan の要約と RED
-evidence（command、exit status、出力抜粋、environment identity）を test head への evidence check run
-として記録する。finding や evidence が check run output の上限（64KiB）を超える場合は決定論的に
+照合してから push し（compare-and-push）、続けて test plan の marker comment と RED evidence
+（command、exit status、出力抜粋、environment identity）の evidence check run を test head へ自分の
+名義で記録する。finding や evidence が check run output の上限（64KiB）を超える場合は決定論的に
 truncate し、全文の digest を併記する。draft PR 上の CI が RED になるのは TDD の位相の正直な表示で
 あり、隠すために publish を遅らせない。全 review round はこの同一 draft PR へ繋留される。
 
@@ -182,10 +186,10 @@ stale、Kudo 自身の merge intent に紐付かない close / merge は品質 v
 する。そのうえで fresh session と別の read-only checkout を使い、再生成した canonical Task Context、
 Acceptance Criteria、test plan、test diff、RED evidence を policy の標準観点で評価する。
 
-- `approve`: Controller が verdict check run を head へ記録し、implementation へ進む。
-- `request_changes`: blocking finding を versioned Result として返す。Controller は verdict check run
-  と finding comment を記録し、同じ Run / worktree を所有する Issue Worker の新しい`revise_tests`
-  session へ finding を渡す。
+- `approve`: Review Worker が verdict check run を head へ自分の名義で記録し、implementation へ進む。
+- `request_changes`: Review Worker が verdict check run と finding comment を記録して blocking finding
+  を versioned Result として返す。Controller は同じ Run / worktree を所有する Issue Worker の新しい
+  `revise_tests` session へ finding を渡す。
 - `needs_human`: 自動修正できない authority または安全判断として workflow を停止する。
 
 `request_changes`が`test_validity`の round 上限に達した場合、Controller は`revise_tests`を発行せず
@@ -221,7 +225,8 @@ implementation へ戻らない。これにより、implementation lane が test 
 test を書き換える経路を閉じる。
 
 GREEN と refactor の evidence が固定された後、Controller は`publish_head`で final head を同一 draft
-PR へ publish し、GREEN / check evidence check run を final head へ記録してから final review を開始する。
+PR へ publish させる。Issue Worker が GREEN / check evidence check run を final head へ自分の名義で
+記録してから、final review を開始する。
 
 ### 6. Final implementation review
 
@@ -321,7 +326,8 @@ response で共有する。immutable input に対する protocol validation erro
 
 - 上限は claim 時に Escalation Policy から Run へ固定し、その値と digest を escalation 時の status
   comment に記録する。`test_validity`と`final_implementation`は独立した counter と独立した上限を持つ。
-- counter は marker 付き verdict 記録（finding comment）から導出する。`test_validity`の counter は
+- counter は Reviewer 名義の marker 付き verdict 記録（finding comment）から導出する。作成 identity
+  で数えるため、他 actor や人間の投稿と構造的に区別できる。`test_validity`の counter は
   さらに、implement lane が返した`test_revision_required`の記録でも1を消費する。どちらも test gate を
   再び開く差し戻しであり、無人区間の churn を有限にするという予算の意図は同じである。attempt
   failure、stale input、transport failure、protocol validation error は round を消費しない。

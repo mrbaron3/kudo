@@ -31,7 +31,7 @@ Use deterministic unit tests with fakes at GitHub, process, clock, filesystem, m
 - Prefer one Go module and one deployable binary until measured constraints justify another boundary.
 - Prefer the Go standard library. Add dependencies only at explicit boundaries and explain why.
 - GitHub is the single source of truth. Kudo is a stateless reconciler in one process with no application database and no artifact store: derive workflow state from GitHub observations (branch, PR, check runs, comments, labels) and fence mutations with GitHub CAS primitives (ref create, compare-and-push, SHA-conditioned merge).
-- Record evidence and review verdicts as App-owned check runs and finding comments through the Controller. Comments and PR bodies are human-editable, so gate decisions must verify digests against App-owned check runs.
+- Every record is written by its author under its own GitHub App identity: the Issue Worker attests its own evidence, the Review Worker posts its own verdict and findings, and the Controller records only labels and status comments. Implementer and Reviewer use distinct App identities so self-approval is structurally impossible. Comments and PR bodies are human-editable, so gate decisions must verify digests and creator identity against App-owned check runs.
 - Do not mount the Docker socket. Run as a single container; local disk is a disposable workspace, never authoritative state.
 
 ## Contract discipline

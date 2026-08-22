@@ -87,22 +87,31 @@ secret は image、Git repository、plain environment file に埋め込まない
 
 最低限、次を分離する。
 
-- GitHub App ID、private key、webhook secret
+- GitHub App ID、private key、webhook secret（actor ごとの App それぞれ。private key は分離して保管する）
 - Codex provider credential
 - Claude provider credential
 
-GitHub は PAT ではなく GitHub App を標準とする。check run の記録は GitHub App でなければ行えず、
-App 所有 check run の改竄不能性が verdict の記録面の前提である。installation token は短命にし、
-role ごとに必要な permission subset だけを要求して operation 単位で発行する。
+GitHub は PAT ではなく GitHub App を標準とする。App を採用する理由は identity の調達である: actor
+ごとの複数 identity を ToS 制約・seat 課金なしに持て、installation token は短命（自動失効）で、複数
+repository への一括 install ができる。App 専用機能である check run（App 所有で改竄不能）はこの選択の
+帰結として利用する。
 
-| Role | GitHub authority |
+actor ごとに別の GitHub App を登録する。最低限 Implementer と Reviewer の分離は必須である
+（[architecture.md](01_architecture.md) Actor model）。installation token は短命にし、actor ごとに
+必要な permission subset だけを要求して operation 単位で発行する。
+
+| Actor | GitHub authority |
 | --- | --- |
-| Controller | metadata read、issues read/write、pull requests read、checks write。label / comment / check run の記録と gate の外形条件評価用。contents への write は持たない |
-| Issue Worker | metadata/issues read、contents write、pull requests write。PR の merge と head branch 削除を含む |
-| Review Worker | metadata/issues/contents/pull requests read-only |
+| Controller（Coordinator） | metadata read、issues read/write、pull requests read、checks read。label / status comment の記録と gate の外形条件評価用。contents と checks への write は持たない |
+| Issue Worker（Implementer） | metadata/issues read、contents write、pull requests write、checks write（自分の evidence check run）。PR の merge と head branch 削除を含む |
+| Review Worker（Reviewer） | metadata/issues/contents/pull requests read、checks write（自分の verdict check run）、PR comment write（finding） |
 
-role 間で credential と provider config directory を共有しない。同一 process 内でも、各 operation へ
-渡す token はその role の subset に限定し、provider child process の環境には該当 role の credential
+開発の立ち上がり（実装計画の S1〜S2）は owner PAT による単一 identity で開始してよい。PAT は
+dev / test 専用の TokenSource 実装としてだけ持ち、production への経路にしない。verdict の記録が
+始まる時点（S3）までに Reviewer App の分離を導入する。
+
+actor 間で credential と provider config directory を共有しない。同一 process 内でも、各 operation へ
+渡す token はその actor の subset に限定し、provider child process の環境には該当 actor の credential
 だけを注入する。log と record surface に token、private key、credential path を含めない。
 
 ## Configuration contract

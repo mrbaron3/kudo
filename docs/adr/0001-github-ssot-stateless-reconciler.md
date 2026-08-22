@@ -53,6 +53,10 @@ compare-and-push、SHA指定merge）でfenceする。
   counter状態を持たない
 - snapshot・evidenceはgit commit
 - Issue claimはbranch ref作成のatomicity
+- 記録はその発話の主体（Implementer / Reviewer / Coordinator）が自分のGitHub App identityで行い、
+  代筆しない。ImplementerとReviewerのidentityを分離し、自己承認の禁止を規約ではなくidentityで
+  構造的に強制する。GitHub Appを採用する理由はcheck runではなくidentityの調達（ToS上無制限・
+  seat不要・token自動失効・複数repository一括install）であり、check runはその帰結として使う
 
 ## Alternatives
 
@@ -78,7 +82,9 @@ compare-and-push、SHA指定merge）でfenceする。
 - GitHubの可用性がそのままKudoの可用性になる。障害中はworkflowが進行できない。
 - 状態読み出しがAPI呼び出しになり、rate limit予算と結合する。本決定はこれを意図的に
   無視しており、概算すら行っていない（Revisit conditions参照）。
-- check runの利用にはGitHub App認証が必須になる（PATでは不可）。
+- actorごとのGitHub App登録・private key管理が必要になる（最低Implementer / Reviewerの2つ）。
+  開発の立ち上がりはowner PATの単一identityで開始できるが、その間は自己承認の禁止が内部規律に
+  退化する。
 - check run outputは64KiB上限であり、超過するevidenceの置き場規則が仕様側で必要になる。
 - 状態機械は消えず、観測の組からphaseを導出する関数へ移動する。導出関数はあらゆる中間状態
   （branchあり・PRなし等）に答えを持たなければならない。

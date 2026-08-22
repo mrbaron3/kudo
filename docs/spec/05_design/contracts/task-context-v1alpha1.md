@@ -253,10 +253,10 @@ kind、schema、media type、digest、exact bytesを持ち、digest/dataとschem
 content identityを意味し、保存objectの存在を意味しない。
 
 durable化が必要なpayloadの記録先は[Worker Operation Protocol](operation-protocol-v1alpha1.md)の
-Record surface vocabularyを正とする。記録はControllerだけが行う。
+Record surface vocabularyを正とする。記録はpayloadのproducerが自分のApp identityで行う。
 
-- evidence、Review Result（verdict）はApp所有のcheck runへ、finding、test plan、PR draft等の散文は
-  marker付きcommentへ記録する。
+- evidence（Implementer名義）、Review Result verdict（Reviewer名義）はApp所有のcheck runへ、finding、
+  test plan、PR draft等の散文はmarker付きcommentへ記録する。
 - Execution PolicyとEscalation Policyはdeployment configurationから構築し、そのdigestをclaim
   checkpointへ固定する。WorkerとreviewerはConfigurationから同じcanonical bytesを再encodeし、refと
   照合してから使う。

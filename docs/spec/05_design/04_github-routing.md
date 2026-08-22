@@ -150,23 +150,31 @@ dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`�
 ## Check runs
 
 Kudo が記録する check run は App 所有であり、commit SHA へ構造的に束縛される。名前空間は`kudo/`に
-固定する。
+固定し、**作成 App identity を記録の一部として扱う**。actor と identity の対応は
+[architecture.md](01_architecture.md) の Actor model を正とする。
 
-| Check run | 対象 head | 内容 |
-| --- | --- | --- |
-| `kudo/evidence-red` | test head | RED command、exit status、出力抜粋、environment identity |
-| `kudo/evidence-green` | final head | GREEN command evidence |
-| `kudo/evidence-checks` | final head | refactor 後 required checks と Issue Verification evidence |
-| `kudo/test-validity` | test head | test validity review の verdict と request identity（digest） |
-| `kudo/final-implementation` | final head | final review の verdict、applicability 宣言、request identity |
+| Check run | 対象 head | 作成者（App identity） | 内容 |
+| --- | --- | --- | --- |
+| `kudo/evidence-red` | test head | Implementer | RED command、exit status、出力抜粋、environment identity |
+| `kudo/evidence-green` | final head | Implementer | GREEN command evidence |
+| `kudo/evidence-checks` | final head | Implementer | refactor 後 required checks と Issue Verification evidence |
+| `kudo/test-validity` | test head | Reviewer | test validity review の verdict と request identity（digest） |
+| `kudo/final-implementation` | final head | Reviewer | final review の verdict、applicability 宣言、request identity |
 
 verdict check run の output に記録する machine block（verdict、request digest、claim checkpoint の
 digest 群）が gate 判定の正本である。conclusion（success / action_required / neutral）は人間向けの
 表示であり、機械はこれに依存しない。evidence check run の conclusion は CI の成否と混同されないよう
 `neutral`とする。output の上限（64KiB）を超える内容は決定論的に truncate し、全文の digest を併記する。
 
-branch protection の required status check に`kudo/final-implementation`を宣言すると、GitHub 自体が
-「Kudo の final approve なしに merge できない」を構造的に強制する。deployment にはこの宣言を推奨する。
+gate 判定は name と作成 App の両方で検証する。Reviewer App 名義でない`kudo/test-validity`は verdict
+として扱わない。branch protection の required status check に`kudo/final-implementation`を **Reviewer
+App を source として** 宣言すると、GitHub 自体が「Reviewer の final approve なしに merge できない」を
+構造的に強制する。Implementer App は Reviewer 名義の check run を作れないため、自己承認は規約ではなく
+構造で塞がる。deployment にはこの宣言を推奨する。
+
+verdict を GitHub native の PR Review（APPROVE / REQUEST_CHANGES）としても投影するかは別 decision と
+する。native review は required approving reviews・dismiss-stale と結合するため、導入する場合は gate
+semantics への影響とあわせて決める。
 
 ## Human escalation
 

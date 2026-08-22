@@ -55,7 +55,7 @@ Review Result か `test-revision-report` かの違いだけで、publish と再 
 ## Isolation
 
 - Issue Worker だけが implementation worktree と Pull Request を変更できる。
-- Review Worker は Issue Worker workspace を mount せず、GitHub write credential を持たない。
+- Review Worker は Issue Worker workspace を参照せず、判定対象への write を持たない。verdict / finding の記録は自分の App 名義で行う。
 - transcript、resume token、provider private state を Operation 間で共有しない。
 - review round counter と上限は Controller が保持し、reviewer の品質判断入力へ渡さない。
 

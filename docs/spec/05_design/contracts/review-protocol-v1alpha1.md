@@ -6,9 +6,11 @@ Implementation と Review を、同じ repository と binary を利用しても�
 credential、model/provider session、conversation memory を共有しない独立 role として接続する。
 
 Issue Worker は source、worktree、branch、commit、Pull Request mutation を所有する。Review Worker は
-immutable input と read-only checkout から verdict を作り、Implementation は自分の request を approve
-できない。Controller は request/result binding と gate 判定を検証し、verdict を check run と finding
-comment へ記録するが、review verdict を上書きしない。
+immutable input と read-only checkout から verdict を作り、verdict check run と finding comment を
+自分の App identity で記録する。Implementation は自分の request を approve できない——verdict は
+Reviewer App にしか作れず、この分離は identity で構造的に強制される。Controller は request/result
+binding と gate 判定を検証するが、verdict を代筆も上書きもしない。Review Worker は判定対象（source、
+branch、PR の状態・本文）に不可侵である。
 
 各 model-bearing Issue Operation と各 Review Request は fresh provider process/session で処理する。
 修正を同じ論理作業 lane へ差し戻す場合も、以前の session ID、resume token、conversation transcript、
@@ -181,11 +183,12 @@ verdict は次のいずれかとする。
 する Result は、Controller が finding を読まずに誤った gate 判断をするため受理しない。
 
 finding は`expected`、`observed`、`evidenceRefs`を持ち、単なる感想にしない。Review Result は
-producer の worktree、branch、PR を変更しない。Result は in-process で Controller へ返り、Controller
-が verdict と request identity を`kudo/test-validity`または`kudo/final-implementation` check run の
-output（machine block）として対象 head へ記録し、finding 本文を marker 付き PR comment として記録
-する。gate 判定は App 所有の check run に記録された machine block を正とし、comment は人間と修正
-session が読む表現である。両者の digest が食い違う場合は comment 側の改竄または記録失敗であり、
+producer の worktree、branch、PR を変更しない。Review Worker は verdict と request identity を
+`kudo/test-validity`または`kudo/final-implementation` check run の output（machine block）として対象
+head へ、finding 本文を marker 付き PR comment として、いずれも自分の App identity で記録してから
+Result を in-process で Controller へ返す。Controller は記録の存在・binding・作成 identity を検証
+する。gate 判定は Reviewer App 所有の check run に記録された machine block を正とし、comment は人間と
+修正 session が読む表現である。両者の digest が食い違う場合は comment 側の改竄または記録失敗であり、
 check run 側を正として comment を再記録する。
 
 ### Applicability 宣言
@@ -230,8 +233,8 @@ Review session を resume しない。修正後は新しい head と request dig
 ## Gate semantics
 
 draft Pull Request は claim 時に作成され、review approve を publish の gate にしない。RED evidence が
-固定された時点で Issue Worker は test head を compare-and-push し、Controller が RED evidence check
-run を記録する。draft 状態の CI が RED になるのは TDD の位相の正直な表示であり、隠すために publish を
+固定された時点で Issue Worker は test head を compare-and-push し、RED evidence check run を自分の
+名義で記録する。draft 状態の CI が RED になるのは TDD の位相の正直な表示であり、隠すために publish を
 遅らせない。
 
 `test_validity`の approve が、publish 済み PR の live head と一致する test-only head に verdict check

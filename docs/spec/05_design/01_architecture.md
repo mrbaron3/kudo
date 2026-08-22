@@ -47,6 +47,28 @@ Issue Compiler + Context Resolver は通信先 service ではなく、同じ Go 
 compile-time component である。Issue Contract の意味解析を所有する Issue Compiler は外部 I/O を
 持たない pure component である。
 
+## Actor model
+
+Kudo のドメインモデルは、人間が GitHub 上で協働するモデルと同型に設計する。役割は「誰の発話か」で
+分かれ、GitHub 上の identity（GitHub App）がそれを表現する。
+
+| Actor | component 名 | 定義 | 発話（GitHub 上の行為） |
+| --- | --- | --- | --- |
+| Implementer | Issue Worker | 変更の author。PR の作者 | claim（branch を切り PR を開く）、publish（head を差し出す）、attest（自分の実行証跡を記録する）、finalize、merge |
+| Reviewer | Review Worker | 判定の author | review（判定する）、report（verdict と finding を自分の名義で投稿する） |
+| Coordinator | Controller | 進行の観測者・調停者 | observe、derive（phase 導出）、dispatch、project（label）、escalate（status comment、ledger） |
+
+原則は一つである: **すべての記録は、その発話の主体（author）が自分の identity で書く。** Coordinator は
+判定や証跡を代筆しない。代筆を許すと「判定していない者が判定を記録できる」偽造経路になる。
+
+Reviewer の不変条件は「read-only」ではなく「**判定対象への不可侵**」である。source、branch、commit、
+PR の状態・本文を変更しないが、自分の判定（verdict check run、finding comment）は自分で記録する。
+
+actor ごとに別の GitHub App identity を使う。最低限 Implementer と Reviewer の分離は必須であり、これに
+より「実装が自分を承認する」経路が規約ではなく GitHub の構造（verdict check run は Reviewer App にしか
+作れず、branch protection の required check を Reviewer App に pin できる）で塞がる。Coordinator の
+identity 分離は timeline の可読性と最小権限のために推奨する。
+
 ## State model
 
 ### Run の記録面は Pull Request である
@@ -63,17 +85,19 @@ lineage は closed PR の列として GitHub に残る。
 | candidate | Issue open + `ai-ready` label + dependency 完了 | 人間（label） |
 | claim | branch `kudo/issue-<n>` の存在（ref create は atomic） | Issue Worker |
 | Run と claim checkpoint | draft PR + PR body の machine block（Compiler version、Task Context / Context Manifest / Execution Policy digest、base SHA） | Issue Worker |
-| RED / GREEN / checks evidence | 対象 head への evidence check run（command、exit status、出力抜粋） | Controller |
-| review verdict | 対象 head への verdict check run（verdict と request identity を output に記録） | Controller |
-| finding 本文 | PR comment（machine marker 付き） | Controller |
-| review round 数 | marker 付き finding comment の計数（独立した counter を持たない） | 導出 |
-| merge intent | merge 直前の intent comment | Controller |
+| RED / GREEN / checks evidence | 対象 head への evidence check run（command、exit status、出力抜粋） | Issue Worker |
+| review verdict | 対象 head への verdict check run（verdict と request identity を output に記録） | Review Worker |
+| finding 本文 | PR comment（machine marker 付き） | Review Worker |
+| review round 数 | Reviewer 名義の marker 付き finding comment の計数（独立した counter を持たない） | 導出 |
+| merge intent | merge 直前の intent comment | Issue Worker |
 | terminal | PR merged / closed、Issue close、`ai-merged` label | Issue Worker / Controller |
 | escalation | `ai-needs-human` label + status comment | Controller |
 
 check run は作成した GitHub App 以外に書き換えられず、commit SHA へ構造的に束縛される。改竄耐性と
 head binding が必要な事実（evidence、verdict）は check run に置き、人間が読み修正 loop の入力になる
-散文（finding）は comment に置く。comment と PR body の machine block は repository write 権限者が
+散文（finding）は comment に置く。check run の検証は name だけでなく作成 App の identity でも行う。
+Implementer App が`kudo/test-validity`という name の check run を作っても、Reviewer App 名義でない
+verdict は gate の入力にしない。comment と PR body の machine block は repository write 権限者が
 編集できるため、gate の真偽判定には使わず、verdict check run の output に記録した digest との照合で
 改竄を検出する。
 
@@ -130,16 +154,17 @@ Controller は reconcile loop であり、次を所有する。
 - versioned Worker Operation と Review Request の組み立てと in-process dispatch
 - timeout、retry、review round 予算、stale input、escalation の routing
 - merge / finalize gate の外形条件（live PR の open / base / head、required status check、mergeable）の read-only 評価
-- evidence / verdict check run、finding comment、status comment、label の記録（marker で冪等化）
+- Worker が記録した evidence / verdict の存在・binding・作成 identity の検証
+- status comment、label、escalation（round ledger を含む）の記録（marker で冪等化）
 
 Controller は model / provider session を持たず、Issue Compiler を呼び出して Issue 本文を解釈しない。
 Issue の不足情報を補う prompt も作らない。Worker が返した versioned Result の schema、digest、
 request binding、staleness は検証するが、Task Context を再構成せず、reviewer の品質 verdict を
 approve に変更しない。
 
-Controller が行える GitHub mutation は、label / comment / check run という record surface への
-記録に限る。worktree、branch、commit、Pull Request の内容は変更しない。merge を実行できるのは
-Issue Worker credential だけである。
+Controller が行える GitHub mutation は、label と Coordinator 名義の comment（status、escalation）に
+限る。evidence にも verdict にも触れず、worktree、branch、commit、Pull Request の内容も変更しない。
+merge を実行できるのは Issue Worker credential だけである。
 
 ### Issue Worker
 
@@ -154,6 +179,7 @@ plane であり、実装側の唯一の writer role である。
 - test authoring/revision、RED command、implementation/repair、GREEN/refactor checks を実行する
 - model-bearing Operation ごとに fresh Codex/Claude process を supervision する
 - 固定済み head の compare-and-push を冪等に行う（`publish_head`）
+- RED / GREEN / checks の evidence check run と test plan / PR draft の marker comment を自分の名義で記録する（attest）
 - final approve 後に required PR body を確定し draft を解除する（`finalize_pull_request`）
 - merge gate 成立後に期待 head SHA を明示した merge で merge commit を作り、head branch を削除する（`merge_pull_request`）
 
@@ -173,11 +199,14 @@ Review Worker は read-only evaluator である。
 - 一致確認済みの in-memory canonical Task Context、固定 base から取得した authority / source、
   head に束縛された evidence check run、明示された policy だけを fresh provider session へ渡す
 - 条件付き観点の applicability 宣言を含む versioned`approve`、`request_changes`、`needs_human`
-  Result を返し、宣言の完全性を binding 境界で検証する
+  Result を構築し、宣言の完全性を binding 境界で検証する
+- verdict check run と finding comment を**自分の App 名義で**対象 head へ記録し（report）、Result を
+  in-process で Controller へ返す
 
-Review Worker は implementation workspace を参照せず、GitHub write credential を持たない。Result は
-in-process で Controller へ返し、record surface への記録（verdict check run、finding comment）は
-Controller が行う。受け取った source、branch、PR は変更できない。
+Review Worker は implementation workspace を参照せず、**判定対象への write**（contents、branch、PR の
+状態・本文）を持たない。書けるのは自分の verdict check run と finding comment だけである。受け取った
+source、branch、PR は変更できない。Controller は記録の binding を検証するが、verdict を代筆も上書きも
+しない。
 
 Review Worker の handler は1つの Request を次の pipeline で処理する。1〜4は model session 起動前の
 決定論的段階であり、失敗はすべて protocol / staleness / execution failure として返す。5以降だけが
@@ -192,25 +221,39 @@ Review Worker の handler は1つの Request を次の pipeline で処理する�
    approved-test lineage、bound 宣言時の測定 evidence の数値照合）。
 5. **Session**: fresh provider process へ組み立てた context を渡す。structured output を strict parse
    し、不正 output は bounded retry 後に execution failure とする。
-6. **Result 構築**: verdict / finding 整合（`approve`に blocking なし、`request_changes` /
-   `needs_human`に blocking 必須）と、条件付き観点の applicability 宣言の完全性を検証して返す。
+6. **Result 構築と report**: verdict / finding 整合（`approve`に blocking なし、`request_changes` /
+   `needs_human`に blocking 必須）と、条件付き観点の applicability 宣言の完全性を検証し、verdict
+   check run と finding comment を自分の名義で記録してから返す。
 7. **Failure taxonomy**: timeout / rate limit / network / provider crash は attempt failure として
    retry 可能に返す。品質 verdict と failure を同じ field に載せない。
 
-### GitHub adapters
+### GitHub gateway
 
-GitHub 固有処理は薄い adapter とし、次を application operation から分離する。
+GitHub アクセスは単一実装の gateway（`internal/adapter/github`）へ集約する。record surface の形式
+（marker、machine block、check run output）は事実上の protocol 層であり、encode / parse が複数実装に
+散ると「書いた側と読んだ側の解釈のずれ」が workflow を壊すためである。gateway は次を所有する。
 
 - webhook signature と payload parsing
-- Issue / relationship / dependency / repository content read
-- candidate search pagination と rate-limit handling
-- label / comment / check run の記録と marker 検索
+- Issue / relationship / dependency / repository content read と、観測 snapshot の組み立て
+- candidate search pagination、rate-limit handling、transport failure 分類の一点集約
+- label / comment / check run の記録と marker 検索（冪等化）
+- record surface 形式（marker、machine block の包み紙、check run output、comment / PR body template）
+  の render / parse。golden fixture で固定する
 - branch、commit、Pull Request、merge API（CAS 前提条件付き）
-- GitHub App installation token の role-scoped な発行
+- GitHub App installation token の発行
 
-Webhook adapter と poller は business rule を持たず、いずれも`ReconcileIssue`を呼ぶ。Issue Worker の
-claim は event payload ではなく live API response を使う。GitHub adapter が担うのは transport 解析と
-API 操作であり、Issue Contract の意味解析は Issue Compiler だけが行う。
+**実装は 1 つ、instance は actor ごと**である。gateway を package-level singleton にせず、actor の
+App credential を constructor で注入した capability 別 instance（Observer は全 actor、Recorder は
+記録を持つ actor、RepoMutator は Issue Worker のみ）として使う。gateway 自体は権限を持たない。
+
+パースは 3 層に分かれたまま保つ。gateway は transport と record surface の形式だけを解釈し、machine
+block の中身の canonical encode / decode と digest は`internal/contract`、Issue Contract の意味解析は
+Issue Compiler だけが行う。gateway は raw Issue body を検証済み identity 付きの不透明な値として渡し、
+Contract の section を解釈しない。
+
+Webhook adapter と poller は business rule を持たず、いずれも`ReconcileIssue`を呼ぶ。phase 導出と
+gate 判定を gateway に持ち込まない。Issue Worker の claim は event payload ではなく live API response
+を使う。
 
 ### Provider and process adapters
 
@@ -250,6 +293,12 @@ class Recorder {
     +EnsureComment(Marker, Comment)
     +EnsureLabel(IssueRef, Label)
 }
+class RepoMutator {
+    <<interface>>
+    +EnsureBranch(Ref)
+    +CompareAndPush(Head)
+    +MergeWithSHA(PR, Head)
+}
 class IssueOperationHandler {
     <<interface>>
     +Handle(IssueOperation) IssueResult
@@ -260,18 +309,25 @@ class ReviewOperationHandler {
 }
 class IssueWorker
 class ReviewWorker
-class GitHubAdapter
+class GitHubGateway
 
 Controller --> PhaseDeriver
 Controller --> RepoObserver
-Controller --> Recorder
+Controller --> Recorder : Coordinator識別
 Controller --> IssueOperationHandler
 Controller --> ReviewOperationHandler
 IssueWorker ..|> IssueOperationHandler
+IssueWorker --> Recorder : Implementer識別
+IssueWorker --> RepoMutator
 ReviewWorker ..|> ReviewOperationHandler
-GitHubAdapter ..|> RepoObserver
-GitHubAdapter ..|> Recorder
+ReviewWorker --> Recorder : Reviewer識別
+GitHubGateway ..|> RepoObserver
+GitHubGateway ..|> Recorder
+GitHubGateway ..|> RepoMutator
 ```
+
+各 actor が使う`Recorder`は同じ gateway 実装だが、注入された App credential が違う別 instance で
+ある。書ける対象は capability と identity の両方で制限される。
 
 PhaseDeriver は observation を入力とする pure component であり、I/O を持たない。dispatch の transport
 は in-process call だが、payload は [Worker Operation Protocol](contracts/operation-protocol-v1alpha1.md)
@@ -370,16 +426,17 @@ Implementation と Review が共有できるのは次だけである。
 
 ## Mutation authority
 
-| Resource | Controller | Issue Worker | Review Worker |
+| Resource | Controller (Coordinator) | Issue Worker (Implementer) | Review Worker (Reviewer) |
 | --- | --- | --- | --- |
 | GitHub Issue body | no | no | no |
-| GitHub label / comment | 記録（marker 冪等） | no | no |
-| check run | 記録（marker 冪等） | no | no |
+| label / status comment | 記録（marker 冪等） | no | no |
+| evidence check run、test plan / PR draft comment | no | 自名義で記録 | no |
+| verdict check run、finding comment | no | no | 自名義で記録 |
 | implementation worktree | no | read/write | no |
 | branch / commit | no | read/write（CAS） | read-only checkout |
 | Pull Request | no | create/update/merge | read-only |
 | live Issue 由来 context | digest/binding のみ | 再取得・再 compile | 再取得・再 compile |
-| review verdict | 記録のみ、no override | no | create（in-process で返す） |
+| review verdict | binding 検証のみ、no override / no 代筆 | no | create + 自名義で記録 |
 
 ## Go package layout
 

@@ -59,7 +59,7 @@ M0とM1は完了扱いのまま変わらない（M0のpostgres部分は退役に
 | --- | --- |
 | M2 | phase導出の全域性（全観測組合せの網羅test）、attempt retry policyの全class |
 | M3 | webhook、pagination網羅、4 label lifecycle、rate limit retry、`healthz` / `readyz` |
-| M4 | secret redaction網羅、両provider adapter。**role別credentialはS3を例外とする**（最初のreview verdict時点でReview Workerはread-only） |
+| M4 | secret redaction網羅、両provider adapter。**actor別App identityはS3のReviewer分離を先行させ**、Coordinator分離と残りのdownscopeは幅で戻す |
 | M5 | `revise_tests`、`needs_human` escalation / resumption、staleness全経路 |
 | M6 | `repair_implementation`、test mutation detection、required checks統合、PR body validator |
 
@@ -121,8 +121,9 @@ Runを再開せず再claimから始まる。貫通で作るRunは捨てる前提
 
 **作るもの**
 
-- GitHub App認証とinstallation token発行（claimがbranch push・PR作成・check run記録を含むため、
-  旧計画と異なり認証はS1の前提になる。#59を前倒しする）。
+- GitHub認証。S1〜S2はowner PATによる単一identityで開始してよい（PATはdev/test専用のTokenSource
+  実装としてだけ持つ）。verdict記録が始まるS3までにImplementer / Reviewerの**App identity分離**を
+  導入する（[architecture.md](../05_design/01_architecture.md) Actor model。#59の実体）。
 - read client: Issue list、Issue get、repository content、base commit SHA。
 - candidate filter。`GET /repos/{o}/{r}/issues?state=open&assignee=<login>&labels=ai-ready&per_page=100`
   で3条件をquery parameterで満たし、non-PRは`pull_request` keyの有無で判定する。4条件とも落とさない。
@@ -175,10 +176,10 @@ Runを再開せず再claimから始まる。貫通で作るRunは捨てる前提
 
 **作るもの**
 
+- Reviewer App identityの分離（自己承認の構造的禁止はここから有効になる）。
 - Review Request組み立てとrequired inputs / policy refのbinding検証。
 - Review Workerのdeterministic pipeline（live照合、read-only checkout、fresh session）。
-- verdict check run（`kudo/test-validity`）とfinding commentの記録。
-- Review Worker用read-only tokenへのdownscope。
+- Reviewer名義でのverdict check run（`kudo/test-validity`）とfinding commentの記録。
 
 **意図的に雑にするもの**
 
@@ -392,7 +393,7 @@ claim する。
 
 ### Milestone 3 deliverables
 
-- GitHub App authentication と role-scoped installation token
+- actorごとのGitHub App登録とinstallation token発行（Implementer / Reviewer分離必須、Coordinator分離推奨）
 - `POST /webhooks/github`の raw-body signature verification、payload limit
 - startup reconciliation と既定15分 polling、pagination、rate-limit handling
 - candidate filter: open、non-PR、configured target assignee / ready label（既定`mrbaron3` / `ai-ready`）

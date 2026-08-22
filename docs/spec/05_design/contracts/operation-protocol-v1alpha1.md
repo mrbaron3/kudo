@@ -12,10 +12,11 @@ Review Request / Result を使う。本 protocol の execution failure と revie
 
 本 protocol における**artifact**とは、canonical encoding と SHA-256 digest で identity が決まる
 versioned payload である。bytes の永続表現は専用 store ではなく GitHub 上の record surface（check
-run output、marker 付き comment、PR body の machine block）であり、Controller だけが記録する
-（[ADR-0001](../../../adr/0001-github-ssot-stateless-reconciler.md)）。record surface のうち comment
-と PR body は repository write 権限者が編集できるため、gate 判定は App 所有 check run に記録した
-digest との照合を正とする。
+run output、marker 付き comment、PR body の machine block）であり、**その発話の主体（payload の
+producer）が自分の App identity で記録する**（[ADR-0001](../../../adr/0001-github-ssot-stateless-reconciler.md)、
+actor と identity の対応は [architecture.md](../01_architecture.md) Actor model）。record surface の
+うち comment と PR body は repository write 権限者が編集できるため、gate 判定は App 所有 check run に
+記録した digest との照合を正とする。
 
 ## Operation envelope
 
@@ -172,7 +173,8 @@ version、Task Context ref、body digest、base SHA を失ってはならない�
 検証できない。name は後述の語彙・形式規則を使い、重複を拒否する。canonical encode では name の
 lexicographic 順へ並べ替えるため、producer の列挙順は Result identity を変えない。各 output の
 payload は Result と同時に in-process で Controller へ渡り、Controller が record surface へ記録する。
-記録が確認されるまで Controller は次の transition を発行しない。
+producer は record surface への記録を終えてから Result を返し、Controller は記録の存在・digest・
+作成 identity を検証するまで次の transition を発行しない。
 
 terminal な`outcome`は次のいずれかとする。
 
@@ -248,7 +250,8 @@ logical name を欠いた成功を受理すると、後続 Operation と review 
 
 payload は content address で一意になるが、digest だけでは「その bytes が何であるか」を表せない。
 Operation Result の`outputs`は logical name で引く table であり、name ごとに記録先の record surface
-が決まる。
+が決まる。記録者は payload の producer 自身である（Implementer は自分の evidence を、Reviewer は
+自分の verdict / finding を、自分の名義で書く）。
 
 | logical name | 内容 | 記録先 | 主な producer |
 | --- | --- | --- | --- |
