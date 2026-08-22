@@ -1,8 +1,15 @@
 # Reviewer用promptテンプレートと起動手順
 
+このスキルが起動するreviewerは`test_validity`（テストの妥当性）だけである。PR完成後の実装
+レビューはスキルのスコープ外なので、ここにテンプレートを置かない。
+
 roundごとに新しいreviewerセッションをfresh起動し、以下のテンプレートを埋めて渡す。
 `<...>` を実値に置換する。前roundのreviewerへの追記・再利用はしない。
 reviewerがこの会話の文脈を一切持たないことが、fresh session設計の縮約としての意味を持つ。
+
+reviewerの責務は判定までである。`needs_human`はreviewerにとっての正当な出力であり、その後の
+扱い（Generatorが決裁して続行する）はreviewerに知らせない。判定を通しやすくするために制約や
+verdictルールを緩めないこと。
 
 ## 起動手順（ハーネス別）
 
@@ -28,10 +35,11 @@ codex exec --cd <repoRoot>/.worktrees/review-issue-<n> \
 - `go test` はbuild cacheへの書き込みを必要とするため、promptの末尾に
   「テスト実行時は `GOCACHE=$PWD/.gocache go test ./...` を使う」と1行追記する
   （worktree外への書き込みがsandboxで遮断されるため）。
-- reviewerの最終メッセージが標準出力に出る。YAML部分を改変せず記録する。
+- reviewerの最終メッセージが標準出力に出る。YAML部分を改変せずrun recordへ記録する
+  （GitHubへは投稿しない）。
 - flagはversionによって異なり得るため、失敗したら `codex exec --help` で確認する。
 
-## 共通末尾ブロック（両kindのprompt末尾に必ず含める）
+## 共通末尾ブロック（prompt末尾に必ず含める）
 
 ```
 制約:
@@ -47,7 +55,7 @@ codex exec --cd <repoRoot>/.worktrees/review-issue-<n> \
 最終出力は次のYAMLだけを返す（前置き・後書きの散文は不要）:
 
 schema: kudo.review-result/skill-v1
-kind: <kind>
+kind: test_validity
 verdict: approve | request_changes | needs_human
 reviewedHead: <sha>
 round: <k>
@@ -79,7 +87,7 @@ Isolation and test design / Discovery and RED causality）を適用して判定�
   Decision Authority / Stop and Escalation Conditions）をそのまま貼る:
   <契約sectionの本文>
 - authorityRefs（review worktree内のこのファイル群を読んでよい）: <authorityRefsの一覧>
-- test plan: <test plan本文またはPR comment貼り付け>
+- test plan: <run recordのtest plan本文をそのまま貼る>
 - RED evidence: <command、exit status、stdout/stderr要約、環境>
 
 確認上の注意:
@@ -87,41 +95,4 @@ Isolation and test design / Discovery and RED causality）を適用して判定�
 - Goでは未実装シンボル参照によるcompile errorは「対象欠如起因のRED」として認める。
   テスト自体のtypo・fixture不備・toolchain不備による失敗はREDとして認めない。
 - production sourceまたはproduction configへの変更がdiffに含まれていたらblocking。
-```
-
-## final_implementation 用
-
-```
-あなたはKudoワークフローのReview Worker（final_implementation）である。まず
-<repoRoot>/docs/spec/05_design/review-policies/final-implementation-v1alpha1.md を読み、
-常時必須6観点（Functionality and correctness / Regression and scope /
-Test integrity and quality / Code quality / Security / Evidence and residual risk）と
-条件付き4観点（UX / Accessibility / Type design / Performance）を適用して判定する。
-
-判定対象（immutable。このcheckout以外を見ない）:
-- review worktree: <repoRoot>/.worktrees/review-issue-<n>（final head <finalHead> に固定済み）
-- base SHA: <baseSha>、approved test head: <approvedTestHead>
-- 実装diff: `git diff <approvedTestHead>..<finalHead>`、全体diff: `git diff <baseSha>..<finalHead>`
-
-明示された入力:
-- canonical Task Context: <契約sectionの本文>
-- authorityRefs: <一覧>
-- approved test validity Result（round <k> のverdict YAML）: <貼り付け>
-- test plan: <貼り付けまたは参照>
-- GREEN + checks evidence: <command、結果要約>
-- PR body draft: <貼り付け>
-
-確認上の注意:
-- 検証のためreview worktree内で `go test ./...` や `mise run check` を実行してよい。
-- approved testの削除・skip・弱体化・未検出化がないかをdiffで確認する。approved test headと
-  final headの間にテスト変更があること自体はdispatch前に検証済みだが、疑わしければ
-  blockingとして報告する。
-- 条件付き観点は、Task ContextのOutcome / Scope / Deliverables / AC / Constraintsとdiffから
-  適用可否を判定し、4観点それぞれについて宣言をちょうど1件ずつ出力YAMLに含める:
-
-applicability:
-  ux: { applicable: <bool>, reason: <一文> }
-  accessibility: { applicable: <bool>, reason: <一文> }
-  type_design: { applicable: <bool>, reason: <一文> }
-  performance: { applicable: <bool>, reason: <一文> }
 ```
