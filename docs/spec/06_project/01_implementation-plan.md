@@ -35,19 +35,23 @@ target document が完成形を定義していることと、code が完成し�
 
 ## Delivery order
 
-**milestoneは「完成の定義」であって実行順序の単位ではない**（2026-08-19決定）。実行は縦の貫通sliceを
+**milestoneは「完成の定義」であって実行順序の単位ではない**（2026-08-19決定）。実行は貫通trackを
 単位とし、各milestoneの貫通に必要な最小部分を横断して先に通し、残りを後から幅として戻す。
 
-ADR-0001（2026-08-22）により、claimの成立が「branch作成 + draft PR + claim checkpoint」になったため、
-sliceの到達点を次のとおり再定義する。人間の見えるdraft PRはS1で現れる。
+**Implementer worker（track A）とReviewer worker（track B）は並列で開発する**（2026-08-22決定）。
+並列化を成立させるのはfixture PR seeder（[#71](https://github.com/mrbaron3/kudo/issues/71)）である。
+claim形のPR（claim checkpoint付きbody、test-only head、evidence check run、test plan comment）を
+合成し、ReviewerはImplementerの完成を待たずに実物と同形の入力で開発する。
 
-| slice | 到達点 | 開始するmilestone |
-| --- | --- | --- |
-| S1 | live GitHub Issue 1件がclaimされ、branch `kudo/issue-<n>`とclaim checkpoint付きdraft PRができる | M3 |
-| S2 | `author_tests`がREDを固定し、test headのpushとRED evidence check runの記録まで通る | M4、M5 |
-| S3 | `test_validity` reviewが1 round通り、verdict check runとfinding commentが記録される | M5 |
-| S4 | `implement`とfinal reviewを通しPRがready化する | M6 |
-| S5 | merge gateを通過してmerge・Issue close・`ai-merged`まで到達する | M6 |
+| track | 到達点 | Epic | 対応するmilestone |
+| --- | --- | --- | --- |
+| F 共通基盤 | GitHub gateway、reconcile core、App identity、webhook / pollingが揃い、A / Bがこの上で並列に進める | [#63](https://github.com/mrbaron3/kudo/issues/63) | M2、M3 |
+| A Implementer貫通 | live Issue 1件のclaim（branch CAS + claim checkpoint付きdraft PR）→ REDの固定 → publishとImplementer名義のevidence記録 | [#64](https://github.com/mrbaron3/kudo/issues/64) | M3、M4、M5 |
+| B Reviewer貫通 | seederが合成したclaim形PRへの`test_validity` review 1 roundと、Reviewer名義のverdict / finding記録 | [#65](https://github.com/mrbaron3/kudo/issues/65) | M5 |
+| I 統合貫通 | A×Bを結線したend-to-end 1 round（happy）と`request_changes`→`revise_tests`の1周 | [#69](https://github.com/mrbaron3/kudo/issues/69) | M5 |
+
+AとBはFの上で並列に進み、Iで合流する。I以降のM6区間（`implement`〜merge）はIの実測を見て実行順を
+確定する。人間の見えるdraft PRはtrack Aのclaim到達で現れる。
 
 M0とM1は完了扱いのまま変わらない（M0のpostgres部分は退役に伴い縮小する）。M2はrun storeとして実装
 されたが前提を失ったため、reconcile coreへ置き換える。M7とM8は貫通後、幅を戻し切ってから着手する。
@@ -59,7 +63,7 @@ M0とM1は完了扱いのまま変わらない（M0のpostgres部分は退役に
 | --- | --- |
 | M2 | phase導出の全域性（全観測組合せの網羅test）、attempt retry policyの全class |
 | M3 | webhook、pagination網羅、4 label lifecycle、rate limit retry、`healthz` / `readyz` |
-| M4 | secret redaction網羅、両provider adapter。**actor別App identityはS3のReviewer分離を先行させ**、Coordinator分離と残りのdownscopeは幅で戻す |
+| M4 | secret redaction網羅、両provider adapter。**actor別App identityはtrack B着手までのReviewer分離を先行させ**、Coordinator分離と残りのdownscopeは幅で戻す |
 | M5 | `revise_tests`、`needs_human` escalation / resumption、staleness全経路 |
 | M6 | `repair_implementation`、test mutation detection、required checks統合、PR body validator |
 
@@ -76,8 +80,8 @@ staleness判定は、後から入れると過去のpayloadとdigestが再現し�
 「**contract層はもう十分であり、これ以上磨かず動くものへ接続すべき**」の一点であり、これがcontract
 feature freeze（Delivery rules）の根拠でもある。
 
-**S1到達（人間の見えるdraft PR）をもって、製品境界の疑義を実物に対して再評価する**ことがこの順序の
-主目的である。S4以降は貫通後の話であり、S3までの結果によって順序を組み直してよい。
+**track Aのclaim到達（人間の見えるdraft PR）をもって、製品境界の疑義を実物に対して再評価する**ことが
+この順序の主目的である。統合（I）以降は貫通後の話であり、F / A / Bの結果によって順序を組み直してよい。
 
 決定に際して次を検討し、退けた。
 
@@ -85,13 +89,15 @@ feature freeze（Delivery rules）の根拠でもある。
   時点が最も遅い。文書とコードの完成の混同を構造的に許し続ける。
 - **contract層の追加整備を先に完了させる**: 動きうる製品境界に対して、外部consumerを持たないalpha
   protocolを磨き続けることになる。貫通で「実際に詰まった箇所」を根拠に変更するほうが精度が高い。
-- **S1〜S5を1つの大きな貫通として一気に通す**: 途中で製品境界を再評価する機会を失う。S4以降の内訳は
-  実測を見てから決めるほうが手戻りが小さい。
+- **claim→RED→reviewを1本の直列sliceとして通す**: Reviewer側の開発がImplementerの完成待ちになり、
+  2つのworkerの開発が直列化する。fixture seederで入力を合成すれば、reviewerは実物と同形の入力で
+  独立に開発できる。
+- **F / A / B / Iを1つの大きな貫通として一気に通す**: 途中で製品境界を再評価する機会を失う。統合以降の
+  内訳は実測を見てから決めるほうが手戻りが小さい。
 
 引き継がれるのは実装コードとrecord surface上のpayloadであってRun instanceではない。provider adapter
-実装でExecution Policy digestが変わるとS1のRunは`SemanticInputChanged`でsupersedeされるため、S2はS1の
-Runを再開せず再claimから始まる。貫通で作るRunは捨てる前提であり、最初のRunが「本物の履歴」に
-ならないことは受け入れる。
+実装でExecution Policy digestが変わると既存Runは`SemanticInputChanged`でsupersedeされ、再claimから
+始まる。貫通で作るRunは捨てる前提であり、最初のRunが「本物の履歴」にならないことは受け入れる。
 
 **この順序の最大のリスクは、milestone exit criteriaの一部が長期間未達のまま残ることである。** 上の
 未達台帳の追跡が形骸化すると「動いたから完成」という誤読が起きる。あわせて層ごとの品質が非対称になる
@@ -101,9 +107,12 @@ Runを再開せず再claimから始まる。貫通で作るRunは捨てる前提
 
 次のいずれかが成立した場合、delivery orderを再検討する。
 
-- S1へ到達しても製品境界の疑義が解消しない。この場合、貫通の対象そのものを再定義する必要がある。
-- 貫通がS1〜S3で到達できず、原因が**contract層の不足**であると判明した。この場合はcontract feature
+- track Aのclaimへ到達しても製品境界の疑義が解消しない。この場合、貫通の対象そのものを再定義する
+  必要がある。
+- F / A / Bの貫通が到達できず、原因が**contract層の不足**であると判明した。この場合はcontract feature
   freezeを解く。
+- 並列開発の前提が崩れた——fixture seederの合成物と実Implementerの成果物が統合（I)で意味的に食い違い、
+  Reviewer側の作り直しが並列化の節約を上回った。
 - 貫通の過程で**使われないcontractが体系的に見つかった**。alphaで外部consumerを持たないため削除は
   可能であり、何を削るかを別途決める。
 - provider CLIのheadless契約（structured output、project doc無効化flag、state directory env）が上流
@@ -111,86 +120,90 @@ Runを再開せず再claimから始まる。貫通で作るRunは捨てる前提
 - 幅を戻す段で、exit criteria未達台帳が追跡不能な規模へ膨らんだ。sliceの薄さが過剰であったことを
   意味する。
 
-### 各sliceの範囲
+### 各trackの範囲
 
-各sliceで「何を作るか」と「何を意図的に雑にするか」の両方を明示する。暗黙の手抜きを作らない。雑に
+trackごとに「何を作るか」と「何を意図的に雑にするか」の両方を明示する。暗黙の手抜きを作らない。雑に
 したものは実装PRの記述と、必要なら[Evaluation harness — deferred](04_evaluation-harness.md)へ記録し、
-`05_design/01_architecture.md`や`05_design/contracts/`へは書かない。
+`05_design/01_architecture.md`や`05_design/contracts/`へは書かない。作業単位の実体はEpic
+（[#63](https://github.com/mrbaron3/kudo/issues/63) / [#64](https://github.com/mrbaron3/kudo/issues/64) /
+[#65](https://github.com/mrbaron3/kudo/issues/65) / [#69](https://github.com/mrbaron3/kudo/issues/69)）
+配下のTask Issueであり、本節と食い違う場合は本節を先に直す。
 
-#### S1: Issue 1件をclaimし、branchとclaim checkpoint付きdraft PRを作る
-
-**作るもの**
-
-- GitHub認証。S1〜S2はowner PATによる単一identityで開始してよい（PATはdev/test専用のTokenSource
-  実装としてだけ持つ）。verdict記録が始まるS3までにImplementer / Reviewerの**App identity分離**を
-  導入する（[architecture.md](../05_design/01_architecture.md) Actor model。#59の実体）。
-- read client: Issue list、Issue get、repository content、base commit SHA。
-- candidate filter。`GET /repos/{o}/{r}/issues?state=open&assignee=<login>&labels=ai-ready&per_page=100`
-  で3条件をquery parameterで満たし、non-PRは`pull_request` keyの有無で判定する。4条件とも落とさない。
-- `ReconcileIssue(repositoryRef, issueNumber, Trigger)`。pollerはIssueRefを流すだけの薄いproducerにする。
-- claim use case。`contract.Compile(body, IssueRef)`が[Issue Contract](../05_design/contracts/issue-contract-v1alpha1.md)
-  のclaim手順1〜2を完全に埋める。adapter側にparseを書かない。
-- authority referenceの解決。`GET /repos/{o}/{r}/contents/{path}?ref=<baseSha>`でcontentを取り、
-  `contract.SHA256(bytes)`を`contentDigest`にする。
-- `readiness: ready`のgate。claim use caseが`req.Readiness == contract.ReadinessReady`を明示的に書く。
-- branch `kudo/issue-<n>`のref create（CAS）、bootstrap commit、draft PRのensure、claim checkpoint
-  （machine block）のPR body記録。
-- `ai-in-progress` labelの冪等な記録。
-
-**意図的に雑にするもの**
-
-- GitHub native sub-issue / dependency relationshipとContract blockの照合をしない（[Issue Contract](../05_design/contracts/issue-contract-v1alpha1.md)
-  は「adapterが取得できる場合」の条件付き要求であり、取得しない構成は契約違反にならない）。
-- dependency completionの証明をしない。省略の仕方は一つだけで、**`dependsOn`が非空ならclaimせず
-  `waiting_dependency`を返す**。`ai-ready`を消費せず`needs_human`にもせず、pollingで再評価させる。
-- claim中の再取得（契約claim手順7）をしない。「1回fetch → 全部そこから解決 → commit直前に再readして
-  body digest比較」の形だけ保つ。
-- webhookを作らない。signature検証、payload size limitはS3以降。pollingだけで開始する。
-- phase導出は「candidate → claimed」の2状態分だけ実装し、全域表はS2以降で埋める。
-
-#### S2: `author_tests`でREDを固定し、test headとRED evidence check runを記録する
+#### F: 共通基盤（gateway・reconcile core・identity）
 
 **作るもの**
 
-- Run workspace。Run専用clone → `baseSha` checkout → claim済みbranchのcheckout → provider実行 →
-  checkpoint commit。worktree共有ではなくRunごとの独立cloneにする。
-- child process supervisor。timeout、process group kill、exit / timeout / invalid outputの分類、環境
-  変数allowlist、bounded output capture。
-- provider adapter（codexとclaudeのどちらか一方で足りる）。schema非依存のinterfaceにし、
-  `OutputSchema []byte`を受けて`FinalMessage []byte`と実行evidenceを返す。
-- RED evidence payload（canonical YAML）。`runs[]`、各runのargv、`workingDir`、
-  `exited|signaled|timed_out`と`exitCode`/`signal`、stdout/stderrの`(inline, truncated, fullDigest,
-  fullLength)`、environment identity、`headSha`。観測時刻と実行時間はcanonical contentに入れない。
-- `publish_head`（compare-and-push）と、`kudo/evidence-red` check run・test plan commentの記録
-  （marker冪等）。
+- GitHub gateway（#16）: observer（観測snapshotの組み立て）、recorder（check run / comment / label、
+  marker検索付き冪等記録）、marker / machine block形式のencode / parseとgolden fixture、transport
+  failure分類の一点集約、pagination、rate limit handling。単一実装・actorごとのcapability instance。
+- reconcile core（#70）: 観測model、Derived phases表のpure function化、未知の観測組合せを
+  `needs_human`へ倒すfail-closed既定、round counter導出（Reviewer名義finding commentの計数）、
+  in-process dispatchの単一flight排他、retry class / backoff / clock injection。
+- GitHub認証（#59）: actorごとのApp identityとinstallation token発行。S字の立ち上がりはowner PATの
+  単一identity（dev / test専用TokenSource）で開始してよく、track B着手までにImplementer / Reviewerの
+  App分離を導入する。
+- webhook（#18）とpolling / label lifecycle（#19）。webhookは貫通の必須経路ではなく、pollingだけで
+  A / Bを開始できる。
 
 **意図的に雑にするもの**
 
-- secret redactionは`func([]byte) []byte`のseamだけ用意し、初版は環境変数由来の値の走査に留める。
-- `toolPermissions`はroleごとに1組をhard-codeし、それ以外の値をrejectする。
-- provider CLIのJSONL eventを細かくparseしない。structured outputには「計画と主張」だけを載せ、test
-  patchをJSONに埋め込ませない（コード変更はworktreeからgitで取る）。
-- MCP設定、rate limit専用backoff、adapter versionの自動検出（version照合はする）。
+- claimはFに置かない（Aの#17）。gatewayは観測と記録のprimitiveまでを所有する。
+- Coordinator identityの分離は推奨に留め、Implementer / Reviewer分離を先行させる。
 
-#### S3: `test_validity` reviewを1 round通す
+#### A: Implementer worker貫通（claim→RED→publish / attest）
 
 **作るもの**
 
-- Reviewer App identityの分離（自己承認の構造的禁止はここから有効になる）。
-- Review Request組み立てとrequired inputs / policy refのbinding検証。
-- Review Workerのdeterministic pipeline（live照合、read-only checkout、fresh session）。
-- Reviewer名義でのverdict check run（`kudo/test-validity`）とfinding commentの記録。
+- claim Operation（#17）: candidate filter（open / non-PR / assignee / `ai-ready`、`pull_request`
+  keyでのPR除外）、`contract.Compile`による strict parse、authority解決（base SHA固定 +
+  `contentDigest`）、`readiness: ready`のgate、branch `kudo/issue-<n>`のref create（CAS）、bootstrap
+  commit、claim checkpoint（machine block）付きdraft PRのensure、`ai-in-progress`の記録。
+- Run workspaceとchild process supervisor（#21）: Run専用clone、checkpoint commitのidentity固定、
+  timeout / process group / bounded capture / 環境変数allowlist。
+- fresh session runtimeとCodex adapter（#22）: operation-scoped state directory、project doc
+  auto-discovery無効化、credential fileのみseed、schema非依存interface。
+- `author_tests`とRED evidence（#24）: canonical YAML payload（`runs[]`、`headSha`、未切詰
+  stdout/stderrのdigest / length）。
+- `publish_head`とattest（#29）: compare-and-push、Implementer名義の`kudo/evidence-red` check runと
+  test plan marker commentの記録。
 
 **意図的に雑にするもの**
 
-- `request_changes`後の`revise_tests` loopはS4以降。S3は1 roundのverdict記録まで。
-- round counterの導出はS3では実装せず、S4のloop実装と同時に入れる。
-- 外部干渉（人間push、close、base変更）のreconciliationは検出だけにし、復旧経路はS4以降。
+- native sub-issue / dependency relationshipとContract blockの照合をしない。
+- dependency completionの証明をしない。`dependsOn`が非空なら`waiting_dependency`を返す。
+- claim中の再取得（契約claim手順7）をしない。「1回fetch → 全部そこから解決 → mutation直前のbody
+  digest比較」の形だけ保つ。
+- provider adapterはcodexだけで足りる（claude #23は幅で戻す）。
+- secret redactionはseamのみ。`toolPermissions`はroleごとに1組をhard-code。provider CLIのJSONL
+  eventを細かくparseしない。MCP設定、rate limit専用backoff、adapter versionの自動検出をしない。
 
-#### S4 / S5
+#### B: Reviewer worker貫通（test_validity 1 round）
 
-S3の実測結果を見てから内訳を確定する。それまで該当Taskはmilestone Epicに置く。
+**作るもの**
 
+- fixture PR seeder（#71）: claim形PRをfake GitHub fixtureとopt-in live fixture repositoryの両方に
+  合成するdev harness。record surface形式は#16のencode / parseを共用し、独自形式を作らない。
+- `test_validity` Review Worker（#25）: protocol validation → live freshness照合 → read-only
+  checkout → deterministic prerequisites → fresh session → Result構築とreport（Reviewer名義の
+  `kudo/test-validity` check runとfinding comment）。required inputs（`test-plan`、`red-evidence`）の
+  digest照合。
+
+**意図的に雑にするもの**
+
+- model providerはfakeで進める。live provider統合と実Implementer成果物への結線は統合（I）。
+- `request_changes`後の`revise_tests` loopは統合（I、#26）。Bは1 roundのverdict記録まで。
+
+#### I: 統合貫通（A×Bの結線）
+
+**作るもの**
+
+- Controllerのdispatch結線（#72）: 実repositoryでIssue → claim → `author_tests` → publish / attest →
+  Review Request組み立て → Reviewer実行 → verdict記録 → phase導出が次actionを返すまで。live
+  providerを両workerで使う最初の統合。
+- `revise_tests`とneeds-human再開loop（#26）: round予算消費、ResumeIdentity、escalation commentと
+  ledger、`ai-ready`再付与からのresume / supersede。
+
+M6区間（#27 `implement`以降）の実行順は、Iの実測を見てから確定する。
 ### 貫通でも落とさないもの
 
 「後から入れられない」ではなく、**後から入れると過去に作ったevidenceの意味が変わる／欠落を後から
@@ -231,7 +244,7 @@ S3の実測結果を見てから内訳を確定する。それまで該当Task�
 | phase導出をpure functionにし、GitHub adapterから分離すること | 導出がadapterへ散ると全域性をtable-driven testで検証できず、観測組合せの穴がfail-openになる |
 | pagination（Link header）を実装するか、黙って打ち切らないこと | 黙ったtruncationは「Issueが永遠にclaimされない」観測不能なfail-openになる |
 | `pull_request` fieldによるPR除外 | issues list endpointはPRも返す。落とすと人間のPRへ`ai-needs-human`を投影する |
-| authority referenceの解決をS1で省略しないこと | routingのresult taxonomyに「未実装」を表す値が無く、唯一の受け皿`claim_rejected`は誤ったlabelを貼る。実装コストはendpoint 1本 |
+| authority referenceの解決をclaim（#17）で省略しないこと | routingのresult taxonomyに「未実装」を表す値が無く、唯一の受け皿`claim_rejected`は誤ったlabelを貼る。実装コストはendpoint 1本 |
 | Runごとの独立clone | linked worktreeはobject DBとrefをrepository単位で共有し、複数Run並行時のmutableな共有資源になる。worktree共有はdisk最適化であり、測ってから入れる |
 | claim use caseをController側packageに置かないこと | claimは**Issue WorkerのOperation**であり、branch / PR mutationを含む。`ReconcileIssue`の内側へ書くとwrite credentialがController側に生える。`ReconcileIssue`は薄いrouterに留める |
 
@@ -241,12 +254,12 @@ contract feature freeze（Delivery rules）の例外である。踏んだ実装P
 testを同時に更新する。
 
 1. **`test-plan` / `red-evidence`のpayload kindが`artifactKindRules`に無い。** record surfaceへ記録する
-   payloadのkind検証をどう通すかをS2の実装前に決める。
+   payloadのkind検証をどう通すかを#24の実装前に決める。
 2. **checkpoint commitのidentity規則が[contracts/](../05_design/contracts/)に無い。** [Operation Protocol](../05_design/contracts/operation-protocol-v1alpha1.md)
    の「同じ入力から同じ結果を再生成したattemptは同じcontent identityを持つ」がhead SHA経由で壊れない
-   よう、S2の実装PRと同じchangeで文書化する。
+   よう、#21の実装PRと同じchangeで文書化する。
 3. **marker / machine blockの具体formatが未定義。** claim checkpoint、evidence / verdict check runの
-   output block、finding commentのmarkerは、S1〜S3の実装PRの中でformatを確定し、contract fixtureへ
+   output block、finding commentのmarkerは、#16の実装PRの中でformatを確定し、contract fixtureへ
    固定する。
 
 ### 後回しにするものと後から足せる根拠
@@ -259,42 +272,38 @@ testを同時に更新する。
 | claim中の再取得（契約手順7） | model-bearing Operationの直前検査であり、そのOperationがまだ無い |
 | phase導出の全域表の網羅test | 導出がpure functionであれば、観測組合せのtable-driven testは後から拡充できる。未知の組合せを`needs_human`へ倒すfail-closed既定だけは最初から入れる |
 | secret redactionの網羅性、graceful shutdown、MCP設定、rate limit専用backoff | M4 exit criteriaに含まれない。seamがあれば差し替えで足りる |
-| production image hardening（M7） | S1〜S5はhostとM0のdevelopment imageで成立する。Issue Worker実行にはgit + provider CLI + credentialが要り、この差分がM7の実体である |
+| production image hardening（M7） | 貫通trackはhostとM0のdevelopment imageで成立する。Issue Worker実行にはgit + provider CLI + credentialが要り、この差分がM7の実体である |
 
 ### 貫通の未決事項
 
-- **S4 / S5の内訳**: S3の実測結果を見てから確定する。
-- **operation-scoped state directoryへのcredential供給（S2の実行前提）**: `CODEX_HOME` /
+- **M6区間（#27〜#62）の実行順**: 統合（I）の実測結果を見てから確定する。
+- **operation-scoped state directoryへのcredential供給（track Aの実行前提）**: `CODEX_HOME` /
   `CLAUDE_CONFIG_DIR`を空のtemp dirへ向けると両CLIとも未認証になる。**credential fileのみをallowlist
   してseedする**方向で決着させる（global project docの巻き込みは二重注入の復活になる）。
 - **record surface payloadのmissing / corruptに対応する`FailureClass`**: 現行6値で閉じている。(a)
-  failure recordを作らず`needs_human`へescalate、(b) freeze例外としてclassを1つ足す、の二択をS2の前に
-  決める。
+  failure recordを作らず`needs_human`へescalate、(b) freeze例外としてclassを1つ足す、の二択をtrack A
+  の#24着手前に決める。
 - **`outputs`の長さ0チェック**: 長さ0の`red-evidence`もvalidationを通る。protocol層・recorder・
   handler検査のどこで弾くかを決めていない。
-- **RED evidenceのversioned schema化**: S3までopaque bytesで実害は無いが、S4へ広げる前にschemaを
-  決める。決めた時点で過去のevidenceは別identityになる。
-- **run store退役の時期**: reconcile core（M2代替）がS1を通した時点で`internal/adapter/postgres`と
-  開発Composeのpostgres serviceを削除する。S1実装と同一PRにするか分離するかは着手時に決める。
+- **RED evidenceのversioned schema化**: 統合（I）までopaque bytesで実害は無いが、M6区間へ広げる前に
+  schemaを決める。決めた時点で過去のevidenceは別identityになる。
+- **run store退役の時期**: reconcile core（#70）とtrack Aのclaim（#17）が通った時点で
+  `internal/adapter/postgres`と開発Composeのpostgres serviceを削除する。同一PRにするか分離するかは
+  着手時に決める。
 
 ### Epic構成
 
-作業単位はEpicであり、**GitHubのEpicは貫通sliceに対応させる**（2026-08-21）。milestone Epicは
+作業単位はEpicであり、**GitHubのEpicは貫通trackに対応させる**（2026-08-22）。milestone Epicは
 「完成の定義」と未達台帳として残すため、Epicとmilestoneは1対1ではない。milestoneの進捗は上の未達表を
 正とする。
 
-ADR-0001に伴うIssue再編（前提を失ったIssueのclose / 書き直し、slice再定義への追従）は本計画の改訂と
-別に行う。再編完了後にこの表を更新する。
-
 | Epic | 役割 | 配下 |
 | --- | --- | --- |
-| [S1](https://github.com/mrbaron3/kudo/issues/63) | 貫通の実行単位 | 再編後に更新 |
-| [S2](https://github.com/mrbaron3/kudo/issues/64) | 貫通の実行単位 | 再編後に更新 |
-| [S3](https://github.com/mrbaron3/kudo/issues/65) | 貫通の実行単位 | 再編後に更新 |
-| [M2](https://github.com/mrbaron3/kudo/issues/2)〜[M8](https://github.com/mrbaron3/kudo/issues/8) | 未達台帳 | 再編後に更新 |
-
-S4とS5のEpicは作らない。S4 / S5の内訳はS3の実測結果を見てから確定するため、S3到達後に切る。それまで
-該当Taskはmilestone Epicに置く。
+| [F #63](https://github.com/mrbaron3/kudo/issues/63) | 共通基盤 | #16、#70、#59、#18、#19 |
+| [A #64](https://github.com/mrbaron3/kudo/issues/64) | Implementer worker貫通 | #17、#21、#22、#24、#29 |
+| [B #65](https://github.com/mrbaron3/kudo/issues/65) | Reviewer worker貫通 | #71、#25 |
+| [I #69](https://github.com/mrbaron3/kudo/issues/69) | 統合貫通 | #72、#26 |
+| [M2 #2](https://github.com/mrbaron3/kudo/issues/2)〜[M8 #8](https://github.com/mrbaron3/kudo/issues/8)、[M7 #36](https://github.com/mrbaron3/kudo/issues/36) | 未達台帳 | M4に#23、M6に#27・#28・#53・#60・#62、M7に#32・#37、M8に#33・#34・#35・#44 |
 
 Task Issueは必ず1つのEpicに属する。Epic所属は実行順序を作らない——依存のgateは
 [Issue Contract](../05_design/contracts/issue-contract-v1alpha1.md)のとおり`dependsOn`だけである。
@@ -389,7 +398,7 @@ IssueRef から Task の execution context と review identity を決定論的�
 Webhook と必須 polling fallback を同じ`ReconcileIssue`へ接続し、実行可能な Issue を branch CAS で
 claim する。
 
-実行順序はS1が先行し、webhookとlabel lifecycleの残りは幅を戻す段で満たす。
+実行順序はtrack F / Aが先行し、webhookとlabel lifecycleの残りは幅を戻す段で満たす。
 
 ### Milestone 3 deliverables
 
@@ -426,7 +435,7 @@ claim する。
 Worker が provider と repository command を安全に実行し、session 間をrecord surfaceのdigest検証済み
 payload で handoff できる基盤を作る。
 
-実行順序はS2が先行する。provider session isolationとcheckpoint commit identityは後入れできないため、
+実行順序はtrack Aが先行する。provider session isolationとcheckpoint commit identityは後入れできないため、
 最小形でも落とさない。
 
 ### Milestone 4 deliverables
@@ -452,7 +461,7 @@ payload で handoff できる基盤を作る。
 
 Issue claim から test validity approval までの完全な TDD 前半を実装する。
 
-実行順序はS2（RED evidenceとpublish）、S3（test validity review 1 round）に分割される。
+実行順序はtrack A（RED evidenceとpublish）、track B（test validity review 1 round）、統合Iに分割される。
 
 ### Milestone 5 deliverables
 
@@ -482,7 +491,7 @@ Issue claim から test validity approval までの完全な TDD 前半を実装
 
 承認済み test から implementation を完成させ、承認済み head を merge して Task Issue を close する。
 
-実行順序はS4（ready化まで）とS5（mergeまで）に対応する。
+実行順序は統合（I）後のM6区間に対応し、実行順はIの実測後に確定する。
 
 ### Milestone 6 deliverables
 
