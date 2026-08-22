@@ -42,6 +42,16 @@ func TestTransportFailureClassification(t *testing.T) {
 			body:   `{"message":"Resource not accessible by integration"}`,
 			class:  FailurePermission,
 		},
+		"permission hidden as not found": {
+			status: http.StatusNotFound,
+			body:   `{"message":"Resource not accessible by integration"}`,
+			class:  FailurePermission,
+		},
+		"credential": {
+			status: http.StatusUnauthorized,
+			body:   `{"message":"Bad credentials"}`,
+			class:  FailureCredential,
+		},
 		"service": {
 			status: http.StatusBadGateway,
 			body:   `{"message":"upstream failed"}`,
@@ -75,6 +85,64 @@ func TestTransportFailureClassification(t *testing.T) {
 			}
 			if test.class == FailureRateLimit && failure.RateLimitReset.Unix() != 1787356800 {
 				t.Fatalf("RateLimitReset = %s", failure.RateLimitReset)
+			}
+		})
+	}
+}
+
+func TestTokenSourceFailureClassification(t *testing.T) {
+	t.Parallel()
+
+	rateLimit := &TransportFailure{
+		Class:     FailureRateLimit,
+		Operation: "POST installation access token",
+		Message:   "rate limited",
+	}
+	tests := map[string]struct {
+		err      error
+		class    FailureClass
+		retry    bool
+		preserve *TransportFailure
+	}{
+		"structured failure": {
+			err:      rateLimit,
+			class:    FailureRateLimit,
+			retry:    true,
+			preserve: rateLimit,
+		},
+		"network": {
+			err:   testNetworkError{},
+			class: FailureNetwork,
+			retry: true,
+		},
+		"credential": {
+			err:   errors.New("private key が不正"),
+			class: FailureCredential,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			gateway, err := NewGateway(http.DefaultClient, tokenSourceFunc(func(context.Context) (string, error) {
+				return "", test.err
+			}), Config{
+				Repository: Repository{Owner: "acme", Name: "widgets"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = gateway.ReadContent(t.Context(), "README.md", "main")
+			var failure *TransportFailure
+			if !errors.As(err, &failure) {
+				t.Fatalf("error = %v, want *TransportFailure", err)
+			}
+			if failure.Class != test.class || failure.Retryable() != test.retry {
+				t.Fatalf("failure = %#v, want class %s retryable %v", failure, test.class, test.retry)
+			}
+			if test.preserve != nil && failure != test.preserve {
+				t.Fatalf("failure = %p, want original %p", failure, test.preserve)
 			}
 		})
 	}
@@ -133,6 +201,12 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
 }
+
+type testNetworkError struct{}
+
+func (testNetworkError) Error() string   { return "connection reset" }
+func (testNetworkError) Timeout() bool   { return false }
+func (testNetworkError) Temporary() bool { return true }
 
 func nameWord(name string) string {
 	if name == "cross origin" {

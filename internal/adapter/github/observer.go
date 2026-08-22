@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -71,6 +72,14 @@ type apiBranch struct {
 	Commit    struct {
 		SHA string `json:"sha"`
 	} `json:"commit"`
+}
+
+type apiGitReference struct {
+	Ref    string `json:"ref"`
+	Object struct {
+		Type string `json:"type"`
+		SHA  string `json:"sha"`
+	} `json:"object"`
 }
 
 type apiPullRequest struct {
@@ -327,19 +336,53 @@ func (g *Gateway) listSubIssues(ctx context.Context, number int64) ([]IssueMetad
 
 func (g *Gateway) getBranch(ctx context.Context, branchName string) (*Branch, error) {
 	requestPath := g.repositoryPath("branches") + "/" + url.PathEscape(branchName)
-	response, err := g.request(ctx, http.MethodGet, g.endpoint(requestPath, nil), nil,
-		http.StatusOK, http.StatusNotFound)
+	response, err := g.request(ctx, http.MethodGet, g.endpoint(requestPath, nil), nil, http.StatusOK)
 	if err != nil {
-		return nil, err
-	}
-	if response.Status == http.StatusNotFound {
-		return nil, nil
+		var failure *TransportFailure
+		if !errors.As(err, &failure) || failure.Class != FailureNotFound {
+			return nil, err
+		}
+		absent, confirmErr := g.confirmBranchAbsent(ctx, branchName)
+		if confirmErr != nil {
+			return nil, confirmErr
+		}
+		if absent {
+			return nil, nil
+		}
+		response, err = g.request(ctx, http.MethodGet, g.endpoint(requestPath, nil), nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var value apiBranch
 	if err := json.Unmarshal(response.Body, &value); err != nil {
 		return nil, invalidResponse("GET branch", "branch response を decode できない", err)
 	}
 	return &Branch{Name: value.Name, SHA: value.Commit.SHA, Protected: value.Protected}, nil
+}
+
+// branch endpoint の 404 は存在しない ref と権限不足を区別できない。
+// matching-refs は ref 不在を 200 の配列で返すため、nil を返す前の確認に使う。
+func (g *Gateway) confirmBranchAbsent(ctx context.Context, branchName string) (bool, error) {
+	requestPath := g.repositoryPath("git/matching-refs/heads") + "/" + url.PathEscape(branchName)
+	response, err := g.request(ctx, http.MethodGet, g.endpoint(requestPath, nil), nil, http.StatusOK)
+	if err != nil {
+		return false, err
+	}
+	var references []apiGitReference
+	if err := json.Unmarshal(response.Body, &references); err != nil {
+		return false, invalidResponse("GET matching refs", "matching refs response を decode できない", err)
+	}
+	if references == nil {
+		return false, invalidResponse("GET matching refs", "matching refs response が配列ではない", nil)
+	}
+	expected := "refs/heads/" + branchName
+	for _, reference := range references {
+		if reference.Ref == expected {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (g *Gateway) listPullRequests(ctx context.Context, branchName string) ([]PullRequest, error) {

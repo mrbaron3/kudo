@@ -155,8 +155,13 @@ func (g *Gateway) request(
 	}
 	token, err := g.tokens.Token(ctx)
 	if err != nil {
+		class := classifyContextError(ctx, err, FailureCredential)
+		var failure *TransportFailure
+		if class == FailureCredential && errors.As(err, &failure) {
+			return responseData{}, failure
+		}
 		return responseData{}, &TransportFailure{
-			Class:     classifyContextError(ctx, err, FailureCredential),
+			Class:     class,
 			Operation: method + " " + request.URL.Path,
 			Message:   "actor credential を取得できない",
 			Err:       err,
@@ -218,8 +223,11 @@ func classifyContextError(ctx context.Context, err error, fallback FailureClass)
 		return FailureTimeout
 	}
 	var netError net.Error
-	if errors.As(err, &netError) && netError.Timeout() {
-		return FailureTimeout
+	if errors.As(err, &netError) {
+		if netError.Timeout() {
+			return FailureTimeout
+		}
+		return FailureNetwork
 	}
 	return fallback
 }
@@ -240,7 +248,10 @@ func classifyHTTPFailure(operation string, response *http.Response, body []byte)
 		class = FailureRateLimit
 	case response.StatusCode == http.StatusTooManyRequests:
 		class = FailureRateLimit
-	case response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden:
+	case response.StatusCode == http.StatusUnauthorized:
+		class = FailureCredential
+	case response.StatusCode == http.StatusForbidden ||
+		(response.StatusCode == http.StatusNotFound && isPermissionFailureMessage(lowerMessage)):
 		class = FailurePermission
 	case response.StatusCode == http.StatusNotFound:
 		class = FailureNotFound
@@ -265,6 +276,11 @@ func classifyHTTPFailure(operation string, response *http.Response, body []byte)
 		failure.RateLimitReset = time.Unix(reset, 0).UTC()
 	}
 	return failure
+}
+
+func isPermissionFailureMessage(message string) bool {
+	return strings.Contains(message, "resource not accessible by integration") ||
+		strings.Contains(message, "resource not accessible by personal access token")
 }
 
 func responseMessage(data []byte) string {

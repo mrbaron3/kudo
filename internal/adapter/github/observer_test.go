@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -175,6 +176,79 @@ func TestReadContentPreservesDecodedBytes(t *testing.T) {
 	}
 	if string(content.Data) != "a\r\nb\n" || content.Path != "docs/spec.md" || content.SHA != "blob-sha" {
 		t.Fatalf("content = %#v", content)
+	}
+}
+
+func TestGetBranchConfirmsAbsenceWithMatchingRefs(t *testing.T) {
+	t.Parallel()
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.URL.Path {
+		case "/repos/acme/widgets/branches/kudo/issue-16":
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+		case "/repos/acme/widgets/git/matching-refs/heads/kudo/issue-16":
+			fmt.Fprint(w, `[]`)
+		default:
+			t.Fatalf("unexpected request: %s", r.URL.String())
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	branch, err := testGateway(server.Client(), server.URL).getBranch(t.Context(), "kudo/issue-16")
+	if err != nil {
+		t.Fatalf("getBranch() error = %v", err)
+	}
+	if branch != nil || requests.Load() != 2 {
+		t.Fatalf("branch = %#v, request count = %d, want confirmed absence", branch, requests.Load())
+	}
+}
+
+func TestGetBranchDoesNotHideAmbiguousNotFound(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	branch, err := testGateway(server.Client(), server.URL).getBranch(t.Context(), "kudo/issue-16")
+	var failure *TransportFailure
+	if branch != nil || !errors.As(err, &failure) || failure.Class != FailureNotFound {
+		t.Fatalf("branch = %#v, error = %#v, want not-found transport failure", branch, err)
+	}
+}
+
+func TestGetBranchRereadsRefCreatedDuringAbsenceConfirmation(t *testing.T) {
+	t.Parallel()
+
+	var branchReads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets/branches/kudo/issue-16":
+			if branchReads.Add(1) == 1 {
+				w.WriteHeader(http.StatusNotFound)
+				fmt.Fprint(w, `{"message":"Not Found"}`)
+				return
+			}
+			fmt.Fprint(w, `{"name":"kudo/issue-16","commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
+		case "/repos/acme/widgets/git/matching-refs/heads/kudo/issue-16":
+			fmt.Fprint(w, `[{"ref":"refs/heads/kudo/issue-16","object":{"type":"commit","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]`)
+		default:
+			t.Fatalf("unexpected request: %s", r.URL.String())
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	branch, err := testGateway(server.Client(), server.URL).getBranch(t.Context(), "kudo/issue-16")
+	if err != nil {
+		t.Fatalf("getBranch() error = %v", err)
+	}
+	if branch == nil || branch.Name != "kudo/issue-16" || branchReads.Load() != 2 {
+		t.Fatalf("branch = %#v, branch reads = %d, want reread branch", branch, branchReads.Load())
 	}
 }
 
