@@ -52,7 +52,7 @@ var actorPermissionSubsets = map[ActorRole]map[string]string{
 	},
 	ActorImplementer: {
 		"metadata":      "read",
-		"issues":        "read",
+		"issues":        "write",
 		"contents":      "write",
 		"pull_requests": "write",
 		"checks":        "write",

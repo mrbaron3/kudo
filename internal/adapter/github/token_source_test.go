@@ -117,7 +117,7 @@ func TestActorPermissions(t *testing.T) {
 		},
 		ActorImplementer: {
 			"metadata":      "read",
-			"issues":        "read",
+			"issues":        "write",
 			"contents":      "write",
 			"pull_requests": "write",
 			"checks":        "write",

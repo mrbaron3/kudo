@@ -103,7 +103,7 @@ actor ごとに別の GitHub App を登録する。最低限 Implementer と Rev
 | Actor | GitHub authority |
 | --- | --- |
 | Controller（Coordinator） | metadata read、issues read/write、pull requests read、checks read。label / status comment の記録と gate の外形条件評価用。contents と checks への write は持たない |
-| Issue Worker（Implementer） | metadata/issues read、contents write、pull requests write、checks write（自分の evidence check run）。PR の merge と head branch 削除を含む |
+| Issue Worker（Implementer） | metadata read、issues write、contents write、pull requests write、checks write（自分の evidence check run）。merge intent comment、PR の merge、head branch 削除を含む |
 | Review Worker（Reviewer） | metadata/issues/contents/pull requests read、checks write（自分の verdict check run）、PR comment write（finding） |
 
 開発の立ち上がり（実装計画の S1〜S2）は owner PAT による単一 identity で開始してよい。PAT は
@@ -158,7 +158,8 @@ GitHub App の production 設定は3 actor 分をまとめて検証する。Impl
 private key、installation ID のいずれも共有してはならない。Coordinator の App 分離は推奨であり、
 共有する場合も発行 token の permission subset は Coordinator 用へ downscope する。Reviewer の finding は
 PR conversation comment endpoint を使うため、GitHub REST permission では`issues:write`へ写像するが、
-`contents`と`pull_requests`は`read`のままにする。provider child process に渡してよい GitHub credential は
+`contents`と`pull_requests`は`read`のままにする。Implementer の merge intent comment も同じ endpoint を
+使うため`issues:write`へ写像する。provider child process に渡してよい GitHub credential は
 operation 用の短命 token（`GH_TOKEN`）だけで、App private key と`*_FILE` path は渡さない。
 
 ## Process supervision
