@@ -86,6 +86,19 @@ func TestClaimSucceededPinsLiveReconstructionCheckpoint(t *testing.T) {
 	}
 }
 
+func TestClaimSucceededDelegatesStatusProjectionToControllerAction(t *testing.T) {
+	t.Parallel()
+
+	decision := requireDecision(t, Run{ID: "run-01"}, sampleClaimSucceeded())
+	if len(decision.Actions) == 0 {
+		t.Fatal("claim successにstatus projection actionがない")
+	}
+	status, ok := decision.Actions[0].(ProjectStatus)
+	if !ok || status.Label != StatusInProgress || status.CloseIssue {
+		t.Fatalf("first action = %#v", decision.Actions[0])
+	}
+}
+
 func TestClaimRejectsMissingLiveReconstructionCheckpoint(t *testing.T) {
 	claim := sampleClaimSucceeded()
 	claim.Context = contract.ClaimContext{}

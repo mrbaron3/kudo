@@ -1,5 +1,5 @@
 // Package issueworker は branch、worktree、Pull Request を変更できる Issue Worker の
-// Operation を実装する。Controller は構造化 Result を受け取るだけで writer 権限を持たない。
+// Operation を実装する。status labelやController名義のrecordはこの権限境界で変更しない。
 package issueworker
 
 import (
@@ -27,11 +27,13 @@ const (
 )
 
 const (
-	DefaultTargetAssignee  = "mrbaron3"
-	DefaultReadyLabel      = "ai-ready"
-	DefaultInProgressLabel = "ai-in-progress"
-	DefaultNeedsHumanLabel = "ai-needs-human"
+	DefaultTargetAssignee = "mrbaron3"
+	DefaultReadyLabel     = "ai-ready"
 )
+
+// ErrClaimConflict は観測済みのclaim residueを正規の同一Runへ結び付けられないことを表す。
+// transport failureではないため、adapterはこのsentinelを保持して返す。
+var ErrClaimConflict = errors.New("claim conflict")
 
 type RejectionCode string
 
@@ -113,7 +115,6 @@ type GitHub interface {
 	CreateClaimBranch(context.Context, contract.IssueRef, string, string) (bool, error)
 	EnsureBootstrapCommit(context.Context, contract.IssueRef, string, string) (string, error)
 	EnsureDraftPullRequest(context.Context, DraftPullRequestInput) (ClaimPullRequest, error)
-	ReconcileClaimLabels(context.Context, contract.IssueRef, []string, string) error
 }
 
 type Compiler interface {
@@ -128,8 +129,6 @@ type Clock interface {
 type ClaimConfig struct {
 	TargetAssignee   string
 	ReadyLabel       string
-	InProgressLabel  string
-	NeedsHumanLabel  string
 	EscalationPolicy contract.EscalationPolicyRef
 }
 
@@ -151,17 +150,9 @@ func NewClaimHandler(github GitHub, compiler Compiler, config ClaimConfig, clock
 	if config.ReadyLabel == "" {
 		config.ReadyLabel = DefaultReadyLabel
 	}
-	if config.InProgressLabel == "" {
-		config.InProgressLabel = DefaultInProgressLabel
-	}
-	if config.NeedsHumanLabel == "" {
-		config.NeedsHumanLabel = DefaultNeedsHumanLabel
-	}
 	fields := []struct{ name, value string }{
 		{"target assignee", config.TargetAssignee},
 		{"ready label", config.ReadyLabel},
-		{"in-progress label", config.InProgressLabel},
-		{"needs-human label", config.NeedsHumanLabel},
 	}
 	for _, field := range fields {
 		if strings.TrimSpace(field.value) == "" {
@@ -197,20 +188,23 @@ func (h *ClaimHandler) Handle(ctx context.Context, operation contract.WorkerOper
 	if !strings.EqualFold(observation.Issue.State, "open") || observation.Issue.IsPullRequest {
 		return Result{Status: StatusSkippedNotCandidate}
 	}
-	if !h.candidate(observation.Issue) && !hasClaimResidue(observation) {
-		return Result{Status: StatusSkippedNotCandidate}
-	}
 	for _, pull := range observation.PullRequests {
 		if pull.Merged {
 			return Result{Status: StatusSkippedAlreadyMerged}
 		}
 	}
 
-	if pull, checkpoint, found, conflict := h.completedCheckpoint(observation); found || conflict != nil {
+	existingPull, existingCheckpoint, found, conflict := h.completedCheckpoint(observation)
+	// Controllerのstatus投影でai-readyが外れた後は、完全なcheckpointだけを
+	// 同じRunへの回復根拠にできる。branchや未完成PRだけではcandidate gateを迂回しない。
+	if !h.candidate(observation.Issue) && !found {
+		return Result{Status: StatusSkippedNotCandidate}
+	}
+	if found || conflict != nil {
 		if conflict != nil {
 			return rejected(RejectionClaimConflict, conflict.Error(), nil)
 		}
-		return h.completeExisting(ctx, operation, attemptID, pull, checkpoint)
+		return h.completeExisting(ctx, operation, attemptID, existingPull, existingCheckpoint)
 	}
 
 	compiled, validation := h.compiler.Compile(string(observation.Issue.RawBody), operation.Issue)
@@ -230,10 +224,14 @@ func (h *ClaimHandler) Handle(ctx context.Context, operation contract.WorkerOper
 
 	base, err := h.github.ResolveClaimBase(ctx, operation.Issue, claimResidueBranch(observation))
 	if err != nil {
-		if errors.Is(err, livecontext.ErrBaseMissing) {
+		switch {
+		case errors.Is(err, ErrClaimConflict):
+			return rejected(RejectionClaimConflict, err.Error(), nil)
+		case errors.Is(err, livecontext.ErrBaseMissing):
 			return rejected(RejectionAuthorityInvalid, err.Error(), nil)
+		default:
+			return failedTransport(err)
 		}
-		return failedTransport(err)
 	}
 	resolution, err := h.resolver.Resolve(ctx, compiled, base.SHA)
 	if err != nil {
@@ -265,6 +263,9 @@ func (h *ClaimHandler) Handle(ctx context.Context, operation contract.WorkerOper
 	}
 	headSHA, err := h.github.EnsureBootstrapCommit(ctx, operation.Issue, branchName, base.SHA)
 	if err != nil {
+		if errors.Is(err, ErrClaimConflict) {
+			return rejected(RejectionClaimConflict, err.Error(), nil)
+		}
 		return failedTransport(err)
 	}
 	claimContext := contract.ClaimContext{
@@ -294,23 +295,11 @@ func (h *ClaimHandler) Handle(ctx context.Context, operation contract.WorkerOper
 	if pull.Number <= 0 || !pull.Draft || pull.State != "open" {
 		return rejected(RejectionClaimConflict, "draft Pull Request の観測が claim 条件を満たさない", nil)
 	}
-	return h.finish(ctx, operation, attemptID, pull, claimContext)
+	return h.finish(operation, attemptID, pull, claimContext)
 }
 
 func (h *ClaimHandler) candidate(issue ClaimIssue) bool {
 	return containsFold(issue.Assignees, h.config.TargetAssignee) && containsFold(issue.Labels, h.config.ReadyLabel)
-}
-
-func hasClaimResidue(observation ClaimObservation) bool {
-	if observation.Branch != nil {
-		return true
-	}
-	for _, pull := range observation.PullRequests {
-		if strings.EqualFold(pull.State, "open") {
-			return true
-		}
-	}
-	return false
 }
 
 func claimResidueBranch(observation ClaimObservation) *ClaimBranch {
@@ -353,10 +342,46 @@ func (h *ClaimHandler) completeExisting(ctx context.Context, operation contract.
 	if pull.Number <= 0 || !pull.Draft || !strings.EqualFold(pull.State, "open") || pull.BaseSHA != checkpoint.Context.BaseSHA {
 		return rejected(RejectionClaimConflict, "既存 Pull Request が claim checkpoint の draft/base identity と一致しない", nil)
 	}
-	return h.finish(ctx, operation, attemptID, pull, checkpoint.Context)
+	if pull.HeadSHA == "" || pull.HeadSHA == checkpoint.Context.BaseSHA {
+		return rejected(RejectionClaimConflict, "既存 Pull Request が検証可能なbootstrap headを持たない", nil)
+	}
+	base, err := h.github.ResolveClaimBase(ctx, operation.Issue, &ClaimBranch{
+		Name: "kudo/issue-" + strconv.Itoa(operation.Issue.Number),
+		SHA:  pull.HeadSHA,
+	})
+	if err != nil {
+		if errors.Is(err, ErrClaimConflict) {
+			return rejected(RejectionClaimConflict, err.Error(), nil)
+		}
+		return failedTransport(err)
+	}
+	if base.SHA != checkpoint.Context.BaseSHA {
+		return rejected(RejectionClaimConflict, "既存 Pull Request のbootstrap parentがclaim checkpointのbaseと一致しない", nil)
+	}
+	reconstructed, err := h.resolver.ReconstructClaim(ctx, operation.Issue, checkpoint.Context)
+	if err != nil {
+		var compileErr *livecontext.CompileError
+		switch {
+		case errors.As(err, &compileErr):
+			return rejected(RejectionContractInvalid, "既存 claim checkpoint の live Issue Contract を再構築できない", compileErr.Validation)
+		case errors.Is(err, livecontext.ErrAuthorityMissing):
+			return rejected(RejectionAuthorityInvalid, err.Error(), nil)
+		case errors.Is(err, livecontext.ErrNotReady), errors.Is(err, livecontext.ErrWaitingDependency):
+			return rejected(RejectionClaimConflict, "既存 claim checkpoint の live input がclaim条件を満たさない", nil)
+		default:
+			if _, ok := contract.ProtocolViolation(err); ok {
+				return rejected(RejectionClaimConflict, err.Error(), nil)
+			}
+			return failedTransport(err)
+		}
+	}
+	if !reconstructed.SameSemanticInput() {
+		return rejected(RejectionClaimConflict, "既存 claim checkpoint のTask ContextまたはContext Manifestがlive inputと一致しない", nil)
+	}
+	return h.finish(operation, attemptID, pull, checkpoint.Context)
 }
 
-func (h *ClaimHandler) finish(ctx context.Context, operation contract.WorkerOperation, attemptID string, pull ClaimPullRequest, claimContext contract.ClaimContext) Result {
+func (h *ClaimHandler) finish(operation contract.WorkerOperation, attemptID string, pull ClaimPullRequest, claimContext contract.ClaimContext) Result {
 	operationDigest, err := contract.OperationDigest(operation)
 	if err != nil {
 		return rejected(RejectionOperationInvalid, err.Error(), nil)
@@ -373,10 +398,6 @@ func (h *ClaimHandler) finish(ctx context.Context, operation contract.WorkerOper
 	}
 	if err := contract.BindOperationResult(operation, operationResult); err != nil {
 		return rejected(RejectionClaimConflict, err.Error(), nil)
-	}
-	if err := h.github.ReconcileClaimLabels(ctx, operation.Issue,
-		[]string{h.config.ReadyLabel, h.config.NeedsHumanLabel}, h.config.InProgressLabel); err != nil {
-		return failedTransport(err)
 	}
 	return Result{Status: StatusClaimed, OperationResult: &operationResult, PullRequest: pullRef}
 }

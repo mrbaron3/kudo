@@ -2,10 +2,10 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 
@@ -132,14 +132,75 @@ func TestIssueWorkerGatewayCreatesBranchAndConvergesBootstrapCommit(t *testing.T
 	}
 }
 
-func TestIssueWorkerGatewayEnsuresDraftCheckpointAndClaimLabels(t *testing.T) {
+func TestIssueWorkerGatewayRejectsUnverifiedClaimResidue(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets":
+			fmt.Fprint(w, `{"default_branch":"main"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/branches/main":
+			fmt.Fprint(w, `{"name":"main","commit":{"sha":"`+adapterBaseSHA+`"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/branches/kudo/issue-17":
+			fmt.Fprint(w, `{"name":"kudo/issue-17","commit":{"sha":"`+adapterHeadSHA+`"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/git/commits/"+adapterHeadSHA:
+			fmt.Fprint(w, `{"sha":"`+adapterHeadSHA+`","message":"unrelated commit","tree":{"sha":"`+adapterTreeSHA+`"},"parents":[{"sha":"`+adapterBaseSHA+`"}]}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	t.Cleanup(server.Close)
+	gateway := testGateway(server.Client(), server.URL)
+	issue := contract.IssueRef{Owner: "acme", Repository: "widgets", Number: 17}
+	residue := &issueworker.ClaimBranch{Name: "kudo/issue-17", SHA: adapterHeadSHA}
+
+	if base, err := gateway.ResolveClaimBase(t.Context(), issue, residue); !errors.Is(err, issueworker.ErrClaimConflict) {
+		t.Fatalf("ResolveClaimBase() = %#v, %v", base, err)
+	}
+	if head, err := gateway.EnsureBootstrapCommit(t.Context(), issue, residue.Name, adapterBaseSHA); !errors.Is(err, issueworker.ErrClaimConflict) {
+		t.Fatalf("EnsureBootstrapCommit() = %q, %v", head, err)
+	}
+}
+
+func TestIssueWorkerGatewayRejectsClaimBootstrapThatChangesBaseTree(t *testing.T) {
+	t.Parallel()
+
+	changedTreeSHA := "dddddddddddddddddddddddddddddddddddddddd"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets":
+			fmt.Fprint(w, `{"default_branch":"main"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/branches/main":
+			fmt.Fprint(w, `{"name":"main","commit":{"sha":"`+adapterBaseSHA+`"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/branches/kudo/issue-17":
+			fmt.Fprint(w, `{"name":"kudo/issue-17","commit":{"sha":"`+adapterHeadSHA+`"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/git/commits/"+adapterHeadSHA:
+			fmt.Fprint(w, `{"sha":"`+adapterHeadSHA+`","message":"claim: #17","tree":{"sha":"`+changedTreeSHA+`"},"parents":[{"sha":"`+adapterBaseSHA+`"}]}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/git/commits/"+adapterBaseSHA:
+			fmt.Fprint(w, `{"sha":"`+adapterBaseSHA+`","tree":{"sha":"`+adapterTreeSHA+`"}}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	t.Cleanup(server.Close)
+	gateway := testGateway(server.Client(), server.URL)
+	issue := contract.IssueRef{Owner: "acme", Repository: "widgets", Number: 17}
+	residue := &issueworker.ClaimBranch{Name: "kudo/issue-17", SHA: adapterHeadSHA}
+
+	if base, err := gateway.ResolveClaimBase(t.Context(), issue, residue); !errors.Is(err, issueworker.ErrClaimConflict) {
+		t.Fatalf("ResolveClaimBase() = %#v, %v", base, err)
+	}
+	if head, err := gateway.EnsureBootstrapCommit(t.Context(), issue, residue.Name, adapterBaseSHA); !errors.Is(err, issueworker.ErrClaimConflict) {
+		t.Fatalf("EnsureBootstrapCommit() = %q, %v", head, err)
+	}
+}
+
+func TestIssueWorkerGatewayEnsuresDraftCheckpoint(t *testing.T) {
 	t.Parallel()
 
 	checkpoint := adapterCheckpoint(t)
 	pullBody := ""
-	labels := []string{"ai-ready", "ai-needs-human", "bug"}
 	pullCreates := 0
-	labelAdds := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/pulls":
@@ -161,18 +222,6 @@ func TestIssueWorkerGatewayEnsuresDraftCheckpointAndClaimLabels(t *testing.T) {
 			}
 			pullBody = input.Body
 			fmt.Fprintf(w, `{"id":44,"number":44,"state":"open","draft":true,"title":"claim","body":%q,"user":{"id":2,"login":"worker"},"head":{"ref":"kudo/issue-17","sha":"%s"},"base":{"ref":"main","sha":"%s"}}`, pullBody, adapterHeadSHA, adapterBaseSHA)
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/issues/17/labels":
-			encoded, _ := json.Marshal(slicesToLabels(labels))
-			w.Write(encoded)
-		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/issues/17/labels/"):
-			name := strings.TrimPrefix(r.URL.Path, "/repos/acme/widgets/issues/17/labels/")
-			labels = slices.DeleteFunc(labels, func(label string) bool { return strings.EqualFold(label, name) })
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, `[]`)
-		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/widgets/issues/17/labels":
-			labelAdds++
-			labels = append(labels, "ai-in-progress")
-			fmt.Fprint(w, `[]`)
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -192,19 +241,6 @@ func TestIssueWorkerGatewayEnsuresDraftCheckpointAndClaimLabels(t *testing.T) {
 	if !strings.Contains(pullBody, "kudo-marker") || !strings.Contains(pullBody, "kudo-machine") {
 		t.Fatalf("pull body = %s", pullBody)
 	}
-	if err := gateway.ReconcileClaimLabels(t.Context(), issue, []string{"ai-ready", "ai-needs-human"}, "ai-in-progress"); err != nil {
-		t.Fatalf("ReconcileClaimLabels() error = %v", err)
-	}
-	if !slices.Equal(labels, []string{"bug", "ai-in-progress"}) {
-		t.Fatalf("labels = %v", labels)
-	}
-	if err := gateway.ReconcileClaimLabels(t.Context(), issue, []string{"ai-ready", "ai-needs-human"}, "ai-in-progress"); err != nil {
-		t.Fatalf("second ReconcileClaimLabels() error = %v", err)
-	}
-	if labelAdds != 1 {
-		t.Fatalf("label add count = %d", labelAdds)
-	}
-
 	pull, err = gateway.EnsureDraftPullRequest(t.Context(), input)
 	if err != nil || pullCreates != 1 || pull.Checkpoint == nil {
 		t.Fatalf("idempotent EnsureDraftPullRequest() = %#v, %v, creates=%d", pull, err, pullCreates)
@@ -241,12 +277,4 @@ func renderClaimBody(t *testing.T, checkpoint contract.ClaimCheckpoint, pullNumb
 		t.Fatal(err)
 	}
 	return body
-}
-
-func slicesToLabels(values []string) []map[string]string {
-	result := make([]map[string]string, len(values))
-	for index, value := range values {
-		result[index] = map[string]string{"name": value}
-	}
-	return result
 }

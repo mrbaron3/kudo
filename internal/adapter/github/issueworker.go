@@ -184,19 +184,13 @@ func (g *Gateway) ResolveClaimBase(ctx context.Context, issue contract.IssueRef,
 		return base, nil
 	}
 	if residue.Name != IssueBranchName(int64(issue.Number)) || !shaPattern.MatchString(residue.SHA) {
-		return issueworker.ClaimBase{}, invalidResponse("resolve claim base", "claim residue branch が不正", nil)
+		return issueworker.ClaimBase{}, fmt.Errorf("%w: claim residue branch identityが不正", issueworker.ErrClaimConflict)
 	}
-	commit, err := g.getGitCommit(ctx, residue.SHA)
+	residueBase, err := g.validateClaimBootstrap(ctx, issue, residue.SHA, "")
 	if err != nil {
 		return issueworker.ClaimBase{}, err
 	}
-	if commit.Message == fmt.Sprintf("claim: #%d", issue.Number) && len(commit.Parents) == 1 && shaPattern.MatchString(commit.Parents[0].SHA) {
-		base.SHA = commit.Parents[0].SHA
-		return base, nil
-	}
-	// ref create 後かつ bootstrap 前の residue は base commit 自体を指す。
-	// claim messageを持たない任意commitを暗黙にbootstrapとは扱わない。
-	base.SHA = residue.SHA
+	base.SHA = residueBase
 	return base, nil
 }
 
@@ -246,6 +240,9 @@ func (g *Gateway) EnsureBootstrapCommit(ctx context.Context, issue contract.Issu
 		if !shaPattern.MatchString(branch.SHA) {
 			return "", invalidResponse("GET claim branch", "claim branch SHA が不正", nil)
 		}
+		if _, err := g.validateClaimBootstrap(ctx, issue, branch.SHA, baseSHA); err != nil {
+			return "", err
+		}
 		return branch.SHA, nil
 	}
 
@@ -285,6 +282,9 @@ func (g *Gateway) EnsureBootstrapCommit(ctx context.Context, issue contract.Issu
 			return "", readErr
 		}
 		if observed != nil && observed.SHA != baseSHA && shaPattern.MatchString(observed.SHA) {
+			if _, validationErr := g.validateClaimBootstrap(ctx, issue, observed.SHA, baseSHA); validationErr != nil {
+				return "", validationErr
+			}
 			return observed.SHA, nil
 		}
 		return "", &TransportFailure{Class: FailureConflict, Operation: "PATCH git ref", StatusCode: update.Status, Message: responseMessage(update.Body)}
@@ -294,6 +294,32 @@ func (g *Gateway) EnsureBootstrapCommit(ctx context.Context, issue contract.Issu
 		return "", invalidResponse("PATCH git ref", "updated ref response が bootstrap commit と一致しない", err)
 	}
 	return created.SHA, nil
+}
+
+// validateClaimBootstrap はno-op bootstrapのmessage、単一parent、treeを検証する。
+// branch名やcommit messageだけでは人が作った任意commitをclaim residueとして採用できるため、
+// parentと同一treeであることまで確認して初めてbase identityを復元する。
+func (g *Gateway) validateClaimBootstrap(ctx context.Context, issue contract.IssueRef, headSHA, expectedBaseSHA string) (string, error) {
+	commit, err := g.getGitCommit(ctx, headSHA)
+	if err != nil {
+		return "", err
+	}
+	if commit.Message != fmt.Sprintf("claim: #%d", issue.Number) || len(commit.Parents) != 1 ||
+		!shaPattern.MatchString(commit.Parents[0].SHA) {
+		return "", fmt.Errorf("%w: claim residue commitのmessageまたはparentが不正", issueworker.ErrClaimConflict)
+	}
+	baseSHA := commit.Parents[0].SHA
+	if expectedBaseSHA != "" && baseSHA != expectedBaseSHA {
+		return "", fmt.Errorf("%w: claim residue commitのparentが期待baseと一致しない", issueworker.ErrClaimConflict)
+	}
+	base, err := g.getGitCommit(ctx, baseSHA)
+	if err != nil {
+		return "", err
+	}
+	if commit.Tree.SHA != base.Tree.SHA {
+		return "", fmt.Errorf("%w: claim residue commitがbaseのtreeを変更している", issueworker.ErrClaimConflict)
+	}
+	return baseSHA, nil
 }
 
 func (g *Gateway) getGitCommit(ctx context.Context, sha string) (apiGitCommit, error) {
@@ -452,51 +478,6 @@ func (g *Gateway) updatePullRequestBody(ctx context.Context, number int64, body 
 	return pull, nil
 }
 
-func (g *Gateway) ReconcileClaimLabels(ctx context.Context, issue contract.IssueRef, remove []string, add string) error {
-	if err := g.validateIssueRef(issue); err != nil {
-		return err
-	}
-	if !validLabelName(add) {
-		return fmt.Errorf("追加 label が不正")
-	}
-	for _, label := range remove {
-		if !validLabelName(label) {
-			return fmt.Errorf("除去 label が不正")
-		}
-	}
-	labels, err := g.listLabels(ctx, int64(issue.Number))
-	if err != nil {
-		return err
-	}
-	hasAdd := false
-	for _, existing := range labels {
-		if strings.EqualFold(existing.Name, add) {
-			hasAdd = true
-		}
-	}
-	// add を先に確定する。remove 後に process が停止して candidate query から消える
-	// window を作らず、open PR の観測と in-progress label のどちらからも回復できるようにする。
-	if !hasAdd {
-		if _, err := g.request(ctx, http.MethodPost, g.endpoint(g.issuePath(int64(issue.Number))+"/labels", nil), struct {
-			Labels []string `json:"labels"`
-		}{Labels: []string{add}}, http.StatusOK); err != nil {
-			return err
-		}
-	}
-	for _, existing := range labels {
-		if !containsFold(remove, existing.Name) {
-			continue
-		}
-		_, err := g.request(ctx, http.MethodDelete,
-			g.endpoint(g.issuePath(int64(issue.Number))+"/labels/"+url.PathEscape(existing.Name), nil), nil,
-			http.StatusOK, http.StatusNoContent, http.StatusNotFound)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (g *Gateway) validateIssueRef(issue contract.IssueRef) error {
 	if issue.Number <= 0 || !strings.EqualFold(issue.Owner, g.repository.Owner) || !strings.EqualFold(issue.Repository, g.repository.Name) {
 		return fmt.Errorf("Issue reference %s は gateway repository %s と一致しない", issue.String(), g.repository.String())
@@ -512,13 +493,4 @@ func (g *Gateway) validateClaimMutation(issue contract.IssueRef, branchName, sha
 		return fmt.Errorf("claim branch name または SHA が不正")
 	}
 	return nil
-}
-
-func containsFold(values []string, target string) bool {
-	for _, value := range values {
-		if strings.EqualFold(value, target) {
-			return true
-		}
-	}
-	return false
 }

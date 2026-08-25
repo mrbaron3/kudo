@@ -173,6 +173,12 @@ envelopeを使う。payloadのunknown field、duplicate field、欠落、schema/
 `internal/contract`で拒否する。machine blockはrepository write権限者が編集できるため、gateに使う
 digestはverdict check runのmachine blockにも記録し、照合の正はcheck run側に置く。
 
+claim Operationが既存checkpointから成功Resultを再生成する場合も、checkpointが固定したCompiler version
+とbase SHAからlive Task Context / Context Manifestを再構築し、両refの一致を必須とする。branchまたは
+未完成PRだけではcandidate条件を迂回できず、完全なcheckpointもこのsemantic比較を通らなければ回復根拠に
+ならない。Issue Observationだけの差分はaudit情報として扱い、Task Context / Context Manifestが一致する
+限り同じRunをstaleにしない。
+
 Task Contextを使う各Issue Worker / Review Worker Operationは開始時と完了時に次を実行する。
 
 1. live Task IssueをGitHubから取得する。

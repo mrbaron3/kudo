@@ -157,7 +157,8 @@ trackごとに「何を作るか」と「何を意図的に雑にするか」の
 - claim Operation（#17）: candidate filter（open / non-PR / assignee / `ai-ready`、`pull_request`
   keyでのPR除外）、`contract.Compile`による strict parse、authority解決（base SHA固定 +
   `contentDigest`）、`readiness: ready`のgate、branch `kudo/issue-<n>`のref create（CAS）、bootstrap
-  commit、claim checkpoint（machine block）付きdraft PRのensure、`ai-in-progress`の記録。
+  commit、claim checkpoint（machine block）付きdraft PRのensure。成功Resultを受けたControllerが
+  `ai-in-progress`を投影する。
 - Run workspaceとchild process supervisor（#21）: Run専用clone、checkpoint commitのidentity固定、
   timeout / process group / bounded capture / 環境変数allowlist。
 - fresh session runtimeとCodex adapter（#22）: operation-scoped state directory、project doc

@@ -123,9 +123,11 @@ Requirements に従って native relationship、dependency、authority、base co
 解決し、Context Manifest identity を計算する。
 
 claim の排他は branch `kudo/issue-<n>`の ref create で行う。ref create は atomic であり、既存 branch
-がある Issue は claim できない（active Run が存在するか、supersede の後始末が未完了である）。branch
-作成に続けて、Issue Worker は base から bootstrap commit を積み、draft Pull Request を冪等に ensure
-する。PR body の machine block に claim checkpoint（Compiler version、Task Context ref、Context
+は同じ candidate のクラッシュ復旧にだけ使える。復旧時はbranch headがlive defaultのSHAそのものか、期待message、
+単一parent、baseと同一treeを持つbootstrap commitであることを検証し、それ以外はclaim conflictとして
+拒否する。branch単体やcheckpointのないPRはcandidate条件を迂回する根拠にしない。branch作成に続けて、
+Issue Worker は base から bootstrap commit を積み、draft Pull Request を冪等に ensureする。PR body の
+machine block に claim checkpoint（Compiler version、Task Context ref、Context
 Manifest ref、Execution / Escalation Policy ref、base SHA）を記録する。この PR が Run の記録面であり、Run identity
 は PR 番号である。
 
@@ -133,6 +135,11 @@ raw Issue body、Issue Observation YAML、Task Context YAML、Context Manifest Y
 しない。Controller は schema、digest、binding を検証するが、raw Issue body または Task Context の
 prose を再解釈しない。claim 完了後、Controller は`ai-ready`を外し`ai-in-progress`を記録する。label
 記録が一時的に失敗しても Run は巻き戻らず、次の reconcile が記録を収束させる。
+
+Controllerのstatus投影後にIssue Workerが既存checkpointへ収束する場合、checkpointに固定されたCompiler
+versionとbase SHAでlive Task Context / Context Manifestを再構築する。PR bodyは人が編集できるため、
+syntax、policy、PR identityだけの一致では成功扱いせず、semantic identityが一致した場合だけ同じRunの
+成功Resultを再生成する。
 
 ### Live context reconstruction
 

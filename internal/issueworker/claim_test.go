@@ -20,13 +20,14 @@ const (
 
 var claimTime = time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
 
-func TestClaimHandlerClaimsCandidateAndRecordsCheckpointBeforeLabels(t *testing.T) {
+func TestClaimHandlerClaimsCandidateWithoutProjectingControllerLabels(t *testing.T) {
 	t.Parallel()
 
 	gateway := newFakeGitHub(claimTaskBody("ready", "[]", []string{"AGENTS.md"}))
 	gateway.contents["AGENTS.md@"+claimBaseSHA] = []byte("rules\r\n")
 	handler := newTestHandler(t, gateway)
 	op := claimOperation(t)
+	labelsBefore := slices.Clone(gateway.observation.Issue.Labels)
 
 	result := handler.Handle(t.Context(), op, "attempt-01")
 	if result.Status != StatusClaimed || result.OperationResult == nil {
@@ -42,8 +43,8 @@ func TestClaimHandlerClaimsCandidateAndRecordsCheckpointBeforeLabels(t *testing.
 	if gateway.branchCreates != 1 || gateway.bootstrapCreates != 1 || gateway.pullCreates != 1 {
 		t.Fatalf("mutations: branch=%d bootstrap=%d pull=%d", gateway.branchCreates, gateway.bootstrapCreates, gateway.pullCreates)
 	}
-	if !slices.Equal(gateway.observation.Issue.Labels, []string{"ai-in-progress"}) {
-		t.Fatalf("labels = %v", gateway.observation.Issue.Labels)
+	if !slices.Equal(gateway.observation.Issue.Labels, labelsBefore) {
+		t.Fatalf("Issue Worker が Controller 所有 label を変更した: %v", gateway.observation.Issue.Labels)
 	}
 	checkpoint := gateway.observation.PullRequests[0].Checkpoint
 	if checkpoint == nil || checkpoint.Context != *result.OperationResult.ClaimContext ||
@@ -53,8 +54,8 @@ func TestClaimHandlerClaimsCandidateAndRecordsCheckpointBeforeLabels(t *testing.
 	if gateway.lastContentRef != claimBaseSHA {
 		t.Fatalf("authority ref = %q", gateway.lastContentRef)
 	}
-	if gateway.checkpointRecordedStep == 0 || gateway.labelsRecordedStep <= gateway.checkpointRecordedStep {
-		t.Fatalf("recording order: checkpoint=%d labels=%d", gateway.checkpointRecordedStep, gateway.labelsRecordedStep)
+	if gateway.checkpointRecordedStep == 0 {
+		t.Fatal("checkpoint が記録されていない")
 	}
 }
 
@@ -72,6 +73,10 @@ func TestClaimHandlerClassifiesCandidateDependencyAndRejection(t *testing.T) {
 		{name: "pull request", body: claimTaskBody("ready", "[]", nil), mutate: func(g *fakeGitHub) { g.observation.Issue.IsPullRequest = true }, want: StatusSkippedNotCandidate},
 		{name: "assignee", body: claimTaskBody("ready", "[]", nil), mutate: func(g *fakeGitHub) { g.observation.Issue.Assignees = []string{"someone"} }, want: StatusSkippedNotCandidate},
 		{name: "label", body: claimTaskBody("ready", "[]", nil), mutate: func(g *fakeGitHub) { g.observation.Issue.Labels = []string{"bug"} }, want: StatusSkippedNotCandidate},
+		{name: "branch residue without candidate", body: claimTaskBody("ready", "[]", nil), mutate: func(g *fakeGitHub) {
+			g.observation.Issue.Labels = []string{"bug"}
+			g.observation.Branch = &ClaimBranch{Name: "kudo/issue-17", SHA: claimBaseSHA}
+		}, want: StatusSkippedNotCandidate},
 		{name: "merged", body: claimTaskBody("ready", "[]", nil), mutate: func(g *fakeGitHub) {
 			g.observation.PullRequests = []ClaimPullRequest{{Number: 41, State: "closed", Merged: true}}
 		}, want: StatusSkippedAlreadyMerged},
@@ -184,29 +189,80 @@ func TestClaimHandlerRecoversEveryIncompleteCheckpointState(t *testing.T) {
 	}
 }
 
-func TestClaimHandlerRecoversCompletedCheckpointAndProjection(t *testing.T) {
+func TestClaimHandlerRecoversCompletedCheckpointAfterControllerProjection(t *testing.T) {
 	t.Parallel()
 
-	gateway := newFakeGitHub(claimTaskBody("ready", "[]", nil))
+	body := claimTaskBody("ready", "[]", nil)
+	gateway := newFakeGitHub(body)
 	handler := newTestHandler(t, gateway)
 	op := claimOperation(t)
-	gateway.labelErr = errors.New("label timeout")
 	first := handler.Handle(t.Context(), op, "attempt-01")
-	if first.Status != StatusFailedTransport || gateway.observation.PullRequests[0].Checkpoint == nil {
+	if first.Status != StatusClaimed || gateway.observation.PullRequests[0].Checkpoint == nil {
 		t.Fatalf("first result = %#v, observation = %#v", first, gateway.observation)
 	}
 	branchCreates, bootstrapCreates, pullCreates := gateway.branchCreates, gateway.bootstrapCreates, gateway.pullCreates
 
-	gateway.labelErr = nil
-	// claim 完了後の routing label は candidate 条件ではない。checkpoint があれば
-	// ai-ready の有無にかかわらず同じ Run の投影を完了する。
+	// Controller が status を投影した後も、検証済みcheckpointから同じRunへ収束する。
 	gateway.observation.Issue.Labels = []string{"ai-in-progress"}
+	gateway.observation.Issue.RawBody = []byte(body + "\n<!-- audit-only edit -->\n")
 	second := handler.Handle(t.Context(), op, "attempt-02")
 	if second.Status != StatusClaimed || second.OperationResult == nil {
 		t.Fatalf("second result = %#v", second)
 	}
 	if gateway.branchCreates != branchCreates || gateway.bootstrapCreates != bootstrapCreates || gateway.pullCreates != pullCreates {
 		t.Fatalf("completed checkpoint repeated mutations: branch=%d bootstrap=%d pull=%d", gateway.branchCreates, gateway.bootstrapCreates, gateway.pullCreates)
+	}
+}
+
+func TestClaimHandlerRevalidatesCompletedCheckpointAgainstLiveInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*contract.ClaimCheckpoint)
+	}{
+		{name: "task context", mutate: func(checkpoint *contract.ClaimCheckpoint) {
+			checkpoint.Context.TaskContext.Digest = contract.SHA256([]byte("tampered task context"))
+		}},
+		{name: "context manifest", mutate: func(checkpoint *contract.ClaimCheckpoint) {
+			checkpoint.Context.ContextManifest.Digest = contract.SHA256([]byte("tampered context manifest"))
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gateway := newFakeGitHub(claimTaskBody("ready", "[]", nil))
+			handler := newTestHandler(t, gateway)
+			op := claimOperation(t)
+			first := handler.Handle(t.Context(), op, "attempt-01")
+			if first.Status != StatusClaimed {
+				t.Fatalf("first result = %#v", first)
+			}
+			tt.mutate(gateway.observation.PullRequests[0].Checkpoint)
+			gateway.observation.Issue.Labels = []string{"ai-in-progress"}
+
+			result := handler.Handle(t.Context(), op, "attempt-02")
+			if result.Status != StatusClaimRejected || result.Rejection == nil || result.Rejection.Code != RejectionClaimConflict {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+}
+
+func TestClaimHandlerRejectsCompletedCheckpointWithoutBootstrapHead(t *testing.T) {
+	t.Parallel()
+
+	gateway := newFakeGitHub(claimTaskBody("ready", "[]", nil))
+	handler := newTestHandler(t, gateway)
+	op := claimOperation(t)
+	if first := handler.Handle(t.Context(), op, "attempt-01"); first.Status != StatusClaimed {
+		t.Fatalf("first result = %#v", first)
+	}
+	gateway.observation.PullRequests[0].HeadSHA = claimBaseSHA
+	gateway.observation.Issue.Labels = []string{"ai-in-progress"}
+
+	result := handler.Handle(t.Context(), op, "attempt-02")
+	if result.Status != StatusClaimRejected || result.Rejection == nil || result.Rejection.Code != RejectionClaimConflict {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
@@ -272,8 +328,6 @@ func newTestHandler(t *testing.T, gateway *fakeGitHub) *ClaimHandler {
 	handler, err := NewClaimHandler(gateway, contract.NewCompiler(), ClaimConfig{
 		TargetAssignee:   "worker",
 		ReadyLabel:       "ai-ready",
-		InProgressLabel:  "ai-in-progress",
-		NeedsHumanLabel:  "ai-needs-human",
 		EscalationPolicy: testEscalationRef(),
 	}, fixedClock{now: claimTime})
 	if err != nil {
@@ -309,7 +363,6 @@ type fakeGitHub struct {
 
 	observeErr error
 	contentErr error
-	labelErr   error
 
 	branchCreates          int
 	bootstrapCreates       int
@@ -317,7 +370,6 @@ type fakeGitHub struct {
 	lastContentRef         string
 	mutationStep           int
 	checkpointRecordedStep int
-	labelsRecordedStep     int
 }
 
 func newFakeGitHub(body string) *fakeGitHub {
@@ -410,25 +462,6 @@ func (f *fakeGitHub) EnsureDraftPullRequest(_ context.Context, input DraftPullRe
 	f.mutationStep++
 	f.checkpointRecordedStep = f.mutationStep
 	return pull, nil
-}
-
-func (f *fakeGitHub) ReconcileClaimLabels(_ context.Context, _ contract.IssueRef, remove []string, add string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.labelErr != nil {
-		return f.labelErr
-	}
-	labels := f.observation.Issue.Labels[:0]
-	for _, label := range f.observation.Issue.Labels {
-		if !containsFold(remove, label) && !strings.EqualFold(label, add) {
-			labels = append(labels, label)
-		}
-	}
-	labels = append(labels, add)
-	f.observation.Issue.Labels = labels
-	f.mutationStep++
-	f.labelsRecordedStep = f.mutationStep
-	return nil
 }
 
 func cloneClaimObservation(value ClaimObservation) ClaimObservation {
