@@ -308,6 +308,107 @@ func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndCachesUntilRefreshWind
 	}
 }
 
+func TestAppTokenSourceRefreshWaitHonorsCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	privateKey := testPrivateKey(t)
+	clock := &fakeClock{now: time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)}
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	var releaseOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		close(refreshStarted)
+		<-allowRefresh
+		permissions, _ := ActorPermissions(ActorImplementer)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":       "installation-token",
+			"expires_at":  clock.Now().Add(time.Hour).Format(time.RFC3339),
+			"permissions": permissions,
+		})
+	}))
+	defer server.Close()
+	defer releaseOnce.Do(func() { close(allowRefresh) })
+
+	source := testAppTokenSource(t, server.Client(), clock, privateKey, AppTokenSourceConfig{
+		Actor:   ActorImplementer,
+		BaseURL: server.URL,
+	})
+	type tokenResult struct {
+		token string
+		err   error
+	}
+	firstDone := make(chan tokenResult, 1)
+	go func() {
+		token, err := source.Token(context.Background())
+		firstDone <- tokenResult{token: token, err: err}
+	}()
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("先行 refresh が開始されない")
+	}
+
+	waitingBase, cancelWaiting := context.WithCancel(context.Background())
+	waitingContext := &errObservedContext{
+		Context: waitingBase,
+		checked: make(chan struct{}),
+	}
+	secondDone := make(chan tokenResult, 1)
+	go func() {
+		token, err := source.Token(waitingContext)
+		secondDone <- tokenResult{token: token, err: err}
+	}()
+	select {
+	case <-waitingContext.checked:
+	case <-time.After(time.Second):
+		t.Fatal("待機 caller が context 検証へ到達しない")
+	}
+	cancelWaiting()
+
+	select {
+	case result := <-secondDone:
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("待機 caller error = %v, want context.Canceled", result.err)
+		}
+		var failure *TransportFailure
+		if !errors.As(result.err, &failure) || failure.Class != FailureCanceled {
+			t.Fatalf("待機 caller failure = %#v, want canceled", result.err)
+		}
+	case <-time.After(time.Second):
+		releaseOnce.Do(func() { close(allowRefresh) })
+		<-firstDone
+		<-secondDone
+		t.Fatal("待機 caller が context cancellation を無視した")
+	}
+
+	activeWaitingContext := &errObservedContext{
+		Context: context.Background(),
+		checked: make(chan struct{}),
+	}
+	activeWaitingDone := make(chan tokenResult, 1)
+	go func() {
+		token, err := source.Token(activeWaitingContext)
+		activeWaitingDone <- tokenResult{token: token, err: err}
+	}()
+	select {
+	case <-activeWaitingContext.checked:
+	case <-time.After(time.Second):
+		t.Fatal("有効な待機 caller が context 検証へ到達しない")
+	}
+
+	releaseOnce.Do(func() { close(allowRefresh) })
+	firstResult := <-firstDone
+	if firstResult.err != nil || firstResult.token != "installation-token" {
+		t.Fatalf("先行 refresh result = %#v", firstResult)
+	}
+	waitingResult := <-activeWaitingDone
+	if waitingResult.err != nil || waitingResult.token != firstResult.token {
+		t.Fatalf("有効な待機 caller result = %#v", waitingResult)
+	}
+}
+
 func TestReviewerTokenRequestCannotGainTargetMutationPermissions(t *testing.T) {
 	t.Parallel()
 
@@ -547,6 +648,20 @@ func TestDevelopmentPATTokenSource(t *testing.T) {
 
 type fakeClock struct {
 	now time.Time
+}
+
+type errObservedContext struct {
+	context.Context
+	checked chan struct{}
+	once    sync.Once
+}
+
+func (c *errObservedContext) Err() error {
+	err := c.Context.Err()
+	if err == nil {
+		c.once.Do(func() { close(c.checked) })
+	}
+	return err
 }
 
 func (c *fakeClock) Now() time.Time {

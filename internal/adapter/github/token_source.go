@@ -188,8 +188,9 @@ type AppTokenSource struct {
 	baseURL        string
 	apiVersion     string
 
-	mu     sync.Mutex
-	cached cachedInstallationToken
+	mu          sync.Mutex
+	cached      cachedInstallationToken
+	refreshDone chan struct{}
 }
 
 var _ TokenSource = (*AppTokenSource)(nil)
@@ -408,26 +409,46 @@ func (s *AppTokenSource) Token(ctx context.Context) (string, error) {
 			Message:   "context は必須",
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return "", tokenContextFailure(ctx, err)
-	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", tokenContextFailure(ctx, err)
+		}
+		now := s.clock.Now().UTC()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+		s.mu.Lock()
+		if s.cached.value != "" && now.Before(s.cached.expiresAt.Add(-installationTokenRefreshWindow)) {
+			token := s.cached.value
+			s.mu.Unlock()
+			return token, nil
+		}
+		if s.refreshDone != nil {
+			done := s.refreshDone
+			s.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return "", tokenContextFailure(ctx, ctx.Err())
+			case <-done:
+				continue
+			}
+		}
 
-	if err := ctx.Err(); err != nil {
-		return "", tokenContextFailure(ctx, err)
+		done := make(chan struct{})
+		s.refreshDone = done
+		s.mu.Unlock()
+
+		token, expiresAt, err := s.fetch(ctx, now)
+		s.mu.Lock()
+		if err == nil {
+			s.cached = cachedInstallationToken{value: token, expiresAt: expiresAt}
+		}
+		s.refreshDone = nil
+		close(done)
+		s.mu.Unlock()
+		if err != nil {
+			return "", err
+		}
+		return token, nil
 	}
-	now := s.clock.Now().UTC()
-	if s.cached.value != "" && now.Before(s.cached.expiresAt.Add(-installationTokenRefreshWindow)) {
-		return s.cached.value, nil
-	}
-	token, expiresAt, err := s.fetch(ctx, now)
-	if err != nil {
-		return "", err
-	}
-	s.cached = cachedInstallationToken{value: token, expiresAt: expiresAt}
-	return token, nil
 }
 
 func tokenContextFailure(ctx context.Context, err error) *TransportFailure {
