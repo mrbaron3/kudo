@@ -555,9 +555,12 @@ func (s *AppTokenSource) fetch(ctx context.Context, now time.Time) (string, time
 		return "", time.Time{}, classifyHTTPFailure(installationTokenOperation, response, data)
 	}
 	var output struct {
-		Token       string            `json:"token"`
-		ExpiresAt   time.Time         `json:"expires_at"`
-		Permissions map[string]string `json:"permissions"`
+		Token        string            `json:"token"`
+		ExpiresAt    time.Time         `json:"expires_at"`
+		Permissions  map[string]string `json:"permissions"`
+		Repositories []struct {
+			FullName string `json:"full_name"`
+		} `json:"repositories"`
 	}
 	if err := json.Unmarshal(data, &output); err != nil {
 		return "", time.Time{}, invalidResponse(installationTokenOperation, "response を decode できない", err)
@@ -570,6 +573,9 @@ func (s *AppTokenSource) fetch(ctx context.Context, now time.Time) (string, time
 	}
 	if !maps.Equal(output.Permissions, s.permissions) {
 		return "", time.Time{}, invalidResponse(installationTokenOperation, "response permission が要求 subset と一致しない", nil)
+	}
+	if len(output.Repositories) != 1 || !strings.EqualFold(output.Repositories[0].FullName, s.repository.Owner+"/"+s.repository.Name) {
+		return "", time.Time{}, invalidResponse(installationTokenOperation, "response repository が対象 Task repository と一致しない", nil)
 	}
 	return output.Token, output.ExpiresAt.UTC(), nil
 }

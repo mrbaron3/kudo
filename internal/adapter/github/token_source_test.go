@@ -301,6 +301,9 @@ func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndRepositoryAndCachesUnt
 			"token":       fmt.Sprintf("installation-token-%d", requestNumber),
 			"expires_at":  clock.Now().Add(time.Hour).Format(time.RFC3339),
 			"permissions": input.Permissions,
+			"repositories": []map[string]string{
+				{"full_name": "mrbaron3/kudo"},
+			},
 		})
 	}))
 	t.Cleanup(server.Close)
@@ -367,6 +370,9 @@ func TestAppTokenSourceRefreshWaitHonorsCallerCancellation(t *testing.T) {
 			"token":       "installation-token",
 			"expires_at":  clock.Now().Add(time.Hour).Format(time.RFC3339),
 			"permissions": permissions,
+			"repositories": []map[string]string{
+				{"full_name": "mrbaron3/kudo"},
+			},
 		})
 	}))
 	defer server.Close()
@@ -538,6 +544,9 @@ func TestAppTokenSourceDoesNotShareRefreshingCallerCancellation(t *testing.T) {
 		"token":       "retry-token",
 		"expires_at":  clock.Now().Add(time.Hour).Format(time.RFC3339),
 		"permissions": permissions,
+		"repositories": []map[string]string{
+			{"full_name": "mrbaron3/kudo"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -659,6 +668,9 @@ func TestReviewerTokenRequestCannotGainTargetMutationPermissions(t *testing.T) {
 			"token":       "reviewer-token",
 			"expires_at":  clock.Now().Add(time.Hour).Format(time.RFC3339),
 			"permissions": input.Permissions,
+			"repositories": []map[string]string{
+				{"full_name": "acme/widgets"},
+			},
 		})
 	}))
 	t.Cleanup(server.Close)
@@ -783,6 +795,42 @@ func TestAppTokenSourceRejectsTokenWithUnexpectedPermissions(t *testing.T) {
 	var failure *TransportFailure
 	if token != "" || !errors.As(err, &failure) || failure.Class != FailureInvalidResponse {
 		t.Fatalf("Token() = %q, %#v, want rejected overprivileged response", token, err)
+	}
+}
+
+func TestAppTokenSourceRejectsTokenForUnexpectedRepositoryOwner(t *testing.T) {
+	t.Parallel()
+
+	privateKey := testPrivateKey(t)
+	clock := &fakeClock{now: time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var input struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Errorf("request body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":       "wrong-owner-token",
+			"expires_at":  clock.Now().Add(time.Hour).Format(time.RFC3339),
+			"permissions": input.Permissions,
+			"repositories": []map[string]string{
+				{"full_name": "other-owner/kudo"},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	source := testAppTokenSource(t, server.Client(), clock, privateKey, AppTokenSourceConfig{
+		Actor:      ActorImplementer,
+		Repository: Repository{Owner: "mrbaron3", Name: "kudo"},
+		BaseURL:    server.URL,
+	})
+	token, err := source.Token(t.Context())
+	var failure *TransportFailure
+	if token != "" || !errors.As(err, &failure) || failure.Class != FailureInvalidResponse {
+		t.Fatalf("Token() = %q, %#v, want rejected cross-owner repository", token, err)
 	}
 }
 
