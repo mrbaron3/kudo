@@ -26,10 +26,11 @@ import (
 )
 
 const (
-	installationTokenOperation = "POST installation access token"
-	providerGitHubTokenEnv     = "GH_TOKEN"
-	jwtClockSkew               = time.Minute
-	jwtValidityAfterIssue      = 9 * time.Minute
+	installationTokenOperation     = "POST installation access token"
+	providerGitHubTokenEnv         = "GH_TOKEN"
+	jwtClockSkew                   = time.Minute
+	jwtValidityAfterIssue          = 9 * time.Minute
+	installationTokenRefreshWindow = 5 * time.Minute
 )
 
 // ActorRole は credential と GitHub 上の発話主体を結び付ける。
@@ -397,7 +398,8 @@ func appAPIBaseURL(value string) (string, error) {
 	return value, nil
 }
 
-// Token は期限内の installation token を再利用し、期限到達後の最初の呼び出しで再発行する。
+// Token は送信中の失効と GitHub との clock skew を避けるため、期限の5分前まで
+// installation token を再利用し、refresh window に入った最初の呼び出しで再発行する。
 func (s *AppTokenSource) Token(ctx context.Context) (string, error) {
 	if ctx == nil {
 		return "", &TransportFailure{
@@ -417,7 +419,7 @@ func (s *AppTokenSource) Token(ctx context.Context) (string, error) {
 		return "", tokenContextFailure(ctx, err)
 	}
 	now := s.clock.Now().UTC()
-	if s.cached.value != "" && now.Before(s.cached.expiresAt) {
+	if s.cached.value != "" && now.Before(s.cached.expiresAt.Add(-installationTokenRefreshWindow)) {
 		return s.cached.value, nil
 	}
 	token, expiresAt, err := s.fetch(ctx, now)

@@ -223,7 +223,7 @@ func TestActorAppTokenSourcesRequireDistinctImplementerAndReviewerApps(t *testin
 	}
 }
 
-func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndCachesUntilExpiry(t *testing.T) {
+func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndCachesUntilRefreshWindow(t *testing.T) {
 	t.Parallel()
 
 	privateKey := testPrivateKey(t)
@@ -289,7 +289,16 @@ func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndCachesUntilExpiry(t *t
 		t.Fatalf("requests = %d, want cached single request", requests)
 	}
 
-	clock.Advance(time.Hour)
+	clock.Advance(55*time.Minute - time.Nanosecond)
+	stillCached, err := source.Token(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillCached != first || requests != 1 {
+		t.Fatalf("token before refresh window = %q, requests = %d", stillCached, requests)
+	}
+
+	clock.Advance(time.Nanosecond)
 	refreshed, err := source.Token(t.Context())
 	if err != nil {
 		t.Fatal(err)
