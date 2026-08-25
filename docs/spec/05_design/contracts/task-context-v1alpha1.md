@@ -132,7 +132,7 @@ Context Manifestは`TaskContextRef`、base、parent identity、dependency comple
 
 ## Live reconstruction and freshness
 
-claim成功時は次だけをclaim checkpointとしてdraft PR bodyのmachine blockへ固定する。
+claim成功時にIssue由来のidentityとして固定する`claimContext`は次だけを持つ。
 
 ```yaml
 compiler: "kudo.issue-compiler/v1alpha1"
@@ -149,10 +149,29 @@ contextManifest:
 baseSha: "<git-commit-sha>"
 ```
 
-この表示はprotocolのcanonical identityを説明するものであり、機械表現を固定する要件ではない。
-machine blockの表現形式はGitHub adapterが所有し、再encodeしてrefと照合できる限り自由である。machine
-blockはrepository write権限者が編集できるため、gateに使うdigestはverdict check runのmachine blockにも
-記録し、照合の正はcheck run側に置く。
+draft PR bodyへ記録する`kudo.claim-checkpoint/v1alpha1`は、この`claimContext`をControllerが
+deployment configurationから解決したExecution Policy ref、Escalation Policy refと一つのpayloadへ
+束縛する。Issue由来のcanonical YAMLやpolicy payload自体は記録しない。
+
+```json
+{
+  "schema": "kudo.claim-checkpoint/v1alpha1",
+  "claimContext": { "...": "上記claimContext" },
+  "executionPolicy": {
+    "schema": "kudo.execution-policy/v1alpha1",
+    "digest": "sha256:<digest>"
+  },
+  "escalationPolicy": {
+    "schema": "kudo.escalation-policy/v1alpha1",
+    "digest": "sha256:<digest>"
+  }
+}
+```
+
+checkpoint payloadはfield順を固定したUTF-8 JSONとし、machine blockはGitHub adapterが所有する共通
+envelopeを使う。payloadのunknown field、duplicate field、欠落、schema/ref/digest不備は
+`internal/contract`で拒否する。machine blockはrepository write権限者が編集できるため、gateに使う
+digestはverdict check runのmachine blockにも記録し、照合の正はcheck run側に置く。
 
 Task Contextを使う各Issue Worker / Review Worker Operationは開始時と完了時に次を実行する。
 

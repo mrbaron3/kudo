@@ -163,8 +163,10 @@ claimContext:
 ```
 
 `issueObservation`は Issue identity と`bodyDigest`から再計算した ref と一致しなければならない。
-`claimContext`は claim checkpoint として PR body の machine block へ記録される typed data であり、
-canonical YAML file を保存する指示ではない。claim 以外、または`succeeded`以外の Result は
+`claimContext`は claim checkpoint のIssue由来部分となる typed data であり、canonical YAML file を
+保存する指示ではない。PR bodyへは`kudo.claim-checkpoint/v1alpha1` payloadとして、
+`claimContext`、Operationに固定したExecution Policy ref、Controllerが固定したEscalation Policy refを
+一つのmachine blockへ記録する。claim 以外、または`succeeded`以外の Result は
 `claimContext`を持てない。workflow event へ Context Manifest digest だけを投影して、Compiler
 version、Task Context ref、body digest、base SHA を失ってはならない。
 
@@ -283,11 +285,20 @@ standard base64 で表す。base64 decode 後の意味解析と digest 照合は
 人間向け本文とcheck run summaryに予約済みprefix`<!-- kudo-marker `、`<!-- kudo-machine `を含めない。
 model由来本文が機械可読recordを追加してparserを曖昧にする経路を作らないためである。
 
-同一 schema 内の未知 JSON field は将来の追加 field として無視するが、field 重複、required field
+claim checkpointのmachine blockは`kind: claim-checkpoint`、`mediaType: application/json`とし、payload
+schemaは`kudo.claim-checkpoint/v1alpha1`に固定する。markerの`run`にはcheckpointを書き込むPull Request
+番号を記録し、markerとmachine blockのdigestはcheckpoint payloadのSHA-256に一致させる。checkpointは
+Run開始時のdurable handoffでありOperationのoutput logical nameではないため、下表の`outputs`語彙には
+加えない。
+
+marker / machine envelopeの同一schema内にある未知JSON fieldは将来の追加fieldとして無視するが、field重複、required field
 欠落、未知 schema、複数 marker / machine block は曖昧な record として拒否する。encoder の field 順、
 optional field の省略、base64 alphabet、comment template は
 `internal/adapter/github/testdata/record-surface/`の golden fixture を正とする。既存形式を変更する場合は、
 本節、parser、fixture、testを同じ change で更新する。
+
+checkpoint payloadはRun再構築の入力そのものなので、同一schema内でもunknown / duplicate fieldを拒否する。
+record envelopeの前方互換規則をpayloadへ適用して、解釈されないidentityを黙って保存しない。
 
 | logical name | 内容 | 記録先 | 主な producer |
 | --- | --- | --- | --- |

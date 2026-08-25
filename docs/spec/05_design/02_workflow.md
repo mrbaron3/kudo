@@ -126,7 +126,7 @@ claim の排他は branch `kudo/issue-<n>`の ref create で行う。ref create 
 がある Issue は claim できない（active Run が存在するか、supersede の後始末が未完了である）。branch
 作成に続けて、Issue Worker は base から bootstrap commit を積み、draft Pull Request を冪等に ensure
 する。PR body の machine block に claim checkpoint（Compiler version、Task Context ref、Context
-Manifest ref、Execution Policy ref、base SHA）を記録する。この PR が Run の記録面であり、Run identity
+Manifest ref、Execution / Escalation Policy ref、base SHA）を記録する。この PR が Run の記録面であり、Run identity
 は PR 番号である。
 
 raw Issue body、Issue Observation YAML、Task Context YAML、Context Manifest YAML はどこにも保存

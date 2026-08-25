@@ -19,6 +19,7 @@ const (
 	contextManifestSchemaPrefix        = "kudo.context-manifest/"
 	executionPolicySchemaPrefix        = "kudo.execution-policy/"
 	escalationPolicySchemaPrefix       = "kudo.escalation-policy/"
+	claimCheckpointSchemaPrefix        = "kudo.claim-checkpoint/"
 	artifactManifestSchemaPrefix       = "kudo.artifact-manifest/"
 	pullRequestObservationSchemaPrefix = "kudo.pull-request-observation/"
 )
