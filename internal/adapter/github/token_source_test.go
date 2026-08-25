@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -409,6 +410,166 @@ func TestAppTokenSourceRefreshWaitHonorsCallerCancellation(t *testing.T) {
 	}
 }
 
+func TestAppTokenSourceSharesRefreshFailureWithWaitingCallers(t *testing.T) {
+	t.Parallel()
+
+	privateKey := testPrivateKey(t)
+	clock := &fakeClock{now: time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)}
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	var releaseOnce sync.Once
+	var requestsMu sync.Mutex
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requestsMu.Lock()
+		requests++
+		requestNumber := requests
+		requestsMu.Unlock()
+		if requestNumber == 1 {
+			close(refreshStarted)
+			<-allowRefresh
+		}
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"secondary rate limit"}`))
+	}))
+	defer server.Close()
+	defer releaseOnce.Do(func() { close(allowRefresh) })
+
+	source := testAppTokenSource(t, server.Client(), clock, privateKey, AppTokenSourceConfig{
+		Actor:   ActorImplementer,
+		BaseURL: server.URL,
+	})
+	const waitingCallers = 4
+	results := make(chan error, waitingCallers+1)
+	go func() {
+		_, err := source.Token(context.Background())
+		results <- err
+	}()
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("先行 refresh が開始されない")
+	}
+
+	for range waitingCallers {
+		waitingContext := &doneObservedContext{
+			Context:  context.Background(),
+			observed: make(chan struct{}),
+		}
+		go func() {
+			_, err := source.Token(waitingContext)
+			results <- err
+		}()
+		select {
+		case <-waitingContext.observed:
+		case <-time.After(time.Second):
+			t.Fatal("待機 caller が refresh 完了待ちへ到達しない")
+		}
+	}
+
+	releaseOnce.Do(func() { close(allowRefresh) })
+	for range waitingCallers + 1 {
+		err := <-results
+		var failure *TransportFailure
+		if !errors.As(err, &failure) || failure.Class != FailureSecondaryRateLimit || failure.RetryAfter != time.Minute {
+			t.Fatalf("共有 refresh failure = %#v", err)
+		}
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	if requests != 1 {
+		t.Fatalf("token requests = %d, want 1", requests)
+	}
+}
+
+func TestAppTokenSourceDoesNotShareRefreshingCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	privateKey := testPrivateKey(t)
+	clock := &fakeClock{now: time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)}
+	refreshStarted := make(chan struct{})
+	var requestsMu sync.Mutex
+	requests := 0
+	permissions, _ := ActorPermissions(ActorImplementer)
+	responseBody, err := json.Marshal(map[string]any{
+		"token":       "retry-token",
+		"expires_at":  clock.Now().Add(time.Hour).Format(time.RFC3339),
+		"permissions": permissions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		requestsMu.Lock()
+		requests++
+		requestNumber := requests
+		requestsMu.Unlock()
+		if requestNumber == 1 {
+			close(refreshStarted)
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		}
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(string(responseBody))),
+			Request:    request,
+		}, nil
+	})}
+
+	source := testAppTokenSource(t, client, clock, privateKey, AppTokenSourceConfig{
+		Actor:   ActorImplementer,
+		BaseURL: "https://api.github.invalid",
+	})
+	refreshingContext, cancelRefreshing := context.WithCancel(context.Background())
+	refreshingDone := make(chan error, 1)
+	go func() {
+		_, err := source.Token(refreshingContext)
+		refreshingDone <- err
+	}()
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("先行 refresh が開始されない")
+	}
+
+	waitingContext := &doneObservedContext{
+		Context:  context.Background(),
+		observed: make(chan struct{}),
+	}
+	waitingDone := make(chan struct {
+		token string
+		err   error
+	}, 1)
+	go func() {
+		token, err := source.Token(waitingContext)
+		waitingDone <- struct {
+			token string
+			err   error
+		}{token: token, err: err}
+	}()
+	select {
+	case <-waitingContext.observed:
+	case <-time.After(time.Second):
+		t.Fatal("待機 caller が refresh 完了待ちへ到達しない")
+	}
+
+	cancelRefreshing()
+	if err := <-refreshingDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("先行 refresh error = %v, want context.Canceled", err)
+	}
+	waitingResult := <-waitingDone
+	if waitingResult.err != nil || waitingResult.token != "retry-token" {
+		t.Fatalf("待機 caller retry result = %#v", waitingResult)
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	if requests != 2 {
+		t.Fatalf("token requests = %d, want 2", requests)
+	}
+}
+
 func TestReviewerTokenRequestCannotGainTargetMutationPermissions(t *testing.T) {
 	t.Parallel()
 
@@ -662,6 +823,17 @@ func (c *errObservedContext) Err() error {
 		c.once.Do(func() { close(c.checked) })
 	}
 	return err
+}
+
+type doneObservedContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *doneObservedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
 }
 
 func (c *fakeClock) Now() time.Time {

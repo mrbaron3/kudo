@@ -176,6 +176,11 @@ type cachedInstallationToken struct {
 	expiresAt time.Time
 }
 
+type installationTokenRefresh struct {
+	done    chan struct{}
+	failure error
+}
+
 // AppTokenSource は一つの App identity と permission subset に束縛される。
 // Token は concurrent-safe で、同じ instance の refresh を一つにまとめる。
 type AppTokenSource struct {
@@ -188,9 +193,9 @@ type AppTokenSource struct {
 	baseURL        string
 	apiVersion     string
 
-	mu          sync.Mutex
-	cached      cachedInstallationToken
-	refreshDone chan struct{}
+	mu      sync.Mutex
+	cached  cachedInstallationToken
+	refresh *installationTokenRefresh
 }
 
 var _ TokenSource = (*AppTokenSource)(nil)
@@ -421,34 +426,47 @@ func (s *AppTokenSource) Token(ctx context.Context) (string, error) {
 			s.mu.Unlock()
 			return token, nil
 		}
-		if s.refreshDone != nil {
-			done := s.refreshDone
+		if s.refresh != nil {
+			refresh := s.refresh
 			s.mu.Unlock()
 			select {
 			case <-ctx.Done():
 				return "", tokenContextFailure(ctx, ctx.Err())
-			case <-done:
+			case <-refresh.done:
+				if err := ctx.Err(); err != nil {
+					return "", tokenContextFailure(ctx, err)
+				}
+				if refresh.failure != nil {
+					return "", refresh.failure
+				}
 				continue
 			}
 		}
 
-		done := make(chan struct{})
-		s.refreshDone = done
+		refresh := &installationTokenRefresh{done: make(chan struct{})}
+		s.refresh = refresh
 		s.mu.Unlock()
 
 		token, expiresAt, err := s.fetch(ctx, now)
 		s.mu.Lock()
 		if err == nil {
 			s.cached = cachedInstallationToken{value: token, expiresAt: expiresAt}
+		} else if tokenRefreshFailureShareable(ctx, err) {
+			refresh.failure = err
 		}
-		s.refreshDone = nil
-		close(done)
+		s.refresh = nil
+		close(refresh.done)
 		s.mu.Unlock()
 		if err != nil {
 			return "", err
 		}
 		return token, nil
 	}
+}
+
+func tokenRefreshFailureShareable(ctx context.Context, err error) bool {
+	callerErr := ctx.Err()
+	return callerErr == nil || !errors.Is(err, callerErr)
 }
 
 func tokenContextFailure(ctx context.Context, err error) *TransportFailure {
