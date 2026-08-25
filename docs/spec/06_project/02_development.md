@@ -88,6 +88,18 @@ integration test は build tag `integration` で opt-in にしている。`mise 
 
 test は internal network 経由で `postgres:5432` へ接続し、server version（18.4 系）と書き込み・読み出しを検証する。
 
+### GitHub App live smoke test
+
+GitHub App の live smoke test は build tag `githublive` で opt-in にしている。通常の `mise run check` には含まれず、deterministic unit test の代替にはしない。
+
+Implementer と Reviewer の `APP_ID_FILE`、`PRIVATE_KEY_FILE`、`INSTALLATION_ID_FILE` を actor ごとに設定し、次を実行する。
+
+```sh
+mise run test:github-live
+```
+
+test は両 App installation に permission subset を指定して短命 token を発行し、それぞれが `mrbaron3/kudo` の `README.md` を読み取れることを確認する。token、秘密鍵、credential file path は出力しない。
+
 ## Version の固定と更新手順
 
 再現性のため、外部 input はすべて version と digest/checksum で固定している。更新するときは対応する組を必ず同時に差し替える。

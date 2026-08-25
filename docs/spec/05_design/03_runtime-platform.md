@@ -103,16 +103,20 @@ actor ごとに別の GitHub App を登録する。最低限 Implementer と Rev
 | Actor | GitHub authority |
 | --- | --- |
 | Controller（Coordinator） | metadata read、issues read/write、pull requests read、checks read。label / status comment の記録と gate の外形条件評価用。contents と checks への write は持たない |
-| Issue Worker（Implementer） | metadata/issues read、contents write、pull requests write、checks write（自分の evidence check run）。PR の merge と head branch 削除を含む |
+| Issue Worker（Implementer） | metadata read、issues write、contents write、pull requests write、checks write（自分の evidence check run）。merge intent comment、PR の merge、head branch 削除を含む |
 | Review Worker（Reviewer） | metadata/issues/contents/pull requests read、checks write（自分の verdict check run）、PR comment write（finding） |
 
 開発の立ち上がり（実装計画の S1〜S2）は owner PAT による単一 identity で開始してよい。PAT は
 dev / test 専用の TokenSource 実装としてだけ持ち、production への経路にしない。verdict の記録が
 始まる時点（S3）までに Reviewer App の分離を導入する。
 
-actor 間で credential と provider config directory を共有しない。同一 process 内でも、各 operation へ
-渡す token はその actor の subset に限定し、provider child process の環境には該当 actor の credential
-だけを注入する。log と record surface に token、private key、credential path を含めない。
+最低限 Implementer / Reviewer 間では credential と provider config directory を共有しない。
+Coordinator も別 App にする場合は同じ分離境界を適用する。同一 process 内でも、各 operation へ渡す
+token はその actor の subset に限定し、provider child process の環境には該当 actor の credential だけを
+注入する。installation token は operation の Task repository 1件だけを`repositories`で指定して発行し、
+response の`repositories[].full_name`がその1件と一致することを確認してから利用する。これにより、同じ
+installation が許可された別 repository や、別 owner の同名 repository へ provider child がアクセス
+できないようにする。log と record surface に token、private key、credential path を含めない。
 
 ## Configuration contract
 
@@ -127,6 +131,9 @@ validation する。少なくとも次を持つ。
 | `KUDO_POLL_INTERVAL` | 既定`15m`。正数かつ最低値を検証する |
 | `KUDO_WORKSPACE_ROOT` | 既定`/var/lib/kudo/workspaces` |
 | `KUDO_PROVIDER_ALLOWLIST` | `codex`、`claude`の許可集合 |
+| `KUDO_GITHUB_<ACTOR>_APP_ID_FILE` | actor ごとの GitHub App ID を読む file。`<ACTOR>`は`COORDINATOR`、`IMPLEMENTER`、`REVIEWER` |
+| `KUDO_GITHUB_<ACTOR>_PRIVATE_KEY_FILE` | actor ごとの GitHub App private key PEM を読む file |
+| `KUDO_GITHUB_<ACTOR>_INSTALLATION_ID_FILE` | actor ごとの GitHub App installation ID を読む file |
 | `KUDO_ISSUE_PROVIDER` | Issue Worker Operation に使う required provider。`codex`または`claude` |
 | `KUDO_REVIEW_PROVIDER` | Review Request に使う required provider。`codex`または`claude` |
 | `KUDO_MAX_CONCURRENCY` | 同時 Operation 上限（in-process semaphore） |
@@ -147,6 +154,14 @@ workflow state ではないため、database の利用は [ADR-0001](../../adr/0
 と矛盾しない。
 
 unknown key、欠落した required key、不正 duration を warning だけで継続しない。
+
+GitHub App の production 設定は3 actor 分をまとめて検証する。Implementer と Reviewer は App ID、
+private key、installation ID のいずれも共有してはならない。Coordinator の App 分離は推奨であり、
+共有する場合も発行 token の permission subset は Coordinator 用へ downscope する。Reviewer の finding は
+PR conversation comment endpoint を使うため、GitHub REST permission では`issues:write`へ写像するが、
+`contents`と`pull_requests`は`read`のままにする。Implementer の merge intent comment も同じ endpoint を
+使うため`issues:write`へ写像する。provider child process に渡してよい GitHub credential は
+operation 用の短命 token（`GH_TOKEN`）だけで、App private key と`*_FILE` path は渡さない。
 
 ## Process supervision
 
