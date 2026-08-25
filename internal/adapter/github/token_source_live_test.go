@@ -18,9 +18,10 @@ func (liveClock) Now() time.Time { return time.Now() }
 // permission subset 付き token を発行し、その token が対象 repository を読めることを確認する。
 // build tag で opt-in 済みのため、credential 設定の欠落は skip せず failure にする。
 func TestLiveGitHubAppInstallationTokens(t *testing.T) {
+	repository := Repository{Owner: "mrbaron3", Name: "kudo"}
 	sources := make(map[ActorRole]*AppTokenSource, 2)
 	for _, actor := range []ActorRole{ActorImplementer, ActorReviewer} {
-		config, err := AppTokenSourceConfigFromEnvironment(actor, os.LookupEnv)
+		config, err := AppTokenSourceConfigFromEnvironment(actor, repository, os.LookupEnv)
 		if err != nil {
 			t.Fatalf("%s GitHub App の live test 設定が不正: %v", actor, err)
 		}
@@ -49,7 +50,7 @@ func TestLiveGitHubAppInstallationTokens(t *testing.T) {
 			}
 
 			gateway, err := NewGateway(http.DefaultClient, source, Config{
-				Repository: Repository{Owner: "mrbaron3", Name: "kudo"},
+				Repository: repository,
 			})
 			if err != nil {
 				t.Fatalf("%s GitHub gateway を構成できない: %v", actor, err)

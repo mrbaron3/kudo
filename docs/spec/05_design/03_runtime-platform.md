@@ -113,7 +113,9 @@ dev / test 専用の TokenSource 実装としてだけ持ち、production への
 最低限 Implementer / Reviewer 間では credential と provider config directory を共有しない。
 Coordinator も別 App にする場合は同じ分離境界を適用する。同一 process 内でも、各 operation へ渡す
 token はその actor の subset に限定し、provider child process の環境には該当 actor の credential だけを
-注入する。log と record surface に token、private key、credential path を含めない。
+注入する。installation token は operation の Task repository 1件だけを`repositories`で指定して発行し、
+同じ installation が許可された別 repository へ provider child がアクセスできないようにする。log と
+record surface に token、private key、credential path を含めない。
 
 ## Configuration contract
 

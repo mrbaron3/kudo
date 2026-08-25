@@ -92,10 +92,11 @@ type Clock interface {
 	Now() time.Time
 }
 
-// AppTokenSourceConfig は一つの actor-scoped GitHub App installation を固定する。
+// AppTokenSourceConfig は一つの actor と対象 repository に GitHub App installation を固定する。
 // credential path を含むため、この値を log、record surface、telemetry へ出してはならない。
 type AppTokenSourceConfig struct {
 	Actor              ActorRole
+	Repository         Repository
 	AppIDFile          string
 	PrivateKeyFile     string
 	InstallationIDFile string
@@ -113,6 +114,7 @@ type appCredentialEnvironmentKeys struct {
 // file 内容は constructor まで読み込まず、欠落や空値を起動時設定エラーとして拒否する。
 func AppTokenSourceConfigFromEnvironment(
 	actor ActorRole,
+	repository Repository,
 	lookupEnv func(string) (string, bool),
 ) (AppTokenSourceConfig, error) {
 	if lookupEnv == nil {
@@ -120,6 +122,9 @@ func AppTokenSourceConfigFromEnvironment(
 	}
 	keys, err := credentialEnvironmentKeys(actor)
 	if err != nil {
+		return AppTokenSourceConfig{}, err
+	}
+	if err := validateRepository(repository); err != nil {
 		return AppTokenSourceConfig{}, err
 	}
 	readPath := func(key string) (string, error) {
@@ -143,6 +148,7 @@ func AppTokenSourceConfigFromEnvironment(
 	}
 	return AppTokenSourceConfig{
 		Actor:              actor,
+		Repository:         repository.canonical(),
 		AppIDFile:          appIDFile,
 		PrivateKeyFile:     privateKeyFile,
 		InstallationIDFile: installationIDFile,
@@ -181,7 +187,7 @@ type installationTokenRefresh struct {
 	failure error
 }
 
-// AppTokenSource は一つの App identity と permission subset に束縛される。
+// AppTokenSource は一つの App identity、permission subset、repository に束縛される。
 // Token は concurrent-safe で、同じ instance の refresh を一つにまとめる。
 type AppTokenSource struct {
 	client         *http.Client
@@ -190,6 +196,7 @@ type AppTokenSource struct {
 	privateKey     *rsa.PrivateKey
 	installationID int64
 	permissions    map[string]string
+	repository     Repository
 	baseURL        string
 	apiVersion     string
 
@@ -208,7 +215,7 @@ func (s *AppTokenSource) GoString() string {
 	return s.String()
 }
 
-// ActorAppTokenSources は同一 process 内で共有可能な state を持たない actor 別 source 集合である。
+// ActorAppTokenSources は一つの Task repository に束縛された actor 別 source 集合である。
 // Implementer と Reviewer は異なる App ID でなければ構築できない。
 type ActorAppTokenSources struct {
 	Coordinator *AppTokenSource
@@ -237,6 +244,7 @@ func newActorAppTokenSourcesWithFileReader(
 		return ActorAppTokenSources{}, errors.New("Coordinator、Implementer、Reviewer の GitHub App 設定が必要")
 	}
 	sources := make(map[ActorRole]*AppTokenSource, len(roles))
+	var repository Repository
 	for _, role := range roles {
 		config, ok := configs[role]
 		if !ok || config.Actor != role {
@@ -245,6 +253,11 @@ func newActorAppTokenSourcesWithFileReader(
 		source, err := newAppTokenSourceWithFileReader(client, clock, readFile, config)
 		if err != nil {
 			return ActorAppTokenSources{}, fmt.Errorf("%s GitHub App を構成できない: %w", role, err)
+		}
+		if len(sources) == 0 {
+			repository = source.repository
+		} else if source.repository != repository {
+			return ActorAppTokenSources{}, errors.New("actor 別 GitHub App は同じ Task repository を対象にする必要がある")
 		}
 		sources[role] = source
 	}
@@ -286,6 +299,9 @@ func newAppTokenSourceWithFileReader(
 	}
 	permissions, err := ActorPermissions(config.Actor)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateRepository(config.Repository); err != nil {
 		return nil, err
 	}
 	fileSettings := []struct {
@@ -331,6 +347,7 @@ func newAppTokenSourceWithFileReader(
 		privateKey:     privateKey,
 		installationID: installationID,
 		permissions:    permissions,
+		repository:     config.Repository.canonical(),
 		baseURL:        baseURL,
 		apiVersion:     apiVersion,
 	}, nil
@@ -489,8 +506,13 @@ func (s *AppTokenSource) fetch(ctx context.Context, now time.Time) (string, time
 		}
 	}
 	input, err := json.Marshal(struct {
-		Permissions map[string]string `json:"permissions"`
-	}{Permissions: maps.Clone(s.permissions)})
+		Permissions  map[string]string `json:"permissions"`
+		Repositories []string          `json:"repositories"`
+	}{
+		Permissions: maps.Clone(s.permissions),
+		// installation ID が owner account を固定するため、この API は repository 名だけを受け取る。
+		Repositories: []string{s.repository.Name},
+	})
 	if err != nil {
 		return "", time.Time{}, invalidResponse(installationTokenOperation, "permission request を encode できない", err)
 	}

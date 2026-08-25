@@ -27,19 +27,20 @@ import (
 func TestAppTokenSourceConfigFromEnvironment(t *testing.T) {
 	t.Parallel()
 
+	repository := Repository{Owner: "MrBaron3", Name: "Kudo"}
 	values := map[string]string{
 		"KUDO_GITHUB_REVIEWER_APP_ID_FILE":          "/run/secrets/reviewer-app-id",
 		"KUDO_GITHUB_REVIEWER_PRIVATE_KEY_FILE":     "/run/secrets/reviewer-private-key",
 		"KUDO_GITHUB_REVIEWER_INSTALLATION_ID_FILE": "/run/secrets/reviewer-installation-id",
 	}
-	config, err := AppTokenSourceConfigFromEnvironment(ActorReviewer, func(key string) (string, bool) {
+	config, err := AppTokenSourceConfigFromEnvironment(ActorReviewer, repository, func(key string) (string, bool) {
 		value, ok := values[key]
 		return value, ok
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Actor != ActorReviewer ||
+	if config.Actor != ActorReviewer || config.Repository != repository.canonical() ||
 		config.AppIDFile != values["KUDO_GITHUB_REVIEWER_APP_ID_FILE"] ||
 		config.PrivateKeyFile != values["KUDO_GITHUB_REVIEWER_PRIVATE_KEY_FILE"] ||
 		config.InstallationIDFile != values["KUDO_GITHUB_REVIEWER_INSTALLATION_ID_FILE"] {
@@ -51,14 +52,21 @@ func TestAppTokenSourceConfigFromEnvironmentRejectsMissingOrAmbiguousInput(t *te
 	t.Parallel()
 
 	for name, test := range map[string]struct {
-		actor  ActorRole
-		values map[string]string
+		actor      ActorRole
+		repository Repository
+		values     map[string]string
 	}{
 		"unknown actor": {
-			actor: "administrator",
+			actor:      "administrator",
+			repository: Repository{Owner: "mrbaron3", Name: "kudo"},
+		},
+		"invalid repository": {
+			actor:      ActorImplementer,
+			repository: Repository{Owner: "mrbaron3", Name: ""},
 		},
 		"missing file setting": {
-			actor: ActorImplementer,
+			actor:      ActorImplementer,
+			repository: Repository{Owner: "mrbaron3", Name: "kudo"},
 			values: map[string]string{
 				"KUDO_GITHUB_IMPLEMENTER_APP_ID_FILE":          "/app-id",
 				"KUDO_GITHUB_IMPLEMENTER_PRIVATE_KEY_FILE":     "/private-key",
@@ -69,7 +77,7 @@ func TestAppTokenSourceConfigFromEnvironmentRejectsMissingOrAmbiguousInput(t *te
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := AppTokenSourceConfigFromEnvironment(test.actor, func(key string) (string, bool) {
+			_, err := AppTokenSourceConfigFromEnvironment(test.actor, test.repository, func(key string) (string, bool) {
 				value, ok := test.values[key]
 				return value, ok
 			})
@@ -77,6 +85,23 @@ func TestAppTokenSourceConfigFromEnvironmentRejectsMissingOrAmbiguousInput(t *te
 				t.Fatal("error = nil, want strict configuration rejection")
 			}
 		})
+	}
+}
+
+func TestAppTokenSourceRequiresTargetRepository(t *testing.T) {
+	t.Parallel()
+
+	_, err := newAppTokenSourceWithFileReader(
+		http.DefaultClient,
+		&fakeClock{now: time.Now()},
+		func(string) ([]byte, error) {
+			t.Fatal("repository validation より先に credential を読んだ")
+			return nil, nil
+		},
+		AppTokenSourceConfig{Actor: ActorImplementer},
+	)
+	if err == nil || !strings.Contains(err.Error(), "repository") {
+		t.Fatalf("error = %v, want target repository rejection", err)
 	}
 }
 
@@ -222,9 +247,19 @@ func TestActorAppTokenSourcesRequireDistinctImplementerAndReviewerApps(t *testin
 			t.Fatalf("Implementer と Reviewer で同じ %s が受理された", name)
 		}
 	}
+
+	files[reviewerConfig.AppIDFile] = originalAppID
+	files[reviewerConfig.PrivateKeyFile] = originalPrivateKey
+	files[reviewerConfig.InstallationIDFile] = originalInstallationID
+	mismatchedReviewerConfig := reviewerConfig
+	mismatchedReviewerConfig.Repository = Repository{Owner: "mrbaron3", Name: "another-repository"}
+	configs[ActorReviewer] = mismatchedReviewerConfig
+	if _, err := newActorAppTokenSourcesWithFileReader(http.DefaultClient, &fakeClock{now: time.Now()}, readFile, configs); err == nil {
+		t.Fatal("異なる Task repository の actor source 集合が受理された")
+	}
 }
 
-func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndCachesUntilRefreshWindow(t *testing.T) {
+func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndRepositoryAndCachesUntilRefreshWindow(t *testing.T) {
 	t.Parallel()
 
 	privateKey := testPrivateKey(t)
@@ -247,7 +282,8 @@ func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndCachesUntilRefreshWind
 		assertJWT(t, strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer "), &privateKey.PublicKey, 101, clock.Now())
 
 		var input struct {
-			Permissions map[string]string `json:"permissions"`
+			Permissions  map[string]string `json:"permissions"`
+			Repositories []string          `json:"repositories"`
 		}
 		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 			t.Errorf("request body: %v", err)
@@ -255,6 +291,9 @@ func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndCachesUntilRefreshWind
 		wantPermissions, _ := ActorPermissions(ActorImplementer)
 		if !reflect.DeepEqual(input.Permissions, wantPermissions) {
 			t.Errorf("permissions = %#v, want %#v", input.Permissions, wantPermissions)
+		}
+		if !slices.Equal(input.Repositories, []string{"kudo"}) {
+			t.Errorf("repositories = %#v, want Task repository only", input.Repositories)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -268,6 +307,7 @@ func TestAppTokenSourceSignsJWTRequestsActorPermissionsAndCachesUntilRefreshWind
 
 	source := testAppTokenSource(t, server.Client(), clock, privateKey, AppTokenSourceConfig{
 		Actor:      ActorImplementer,
+		Repository: Repository{Owner: "mrbaron3", Name: "kudo"},
 		BaseURL:    server.URL,
 		APIVersion: "2026-03-10",
 	})
@@ -333,8 +373,9 @@ func TestAppTokenSourceRefreshWaitHonorsCallerCancellation(t *testing.T) {
 	defer releaseOnce.Do(func() { close(allowRefresh) })
 
 	source := testAppTokenSource(t, server.Client(), clock, privateKey, AppTokenSourceConfig{
-		Actor:   ActorImplementer,
-		BaseURL: server.URL,
+		Actor:      ActorImplementer,
+		Repository: Repository{Owner: "mrbaron3", Name: "kudo"},
+		BaseURL:    server.URL,
 	})
 	type tokenResult struct {
 		token string
@@ -437,8 +478,9 @@ func TestAppTokenSourceSharesRefreshFailureWithWaitingCallers(t *testing.T) {
 	defer releaseOnce.Do(func() { close(allowRefresh) })
 
 	source := testAppTokenSource(t, server.Client(), clock, privateKey, AppTokenSourceConfig{
-		Actor:   ActorImplementer,
-		BaseURL: server.URL,
+		Actor:      ActorImplementer,
+		Repository: Repository{Owner: "mrbaron3", Name: "kudo"},
+		BaseURL:    server.URL,
 	})
 	const waitingCallers = 4
 	results := make(chan error, waitingCallers+1)
@@ -519,8 +561,9 @@ func TestAppTokenSourceDoesNotShareRefreshingCallerCancellation(t *testing.T) {
 	})}
 
 	source := testAppTokenSource(t, client, clock, privateKey, AppTokenSourceConfig{
-		Actor:   ActorImplementer,
-		BaseURL: "https://api.github.invalid",
+		Actor:      ActorImplementer,
+		Repository: Repository{Owner: "mrbaron3", Name: "kudo"},
+		BaseURL:    "https://api.github.invalid",
 	})
 	refreshingContext, cancelRefreshing := context.WithCancel(context.Background())
 	refreshingDone := make(chan error, 1)
@@ -621,8 +664,9 @@ func TestReviewerTokenRequestCannotGainTargetMutationPermissions(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	source := testAppTokenSource(t, server.Client(), clock, privateKey, AppTokenSourceConfig{
-		Actor:   ActorReviewer,
-		BaseURL: server.URL,
+		Actor:      ActorReviewer,
+		Repository: Repository{Owner: "acme", Name: "widgets"},
+		BaseURL:    server.URL,
 	})
 	token, err := source.Token(t.Context())
 	if err != nil {
@@ -692,8 +736,9 @@ func TestAppTokenSourceReturnsStructuredTransportFailures(t *testing.T) {
 			t.Cleanup(server.Close)
 
 			source := testAppTokenSource(t, server.Client(), &fakeClock{now: now}, privateKey, AppTokenSourceConfig{
-				Actor:   ActorCoordinator,
-				BaseURL: server.URL,
+				Actor:      ActorCoordinator,
+				Repository: Repository{Owner: "mrbaron3", Name: "kudo"},
+				BaseURL:    server.URL,
 			})
 			_, err := source.Token(t.Context())
 			var failure *TransportFailure
@@ -730,8 +775,9 @@ func TestAppTokenSourceRejectsTokenWithUnexpectedPermissions(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	source := testAppTokenSource(t, server.Client(), clock, privateKey, AppTokenSourceConfig{
-		Actor:   ActorReviewer,
-		BaseURL: server.URL,
+		Actor:      ActorReviewer,
+		Repository: Repository{Owner: "mrbaron3", Name: "kudo"},
+		BaseURL:    server.URL,
 	})
 	token, err := source.Token(t.Context())
 	var failure *TransportFailure
@@ -748,8 +794,9 @@ func TestAppTokenSourceClassifiesTimeout(t *testing.T) {
 		return nil, context.DeadlineExceeded
 	})}
 	source := testAppTokenSource(t, client, &fakeClock{now: time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)}, privateKey, AppTokenSourceConfig{
-		Actor:   ActorCoordinator,
-		BaseURL: "https://api.github.invalid",
+		Actor:      ActorCoordinator,
+		Repository: Repository{Owner: "mrbaron3", Name: "kudo"},
+		BaseURL:    "https://api.github.invalid",
 	})
 	_, err := source.Token(t.Context())
 	var failure *TransportFailure
@@ -763,6 +810,7 @@ func TestCredentialFileErrorsDoNotExposePaths(t *testing.T) {
 
 	paths := AppTokenSourceConfig{
 		Actor:              ActorReviewer,
+		Repository:         Repository{Owner: "mrbaron3", Name: "kudo"},
 		AppIDFile:          "/sensitive/reviewer-app-id",
 		PrivateKeyFile:     "/sensitive/reviewer-private-key",
 		InstallationIDFile: "/sensitive/reviewer-installation-id",
@@ -888,6 +936,7 @@ func testActorSourceConfig(actor ActorRole) AppTokenSourceConfig {
 	prefix := "/credentials/" + string(actor)
 	return AppTokenSourceConfig{
 		Actor:              actor,
+		Repository:         Repository{Owner: "mrbaron3", Name: "kudo"},
 		AppIDFile:          prefix + "-app-id",
 		PrivateKeyFile:     prefix + "-private-key",
 		InstallationIDFile: prefix + "-installation-id",
