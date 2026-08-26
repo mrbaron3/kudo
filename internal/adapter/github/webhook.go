@@ -23,6 +23,12 @@ import (
 // 25MiB あるため、低遅延経路が受け取る buffer を deployment 側で絞れるようにしている。
 const DefaultWebhookMaxPayloadBytes = 2 * 1024 * 1024
 
+// MaxWebhookPayloadBytes は設定できる上限の天井であり、GitHub 自身の delivery 上限に合わせる。
+// 天井を置くのは、上限が「未署名 request に対する memory 保護」だからである。任意の正数を
+// 許すと保護が設定次第で消え、int64 の端では上限判定用の +1 sentinel が overflow して
+// 正当な delivery まで空 body として拒否される。
+const MaxWebhookPayloadBytes = 25 * 1024 * 1024
+
 const (
 	webhookEventHeader     = "X-GitHub-Event"
 	webhookDeliveryHeader  = "X-GitHub-Delivery"
@@ -30,11 +36,18 @@ const (
 	webhookSignaturePrefix = "sha256="
 	webhookIssuesEvent     = "issues"
 	maxWebhookDeliveryID   = 128
+	maxWebhookEventName    = 64
 )
 
 // supportedIssueActions は docs/spec/05_design/04_github-routing.md が reconcile trigger として
 // 受け付けると宣言した issues action である。ここに無い action は「候補成立に関係しない」の
 // ではなく「trigger 語彙に無い」であり、受理して no-op にする（欠落は polling が回収する）。
+//
+// allowlist を維持できるのは、candidate 条件の入力（live state の open / assignee / label と
+// Issue 本文）がこの 8 つで過不足なく覆われるためである。全 action を素通しにすると、
+// routing に使わない milestoned / pinned / typed のたびに no-op reconcile が GitHub read を
+// 消費する。**candidate 条件を変えるときは本 list も見直す**。覆えなくなった変更は、
+// webhook では進まず polling でだけ進む遅延としてしか現れない。
 var supportedIssueActions = []string{
 	"opened",
 	"reopened",
@@ -157,7 +170,7 @@ func NewWebhookVerifier(config WebhookConfig) (*WebhookVerifier, error) {
 	if config.Secret == "" {
 		return nil, errors.New("GitHub webhook secret は必須")
 	}
-	if config.MaxPayloadBytes < 0 {
+	if config.MaxPayloadBytes < 0 || config.MaxPayloadBytes > MaxWebhookPayloadBytes {
 		return nil, fmt.Errorf("GitHub webhook payload 上限が不正: %d", config.MaxPayloadBytes)
 	}
 	limit := config.MaxPayloadBytes
@@ -186,15 +199,15 @@ func (v *WebhookVerifier) Accept(header http.Header, body io.Reader) (WebhookDel
 	}
 	var delivery WebhookDelivery
 	event := header.Get(webhookEventHeader)
-	if event == "" {
-		return delivery, reject(WebhookMissingEvent, webhookEventHeader+" header が無い")
+	if !validHeaderToken(event, maxWebhookEventName) {
+		return delivery, reject(WebhookMissingEvent, webhookEventHeader+" header が無いか不正")
 	}
 	delivery.Event = event
 	if err := validateJSONMediaType(header.Get("Content-Type")); err != nil {
 		return delivery, err
 	}
 	deliveryID := header.Get(webhookDeliveryHeader)
-	if !validDeliveryID(deliveryID) {
+	if !validHeaderToken(deliveryID, maxWebhookDeliveryID) {
 		return delivery, reject(WebhookMissingIdentity, webhookDeliveryHeader+" header が無いか不正")
 	}
 	delivery.ID = deliveryID
@@ -243,8 +256,10 @@ func validateJSONMediaType(value string) error {
 	return nil
 }
 
-func validDeliveryID(value string) bool {
-	if value == "" || len(value) > maxWebhookDeliveryID {
+// validHeaderToken は log field として運ぶ header 値の値域を固定する。
+// 署名検証後の値であっても、長さと制御文字は record の形を壊すため受け入れない。
+func validHeaderToken(value string, limit int) bool {
+	if value == "" || len(value) > limit {
 		return false
 	}
 	return !strings.ContainsFunc(value, func(r rune) bool {
@@ -281,6 +296,10 @@ func parseIssuesPayload(delivery WebhookDelivery, raw []byte) (WebhookDelivery, 
 	if payload.Issue.Number <= 0 {
 		return delivery, reject(WebhookMissingIdentity, "issues payload の Issue number が無いか不正")
 	}
+	// GitHub は登録時の表記のまま owner / name を送る。canonical 化せずに IssueRef へ
+	// 写すと、同じ Issue を configuration 文字列から組み立てる polling 経路の IssueRef と
+	// 等値比較で一致せず、二つの identity として扱われる。
+	repository = repository.canonical()
 	delivery.Issue = contract.IssueRef{
 		Owner:      repository.Owner,
 		Repository: repository.Name,

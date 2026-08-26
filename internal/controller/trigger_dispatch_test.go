@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -332,6 +333,9 @@ func TestReconcilePanicIsContainedAndReleasesCapacity(t *testing.T) {
 	})
 }
 
+// waitForCapacity は「slot が解放されたこと」という条件を待つ。経過時間を入力にせず、
+// deadline は test を hang させないための watchdog としてだけ使う。slot の解放は
+// reconcile goroutine の defer で起きるため、test 側に同期点を作る手段が無い。
 func waitForCapacity(t *testing.T, dispatcher *TriggerDispatcher, request workflow.ReconcileRequest) {
 	t.Helper()
 
@@ -410,4 +414,50 @@ func triggerID(record map[string]any) string {
 	}
 	id, _ := trigger[telemetry.FieldTriggerID].(string)
 	return id
+}
+
+// ReconcileIssue は注入された collaborator である。error message と panic 値には
+// GitHub の response 本文や Issue の非公開本文が入り得るため、型と stack だけを残す。
+func TestReconcileFailureAndPanicRecordTypeAndStackWithoutMessages(t *testing.T) {
+	t.Parallel()
+
+	const leak = "issue prose and /run/secrets/kudo_token"
+	failed := make(chan struct{})
+	failing, failingLogs := newTestDispatcher(t, 1, func(context.Context, workflow.ReconcileRequest) error {
+		defer close(failed)
+		return errors.New(leak)
+	})
+	if err := failing.TriggerReconcile(t.Context(), webhookRequest("delivery-1", "opened")); err != nil {
+		t.Fatalf("TriggerReconcile() error = %v", err)
+	}
+	<-failed
+	record := waitForLogRecord(t, failingLogs, func(record map[string]any) bool {
+		return record[telemetry.FieldOutcome] == string(OutcomeReconcileFailed)
+	})
+	if record[telemetry.FieldErrorType] != "*errors.errorString" {
+		t.Errorf("record %v does not carry the error type", record)
+	}
+	if bytes.Contains(failingLogs.Bytes(), []byte(leak)) {
+		t.Errorf("logs %s contain the reconcile error message", failingLogs.Bytes())
+	}
+
+	panicked := make(chan struct{})
+	panicking, panicLogs := newTestDispatcher(t, 1, func(context.Context, workflow.ReconcileRequest) error {
+		defer close(panicked)
+		panic(leak)
+	})
+	if err := panicking.TriggerReconcile(t.Context(), webhookRequest("delivery-2", "opened")); err != nil {
+		t.Fatalf("TriggerReconcile() error = %v", err)
+	}
+	<-panicked
+	record = waitForLogRecord(t, panicLogs, func(record map[string]any) bool {
+		return record[telemetry.FieldOutcome] == string(OutcomeReconcilePanicked)
+	})
+	stack, _ := record[telemetry.FieldStack].(string)
+	if !strings.Contains(stack, "internal/controller") {
+		t.Errorf("record %v does not carry the panic stack", record)
+	}
+	if bytes.Contains(panicLogs.Bytes(), []byte(leak)) {
+		t.Errorf("logs %s contain the panic value", panicLogs.Bytes())
+	}
 }

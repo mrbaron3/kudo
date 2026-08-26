@@ -1,8 +1,10 @@
 package httpingress
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -119,5 +121,38 @@ func TestNewServerFixesRequestTimeouts(t *testing.T) {
 	}
 	if server.ReadHeaderTimeout <= 0 || server.ReadTimeout <= 0 || server.WriteTimeout <= 0 || server.IdleTimeout <= 0 {
 		t.Errorf("NewServer() timeouts = %+v, want every timeout to be bounded", server)
+	}
+}
+
+// readiness 検査は credential file を読む。error message をそのまま記録すると
+// credential path が log に残る（runtime-platform.md が明示的に禁じている）。
+func TestReadinessFailureLogsAReasonCodeWithoutTheErrorMessage(t *testing.T) {
+	t.Parallel()
+
+	const leak = "/run/secrets/kudo_implementer_private_key"
+	classified := newTestIngress(t, &recordingTrigger{}, func(context.Context) error {
+		return &NotReadyError{Reason: "github_app_credential_unreadable"}
+	})
+	classified.send(httptest.NewRequest(http.MethodGet, ReadyPath, nil))
+	record := findRecord(t, classified.logs.Bytes(), func(record map[string]any) bool {
+		return record[telemetry.FieldOutcome] == string(OutcomeNotReady)
+	})
+	if record[telemetry.FieldReason] != "github_app_credential_unreadable" {
+		t.Errorf("record %v does not carry the readiness reason code", record)
+	}
+
+	unclassified := newTestIngress(t, &recordingTrigger{}, func(context.Context) error {
+		return &fs.PathError{Op: "open", Path: leak, Err: fs.ErrPermission}
+	})
+	unclassified.send(httptest.NewRequest(http.MethodGet, ReadyPath, nil))
+	logs := unclassified.logs.Bytes()
+	if bytes.Contains(logs, []byte(leak)) {
+		t.Fatalf("logs %s contain the credential path", logs)
+	}
+	record = findRecord(t, logs, func(record map[string]any) bool {
+		return record[telemetry.FieldOutcome] == string(OutcomeNotReady)
+	})
+	if record[telemetry.FieldErrorType] != "*fs.PathError" {
+		t.Errorf("record %v does not carry the error type", record)
 	}
 }

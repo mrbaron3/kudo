@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"testing"
 
@@ -97,5 +98,47 @@ func TestAttrsCarryIdentityOnly(t *testing.T) {
 		if bytes.Contains(encoded, []byte(key)) {
 			t.Errorf("record %s contains %q", encoded, key)
 		}
+	}
+}
+
+// 注入された collaborator の error message は telemetry 安全ではない。
+// os.ReadFile 由来の error は credential path を、reconcile 由来の error は Issue 本文を
+// 含み得る（docs/spec/05_design/03_runtime-platform.md は credential path の記録を禁じる）。
+func TestErrorTypeRecordsTheTypeWithoutTheMessage(t *testing.T) {
+	t.Parallel()
+
+	const leak = "/run/secrets/kudo_implementer_private_key"
+	record := logAttrs(t, ErrorType(&fs.PathError{Op: "open", Path: leak, Err: fs.ErrPermission}))
+	if got := record[FieldErrorType]; got != "*fs.PathError" {
+		t.Errorf("%s = %v, want %q", FieldErrorType, got, "*fs.PathError")
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if bytes.Contains(encoded, []byte(leak)) {
+		t.Errorf("record %s contains the credential path", encoded)
+	}
+}
+
+// panic 値は error とは限らない。recover() が返す任意の値も同じ経路で記録できる。
+func TestErrorTypeAcceptsRecoveredPanicValues(t *testing.T) {
+	t.Parallel()
+
+	record := logAttrs(t, ErrorType("derivation bug: /run/secrets/token"))
+	if got := record[FieldErrorType]; got != "string" {
+		t.Errorf("%s = %v, want %q", FieldErrorType, got, "string")
+	}
+	if encoded, _ := json.Marshal(record); bytes.Contains(encoded, []byte("/run/secrets/token")) {
+		t.Errorf("record %s contains the panic message", encoded)
+	}
+}
+
+func TestErrorTypeHandlesNil(t *testing.T) {
+	t.Parallel()
+
+	record := logAttrs(t, ErrorType(nil))
+	if got := record[FieldErrorType]; got != "<nil>" {
+		t.Errorf("%s = %v, want %q", FieldErrorType, got, "<nil>")
 	}
 }

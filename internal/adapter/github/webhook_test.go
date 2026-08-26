@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -384,3 +385,51 @@ func TestWebhookRejectionMessageExcludesPayloadAndSignature(t *testing.T) {
 }
 
 var _ io.Reader = (*countingReader)(nil)
+
+// IssueRef の同値関係は case を無視する。webhook が GitHub 登録時の表記をそのまま
+// 運ぶと、polling が configuration 文字列から作る同じ Issue の IssueRef と `==` で
+// 一致しなくなる。
+func TestAcceptCanonicalizesRepositoryIdentity(t *testing.T) {
+	t.Parallel()
+
+	verifier := testVerifier(t)
+	body := []byte(`{"action":"opened","issue":{"number":18},` +
+		`"repository":{"name":"Kudo","owner":{"login":"MrBaron3"}}}`)
+	delivery, err := acceptBody(t, verifier, "issues", "d-1", body)
+	if err != nil {
+		t.Fatalf("Accept() error = %v", err)
+	}
+	want := contract.IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 18}
+	if delivery.Issue != want {
+		t.Errorf("Accept().Issue = %+v, want %+v", delivery.Issue, want)
+	}
+}
+
+// payload 上限は未署名 request に対しても有限の memory 保護でなければならない。
+// 上限ちょうどを許すための sentinel が int64 を溢れると、保護が無効化される。
+func TestNewWebhookVerifierBoundsThePayloadLimit(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", MaxPayloadBytes: MaxWebhookPayloadBytes + 1}); err == nil {
+		t.Error("NewWebhookVerifier(above ceiling) = nil error, want error")
+	}
+	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", MaxPayloadBytes: math.MaxInt64}); err == nil {
+		t.Error("NewWebhookVerifier(MaxInt64) = nil error, want error")
+	}
+	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", MaxPayloadBytes: MaxWebhookPayloadBytes}); err != nil {
+		t.Errorf("NewWebhookVerifier(ceiling) error = %v, want nil", err)
+	}
+}
+
+// event 名は log field として運ぶため、値域を header の申告のままにしない。
+func TestAcceptRejectsMalformedEventNames(t *testing.T) {
+	t.Parallel()
+
+	verifier := testVerifier(t)
+	body := issuesPayload("opened", 18)
+	for _, event := range []string{"issues\nfake", "issues ", strings.Repeat("e", 65)} {
+		if _, err := acceptBody(t, verifier, event, "d-1", body); !errors.Is(err, WebhookMissingEvent) {
+			t.Errorf("Accept(event=%q) error = %v, want %s", event, err, WebhookMissingEvent)
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	"github.com/mrbaron3/kudo/internal/telemetry"
@@ -39,6 +40,10 @@ var (
 	ErrDispatcherStopped = errors.New("reconcile dispatcher は停止している")
 	// ErrDispatcherAtCapacity は同時実行上限による trigger の drop を表す。
 	// 落ちた delivery は polling が回収するため、escalation ではない。
+	//
+	// これは github-routing.md の`waiting_capacity`とは別概念である。`waiting_capacity`は
+	// ReconcileIssue が観測を実行したうえで返す結果（`ai-ready`を残して再評価）であり、
+	// こちらは観測へ到達させない受付側の背圧である。label にも Run にも影響しない。
 	ErrDispatcherAtCapacity = errors.New("reconcile dispatcher が同時実行上限に達している")
 )
 
@@ -143,23 +148,30 @@ func (d *TriggerDispatcher) run(request workflow.ReconcileRequest) {
 		// 一つの Issue の導出 bug で低遅延経路 process 全体を落とさない。
 		// 落とした delivery と同じく、この Run は polling の再観測が回収する。
 		if recovered := recover(); recovered != nil {
-			d.logger.ErrorContext(d.ctx, "reconcile が panic した",
+			// panic 値そのものは記録しない。任意の値であり、Issue 本文や credential を
+			// 含み得る。process を落とさない選択は stack trace を運用者から奪う選択でも
+			// あるため、診断は型と stack で残す。
+			d.logger.LogAttrs(d.ctx, slog.LevelError, "reconcile が panic した",
 				slog.String(telemetry.FieldEvent, EventReconcileRun),
 				slog.String(telemetry.FieldOutcome, string(OutcomeReconcilePanicked)),
 				telemetry.Issue(request.Issue),
 				telemetry.Trigger(request.Trigger),
-				slog.Any(telemetry.FieldError, recovered),
+				telemetry.ErrorType(recovered),
+				slog.String(telemetry.FieldStack, string(debug.Stack())),
 			)
 		}
 	}()
 
 	if err := d.reconcile(d.ctx, request); err != nil {
-		d.logger.ErrorContext(d.ctx, "reconcile が失敗した",
+		// error message を記録しないのは、ReconcileIssue が注入された collaborator であり、
+		// GitHub の response 本文や Issue の非公開本文を含み得るためである。失敗の分類は
+		// reconcile 側が機械可読な code として自分の record に残す。
+		d.logger.LogAttrs(d.ctx, slog.LevelError, "reconcile が失敗した",
 			slog.String(telemetry.FieldEvent, EventReconcileRun),
 			slog.String(telemetry.FieldOutcome, string(OutcomeReconcileFailed)),
 			telemetry.Issue(request.Issue),
 			telemetry.Trigger(request.Trigger),
-			slog.String(telemetry.FieldError, err.Error()),
+			telemetry.ErrorType(err),
 		)
 	}
 }

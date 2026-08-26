@@ -7,6 +7,7 @@
 package telemetry
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -18,10 +19,20 @@ import (
 const (
 	FieldEvent   = "event"
 	FieldOutcome = "outcome"
-	// FieldError は運用者向けの内部診断文である。送信者へ返す response body には使わない。
+	// FieldError は**自分が構築した分類済み error** の診断文である。注入された
+	// collaborator の error message には使わない（ErrorType を使う）。送信者へ返す
+	// response body にも使わない。
 	FieldError = "error"
+	// FieldErrorType は注入された値の型名だけを記録する field である。
+	FieldErrorType = "error_type"
+	// FieldReason は失敗の機械可読な理由 code である。
+	FieldReason = "reason"
+	// FieldStack は containment した panic の stack trace である。
+	FieldStack = "stack"
 	// FieldHTTPStatus は ingress が返した HTTP status である。
 	FieldHTTPStatus = "http_status"
+	// FieldWebhookEvent は GitHub webhook の event 名である。
+	FieldWebhookEvent = "webhook_event"
 )
 
 // Issue の correlation field。repository は GitHub の`owner/name`表記へ canonicalize する。
@@ -38,6 +49,18 @@ const (
 	FieldTriggerID     = "id"
 	FieldTriggerAction = "action"
 )
+
+// ErrorType は注入された error や recover した panic 値を、message を載せずに記録する。
+//
+// 型名だけにするのは、message の中身を書いた側が telemetry の制約を知らないからである。
+// os.ReadFile 由来の error は credential path を、reconcile 由来の error は Issue の
+// 非公開本文や upstream response を含み得る。いずれも telemetry へ送らない
+// （docs/spec/05_design/01_architecture.md の Telemetry、
+// docs/spec/05_design/03_runtime-platform.md の Secrets and credentials）。
+// 分類が必要なら、値を作る側が機械可読な code を別 field で渡す。
+func ErrorType(value any) slog.Attr {
+	return slog.String(FieldErrorType, fmt.Sprintf("%T", value))
+}
 
 // Issue は Issue identity を group attr として返す。
 // owner / repository は GitHub の case-insensitive な identity に合わせて小文字へ揃え、

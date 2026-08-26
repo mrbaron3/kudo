@@ -415,3 +415,58 @@ func findRecord(t *testing.T, logs []byte, match func(map[string]any) bool) map[
 	t.Fatalf("no matching log record in %s", logs)
 	return nil
 }
+
+// 注入された collaborator の error message は telemetry 安全ではない。
+// 起動できなかった理由は、その error を作った側（dispatcher）が自分の record で分類する。
+func TestTriggerRefusalLogsTheErrorTypeWithoutItsMessage(t *testing.T) {
+	t.Parallel()
+
+	const leak = "issue body: " + secretIssueBody
+	ingress := newTestIngress(t, &recordingTrigger{err: errors.New(leak)}, nil)
+	ingress.send(signedRequest(t, testSecret, "issues", "delivery-1", issuesBody("opened", 18)))
+
+	logs := ingress.logs.Bytes()
+	if bytes.Contains(logs, []byte(secretIssueBody)) {
+		t.Errorf("logs %s contain the collaborator error message", logs)
+	}
+	record := findRecord(t, logs, func(record map[string]any) bool {
+		return record[telemetry.FieldOutcome] == string(OutcomeTriggerRefused)
+	})
+	if record[telemetry.FieldErrorType] != "*errors.errorString" {
+		t.Errorf("record %v does not carry the error type", record)
+	}
+}
+
+// 語彙外 delivery は既定 log level で観測できなければならない。event 由来か action 由来かを
+// 区別できないと、App の購読設定が広すぎる状態と新 action の到来が同じ record になる。
+func TestIgnoredDeliveriesAreDistinguishableAtDefaultLevel(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		event string
+		body  []byte
+		want  Outcome
+	}{
+		{"unsupportedAction", "issues", issuesBody("milestoned", 18), OutcomeIgnoredAction},
+		{"unsupportedEvent", "ping", []byte(`{"zen":"Design for failure."}`), OutcomeIgnoredEvent},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ingress := newTestIngress(t, &recordingTrigger{}, nil)
+			ingress.send(signedRequest(t, testSecret, testCase.event, "delivery-1", testCase.body))
+
+			record := findRecord(t, ingress.logs.Bytes(), func(record map[string]any) bool {
+				return record[telemetry.FieldOutcome] == string(testCase.want)
+			})
+			if record["level"] == "DEBUG" {
+				t.Errorf("record %v is below the default log level", record)
+			}
+			if record[telemetry.FieldWebhookEvent] != testCase.event {
+				t.Errorf("record %v does not carry the webhook event name", record)
+			}
+		})
+	}
+}

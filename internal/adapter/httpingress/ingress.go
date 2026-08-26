@@ -38,8 +38,15 @@ type Outcome string
 const (
 	// OutcomeTriggered は reconcile を起動して応答したことを表す。
 	OutcomeTriggered Outcome = "reconcile_triggered"
-	// OutcomeIgnored は検証を通ったが reconcile trigger の語彙に無い delivery を表す。
-	OutcomeIgnored Outcome = "ignored"
+	// OutcomeIgnoredEvent は issues 以外の event を受理したことを表す。件数が多い状態は
+	// App の webhook 購読が広すぎる signal である。
+	OutcomeIgnoredEvent Outcome = "ignored_event"
+	// OutcomeIgnoredAction は trigger 語彙に無い issues action を受理したことを表す。
+	// GitHub が候補成立に関わる新 action を送り始めた場合、この件数だけが手掛かりになる。
+	OutcomeIgnoredAction Outcome = "ignored_action"
+	// OutcomeUnclassified は adapter が分類しなかった失敗である。verifier は分類済みの
+	// rejection しか返さないため、現れた場合は adapter 側の契約違反を意味する。
+	OutcomeUnclassified Outcome = "unclassified"
 	// OutcomeTriggerRefused は reconcile を起動できなかったことを表す。delivery の
 	// 内容の問題ではないため、GitHub へは一時的失敗として返す。
 	OutcomeTriggerRefused Outcome = "trigger_refused"
@@ -61,7 +68,23 @@ type ReconcileTrigger interface {
 
 // ReadinessCheck は required configuration と GitHub App 認証の readiness を返す。
 // error は運用者向けの内部診断であり、response body へは載せない。
+//
+// 理由を log へ残したい実装は *NotReadyError を返す。素の error は message を記録せず
+// 型名だけを残すため、credential path や file 内容が telemetry へ漏れない。
 type ReadinessCheck func(ctx context.Context) error
+
+// NotReadyError は readiness 失敗の telemetry 安全な理由 code である。
+//
+// Reason には credential path、secret、file 内容、外部 response 本文を入れてはならない。
+// この型が存在するのは、readiness 検査が credential file と GitHub 認証に触れる以上、
+// 素の error message（例: os.ReadFile の PathError）が credential path を含むためである。
+type NotReadyError struct {
+	Reason string
+}
+
+func (e *NotReadyError) Error() string {
+	return "readiness を満たさない: " + e.Reason
+}
 
 // Config は ingress が束縛する collaborator である。既定値で黙って継続しない。
 type Config struct {
@@ -139,8 +162,13 @@ func (i *ingress) handleWebhook(writer http.ResponseWriter, request *http.Reques
 	delivery, err := i.verifier.Accept(request.Header, request.Body)
 	if err != nil {
 		status, outcome, message := classifyRejection(err)
-		i.logDelivery(ctx, slog.LevelWarn, "webhook delivery を受理しなかった", delivery, outcome, status,
-			slog.String(telemetry.FieldError, message))
+		extra := []slog.Attr{telemetry.ErrorType(err)}
+		if message != "" {
+			// message は verifier が構築した定型の診断文であり、payload も signature も
+			// 含まないことを test で固定している。
+			extra = append(extra, slog.String(telemetry.FieldError, message))
+		}
+		i.logDelivery(ctx, slog.LevelWarn, "webhook delivery を受理しなかった", delivery, outcome, status, extra...)
 		writer.WriteHeader(status)
 		return
 	}
@@ -149,14 +177,20 @@ func (i *ingress) handleWebhook(writer http.ResponseWriter, request *http.Reques
 	if !ok {
 		// 語彙外の action と issues 以外の event は、GitHub 側の delivery 失敗にせず
 		// no-op として受理する。候補成立に関係する変更は次の reconcile が live state から読む。
-		i.logDelivery(ctx, slog.LevelDebug, "reconcile trigger の語彙外 delivery を受理した",
-			delivery, OutcomeIgnored, http.StatusNoContent)
+		// 既定 log level に残すのは、この件数が「購読が広すぎる」と「GitHub が新しい action を
+		// 送り始めた」を区別する唯一の材料だからである。後者は webhook が効かず polling でだけ
+		// 進む遅延としてしか現れない。
+		i.logDelivery(ctx, slog.LevelInfo, "reconcile trigger の語彙外 delivery を受理した",
+			delivery, ignoredOutcome(delivery), http.StatusNoContent)
 		writer.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if err := i.trigger.TriggerReconcile(ctx, reconcileRequest); err != nil {
+		// error message を記録しないのは、trigger が注入された collaborator であり、
+		// message の中身が telemetry の制約を満たす保証が無いためである。起動できなかった
+		// 理由の分類は、その error を作った側が自分の record で残す。
 		i.logDelivery(ctx, slog.LevelError, "reconcile を起動できなかった", delivery,
-			OutcomeTriggerRefused, http.StatusServiceUnavailable, slog.String(telemetry.FieldError, err.Error()))
+			OutcomeTriggerRefused, http.StatusServiceUnavailable, telemetry.ErrorType(err))
 		writer.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
@@ -166,10 +200,17 @@ func (i *ingress) handleWebhook(writer http.ResponseWriter, request *http.Reques
 
 // classifyRejection は拒否 code を HTTP status へ写像する。response body には何も載せず、
 // 送信者が検証の内部段階を推測できないようにする。診断は log にだけ残す。
+func ignoredOutcome(delivery github.WebhookDelivery) Outcome {
+	if delivery.Action != "" {
+		return OutcomeIgnoredAction
+	}
+	return OutcomeIgnoredEvent
+}
+
 func classifyRejection(err error) (int, Outcome, string) {
 	rejection, ok := github.RejectedWebhook(err)
 	if !ok {
-		return http.StatusInternalServerError, Outcome("unclassified"), err.Error()
+		return http.StatusInternalServerError, OutcomeUnclassified, ""
 	}
 	status := http.StatusBadRequest
 	switch rejection.Code {
@@ -192,12 +233,17 @@ func (i *ingress) handleReadyz(writer http.ResponseWriter, request *http.Request
 	defer cancel()
 
 	if err := i.readiness(ctx); err != nil {
-		i.logger.WarnContext(ctx, "readiness 検査が通らない",
+		attrs := []slog.Attr{
 			slog.String(telemetry.FieldEvent, EventReadiness),
 			slog.String(telemetry.FieldOutcome, string(OutcomeNotReady)),
 			slog.Int(telemetry.FieldHTTPStatus, http.StatusServiceUnavailable),
-			slog.String(telemetry.FieldError, err.Error()),
-		)
+			telemetry.ErrorType(err),
+		}
+		var notReady *NotReadyError
+		if errors.As(err, &notReady) {
+			attrs = append(attrs, slog.String(telemetry.FieldReason, notReady.Reason))
+		}
+		i.logger.LogAttrs(ctx, slog.LevelWarn, "readiness 検査が通らない", attrs...)
 		writer.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
@@ -231,6 +277,9 @@ func (i *ingress) logDelivery(
 		slog.String(telemetry.FieldEvent, EventWebhookDelivery),
 		slog.String(telemetry.FieldOutcome, string(outcome)),
 		slog.Int(telemetry.FieldHTTPStatus, status),
+	}
+	if delivery.Event != "" {
+		attrs = append(attrs, slog.String(telemetry.FieldWebhookEvent, delivery.Event))
 	}
 	if delivery.ID != "" {
 		attrs = append(attrs, telemetry.Trigger(workflow.Trigger{
