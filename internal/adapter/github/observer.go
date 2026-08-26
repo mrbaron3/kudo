@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mrbaron3/kudo/internal/workflow"
 )
 
 type apiUser struct {
@@ -190,8 +192,11 @@ func (g *Gateway) ObserveIssue(ctx context.Context, number int64) (IssueSnapshot
 	}, nil
 }
 
+// IssueBranchName は claim branch 名の規則を workflow core と共有する。
+// 観測側と mutation 側で規則がずれると ref create の排他が効かなくなるため、
+// adapter は名前を自前で組み立てない。
 func IssueBranchName(number int64) string {
-	return "kudo/issue-" + strconv.FormatInt(number, 10)
+	return workflow.IssueBranchName(number)
 }
 
 // ListCandidateIssues は routing query の全 page を読み、Pull Request を除外する。

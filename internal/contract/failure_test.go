@@ -117,3 +117,28 @@ func TestAttemptFailureValidation(t *testing.T) {
 		})
 	}
 }
+
+// 語彙を公開する slice と、validation が使う map が同じ集合であることを固定する。
+// 片方だけに class を足すと、未知 class が validation を通るか、逆に既知 class が
+// retry 対象から落ちる。
+func TestFailureClassesMatchTheValidationVocabulary(t *testing.T) {
+	classes := FailureClasses()
+	if len(classes) != len(failureClasses) {
+		t.Fatalf("語彙の件数 = %d, validation 側 = %d", len(classes), len(failureClasses))
+	}
+	seen := map[FailureClass]bool{}
+	for _, class := range classes {
+		if seen[class] {
+			t.Fatalf("class %q が語彙に重複している", class)
+		}
+		seen[class] = true
+		if !failureClasses[class] {
+			t.Fatalf("class %q が validation 側に無い", class)
+		}
+	}
+	// 返した slice を書き換えても語彙は壊れない。
+	classes[0] = "mutated"
+	if !failureClasses[FailureClasses()[0]] {
+		t.Fatal("FailureClasses が内部 slice を共有している")
+	}
+}

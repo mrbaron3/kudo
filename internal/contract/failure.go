@@ -1,5 +1,7 @@
 package contract
 
+import "slices"
+
 // FailureClass は attempt を失敗させた execution / transport failure の分類である。
 // review の品質 verdict とは別の値空間であり、相互に変換しない。
 type FailureClass string
@@ -13,14 +15,31 @@ const (
 	FailureGitHubTransport         FailureClass = "github_transport"
 )
 
-var failureClasses = map[FailureClass]bool{
-	FailureTimeout:                 true,
-	FailureRateLimit:               true,
-	FailureNetwork:                 true,
-	FailureProviderCrash:           true,
-	FailureProviderInvalidResponse: true,
-	FailureGitHubTransport:         true,
+// failureClassVocabulary は宣言順の class 語彙である。map からの列挙は順序が
+// 決まらないため、語彙を順序付きで公開する側をこの slice に一本化する。
+var failureClassVocabulary = []FailureClass{
+	FailureTimeout,
+	FailureRateLimit,
+	FailureNetwork,
+	FailureProviderCrash,
+	FailureProviderInvalidResponse,
+	FailureGitHubTransport,
 }
+
+var failureClasses = func() map[FailureClass]bool {
+	classes := make(map[FailureClass]bool, len(failureClassVocabulary))
+	for _, class := range failureClassVocabulary {
+		classes[class] = true
+	}
+	return classes
+}()
+
+// FailureClasses は retry 対象の failure class 語彙を宣言順で返す。
+//
+// class ごとの backoff を持つ層が語彙を網羅していることを検査できるようにするための
+// accessor である。caller が語彙を自前で複製すると、class を足したときに片方だけが
+// 古くなり、未知 class が暗黙の既定へ落ちる。
+func FailureClasses() []FailureClass { return slices.Clone(failureClassVocabulary) }
 
 // AttemptFailure は 1 attempt の execution failure を表す。
 //
