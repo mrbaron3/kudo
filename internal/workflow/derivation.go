@@ -59,6 +59,9 @@ const (
 	// ReconcileAwaitDependency は dependency 未完了の待機である。`ai-ready`を消費せず、
 	// 次の reconcile が再評価する。failure でも needs_human でもない。
 	ReconcileAwaitDependency ReconcileActionKind = "await_dependency"
+	// ReconcileAwaitMergeGate は required check の pending 待ちである。品質 verdict でも
+	// execution failure でもなく、retry budget を消費しない backoff 再照合である。
+	ReconcileAwaitMergeGate ReconcileActionKind = "await_merge_gate"
 	// ReconcileSkipNotCandidate は Kudo の制御対象外の Issue に対する no-op である。
 	ReconcileSkipNotCandidate ReconcileActionKind = "skip_not_candidate"
 	// ReconcileNone は terminal な lineage に対して行うことが無いことを表す。
@@ -435,8 +438,15 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 	}
 	switch finalVerdict {
 	case contract.VerdictApprove:
+		// approve が live head にあるだけでは finalize / merge の根拠にしない。approve は
+		// GREEN/check evidence と承認済み test の上にしか成立せず、それらを欠いた記録は
+		// gate を二つ飛ばして merge まで到達しうる。直後の evidence 分岐だけを守っても、
+		// approve 経路が迂回路として残る。
+		if err := checkFinalApprovalPrerequisites(observation, config, pullRequest); err != nil {
+			return Derivation{}, err
+		}
 		if pullRequest.State == PullRequestStateReady {
-			return dispatch(PhaseMergingPullRequest, contract.OperationMergePullRequest), nil
+			return deriveMergeGate(pullRequest)
 		}
 		return dispatch(PhaseFinalizingPullRequest, contract.OperationFinalizePullRequest), nil
 	case contract.VerdictRequestChanges:
@@ -450,8 +460,12 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 		// 承認済み test を系譜に持たない final evidence は、test gate を通さずに
 		// 実装が進んだ記録である。final review へ回すと gate を一つ飛ばして
 		// merge まで到達しうるため、記録側の protocol 違反として止める。
-		if !verdictInLineage(checks, config, CheckRunTestValidity,
-			contract.VerdictApprove, pullRequest.HeadLineage) {
+		approved, approvedErr := verdictInLineage(checks, config, CheckRunTestValidity,
+			contract.VerdictApprove, pullRequest.HeadLineage)
+		if approvedErr != nil {
+			return Derivation{}, approvedErr
+		}
+		if !approved {
 			return Derivation{}, errInvalidRecord
 		}
 		return Derivation{
@@ -479,7 +493,11 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 	}
 	switch testVerdict {
 	case contract.VerdictApprove:
-		return dispatch(PhaseImplementing, implementOperation(checks, config, pullRequest)), nil
+		operation, operationErr := implementOperation(checks, config, pullRequest)
+		if operationErr != nil {
+			return Derivation{}, operationErr
+		}
+		return dispatch(PhaseImplementing, operation), nil
 	case contract.VerdictRequestChanges:
 		return dispatch(PhaseAuthoringTests, contract.OperationReviseTests), nil
 	case contract.VerdictNeedsHuman:
@@ -490,8 +508,18 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 	// 根拠にしない。test を書き換えた head は新しい approval を得るまで implementation
 	// へ戻れない（docs/spec/05_design/02_workflow.md の GREEN and refactor）。
 	redOnHead := hasEvidence(checks, config, CheckRunEvidenceRed, head)
-	if !redOnHead && testGateApproved(observation, config, pullRequest) {
-		return dispatch(PhaseImplementing, implementOperation(checks, config, pullRequest)), nil
+	if !redOnHead {
+		approved, approvedErr := testGateApproved(observation, config, pullRequest)
+		if approvedErr != nil {
+			return Derivation{}, approvedErr
+		}
+		if approved {
+			operation, operationErr := implementOperation(checks, config, pullRequest)
+			if operationErr != nil {
+				return Derivation{}, operationErr
+			}
+			return dispatch(PhaseImplementing, operation), nil
+		}
 	}
 	if redOnHead {
 		return Derivation{
@@ -500,11 +528,70 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 		}, nil
 	}
 	if pullRequest.State == PullRequestStateDraft {
-		return dispatch(PhaseAuthoringTests, authorOperation(observation, config, pullRequest)), nil
+		operation, operationErr := authorOperation(observation, config, pullRequest)
+		if operationErr != nil {
+			return Derivation{}, operationErr
+		}
+		return dispatch(PhaseAuthoringTests, operation), nil
 	}
 	// draft でない PR が final approve を持たない。ready 化は final approve だけが
 	// gate であり、外形が合わない Run を進めない。
 	return Derivation{}, errExternalMutation
+}
+
+// checkFinalApprovalPrerequisites は final approve が立つための証跡が揃っているかを確かめる。
+func checkFinalApprovalPrerequisites(observation Observation, config DeriveConfig,
+	pullRequest PullRequestObservation) error {
+	head := pullRequest.Head
+	if !hasEvidence(observation.CheckRuns, config, CheckRunEvidenceGreen, head) ||
+		!hasEvidence(observation.CheckRuns, config, CheckRunEvidenceChecks, head) {
+		return errInvalidRecord
+	}
+	approved, err := verdictInLineage(observation.CheckRuns, config, CheckRunTestValidity,
+		contract.VerdictApprove, pullRequest.HeadLineage)
+	if err != nil {
+		return err
+	}
+	if !approved {
+		return errInvalidRecord
+	}
+	return nil
+}
+
+// deriveMergeGate は merge の外形条件を read-only の観測だけで評価する。
+//
+// review に merge 判断をさせず、外形条件を Controller が評価する
+// （docs/spec/05_design/02_workflow.md の Merge と完了投影）。pending は品質 verdict でも
+// execution failure でもない待機であり、check failure と conflict は`merge_blocked`として
+// 人へ返す。語彙外の観測は、埋め忘れを「待機」へ倒して merge が黙って止まらないよう
+// protocol 違反として拒否する。
+func deriveMergeGate(pullRequest PullRequestObservation) (Derivation, error) {
+	gate := pullRequest.MergeGate
+	switch gate.RequiredChecks {
+	case CheckRollupFailure:
+		return escalated(EscalationMergeBlocked, PhaseMergingPullRequest), nil
+	case CheckRollupPending:
+		return Derivation{
+			Phase: PhaseMergingPullRequest,
+			Next:  ReconcileAction{Kind: ReconcileAwaitMergeGate},
+		}, nil
+	case CheckRollupSuccess:
+	default:
+		return Derivation{}, errInvalidRecord
+	}
+	switch gate.Mergeable {
+	case MergeabilityConflicting:
+		return escalated(EscalationMergeBlocked, PhaseMergingPullRequest), nil
+	case MergeabilityComputing:
+		return Derivation{
+			Phase: PhaseMergingPullRequest,
+			Next:  ReconcileAction{Kind: ReconcileAwaitMergeGate},
+		}, nil
+	case MergeabilityMergeable:
+		return dispatch(PhaseMergingPullRequest, contract.OperationMergePullRequest), nil
+	default:
+		return Derivation{}, errInvalidRecord
+	}
 }
 
 func dispatch(phase Phase, operation contract.OperationKind) Derivation {
@@ -518,31 +605,39 @@ func dispatch(phase Phase, operation contract.OperationKind) Derivation {
 // blocking finding を返していれば、以後の実装はその finding の修復であり、
 // 先行 artifact を入力に取る repair_implementation でなければならない。
 func implementOperation(checks []CheckRunObservation, config DeriveConfig,
-	pullRequest PullRequestObservation) contract.OperationKind {
-	if verdictInLineage(checks, config, CheckRunFinalImplementation,
-		contract.VerdictRequestChanges, pullRequest.HeadLineage) {
-		return contract.OperationRepairImplementation
+	pullRequest PullRequestObservation) (contract.OperationKind, error) {
+	repairing, err := verdictInLineage(checks, config, CheckRunFinalImplementation,
+		contract.VerdictRequestChanges, pullRequest.HeadLineage)
+	if err != nil {
+		return "", err
 	}
-	return contract.OperationImplement
+	if repairing {
+		return contract.OperationRepairImplementation, nil
+	}
+	return contract.OperationImplement, nil
 }
 
 // authorOperation は test lane の Operation を選ぶ。差し戻し（reviewer の
 // request_changes、または implement lane の test-revision-report）が一度でもあれば、
 // 以後は先行 artifact を入力に取る revise_tests である。
 func authorOperation(observation Observation, config DeriveConfig,
-	pullRequest PullRequestObservation) contract.OperationKind {
-	if verdictInLineage(observation.CheckRuns, config, CheckRunTestValidity,
-		contract.VerdictRequestChanges, pullRequest.HeadLineage) {
-		return contract.OperationReviseTests
+	pullRequest PullRequestObservation) (contract.OperationKind, error) {
+	revising, err := verdictInLineage(observation.CheckRuns, config, CheckRunTestValidity,
+		contract.VerdictRequestChanges, pullRequest.HeadLineage)
+	if err != nil {
+		return "", err
+	}
+	if revising {
+		return contract.OperationReviseTests, nil
 	}
 	for _, comment := range observation.Comments {
 		if comment.AuthorID == config.Implementer.CommentAuthorID &&
 			comment.PullRequest == pullRequest.Number && comment.Marker != nil &&
 			comment.Marker.Kind == CommentMarkerTestRevisionReport {
-			return contract.OperationReviseTests
+			return contract.OperationReviseTests, nil
 		}
 	}
-	return contract.OperationAuthorTests
+	return contract.OperationAuthorTests, nil
 }
 
 // verdictOn は head へ束縛された Reviewer 名義の verdict を返す。verdict が無ければ
@@ -573,15 +668,21 @@ func verdictOn(checks []CheckRunObservation, config DeriveConfig,
 
 // verdictInLineage は live head から辿れる commit に、指定 verdict の Reviewer 名義
 // 記録があるかを返す。系譜外の head への verdict は現在の Run の gate 入力ではない。
+//
+// 各 head の verdict は verdictOn で読む。系譜上の記録も live head と同じ強さで検証しないと、
+// 語彙外や矛盾した verdict が check run の並び順しだいで gate を通る。
 func verdictInLineage(checks []CheckRunObservation, config DeriveConfig,
-	name string, verdict contract.ReviewVerdict, lineage []string) bool {
-	for _, check := range checks {
-		if check.Name == name && check.AppID == config.Reviewer.CheckRunAppID &&
-			check.Verdict == verdict && slices.Contains(lineage, check.Head) {
-			return true
+	name string, verdict contract.ReviewVerdict, lineage []string) (bool, error) {
+	for _, commit := range lineage {
+		found, err := verdictOn(checks, config, name, commit)
+		if err != nil {
+			return false, err
+		}
+		if found == verdict {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // testGateApproved は、系譜上でもっとも新しい test gate の記録が approve かを返す。
@@ -595,29 +696,33 @@ func verdictInLineage(checks []CheckRunObservation, config DeriveConfig,
 // 差し戻し report が並ぶ場合は report を新しいものとして扱う。implement は approve の
 // 後にしか走らないためである。
 func testGateApproved(observation Observation, config DeriveConfig,
-	pullRequest PullRequestObservation) bool {
-	verdictAt, verdict := latestVerdictInLineage(observation.CheckRuns, config,
+	pullRequest PullRequestObservation) (bool, error) {
+	verdictAt, verdict, err := latestVerdictInLineage(observation.CheckRuns, config,
 		CheckRunTestValidity, pullRequest.HeadLineage)
+	if err != nil {
+		return false, err
+	}
 	if verdictAt < 0 || verdict != contract.VerdictApprove {
-		return false
+		return false, nil
 	}
 	revisionAt := latestRevisionReportInLineage(observation, config, pullRequest)
-	return revisionAt < 0 || verdictAt < revisionAt
+	return revisionAt < 0 || verdictAt < revisionAt, nil
 }
 
 // latestVerdictInLineage は系譜上でもっとも新しい Reviewer 名義 verdict の位置と値を返す。
 // 記録が無ければ index に -1 を返す。
 func latestVerdictInLineage(checks []CheckRunObservation, config DeriveConfig,
-	name string, lineage []string) (int, contract.ReviewVerdict) {
+	name string, lineage []string) (int, contract.ReviewVerdict, error) {
 	for index, commit := range lineage {
-		for _, check := range checks {
-			if check.Name == name && check.Head == commit &&
-				check.AppID == config.Reviewer.CheckRunAppID {
-				return index, check.Verdict
-			}
+		verdict, err := verdictOn(checks, config, name, commit)
+		if err != nil {
+			return -1, "", err
+		}
+		if verdict != "" {
+			return index, verdict, nil
 		}
 	}
-	return -1, ""
+	return -1, "", nil
 }
 
 // latestRevisionReportInLineage は系譜上でもっとも新しい test-revision-report の位置を返す。

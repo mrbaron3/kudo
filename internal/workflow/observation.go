@@ -123,6 +123,45 @@ type PullRequestObservation struct {
 	State       PullRequestState
 	Head        string
 	HeadLineage []string
+	// MergeGate は merge の外形条件の観測である。open な PR でだけ意味を持ち、
+	// merge 直前の gate 評価にだけ使う。
+	MergeGate MergeGateObservation
+}
+
+// CheckRollupState は required status check の集約状態である。
+//
+// 「required check が設定されていない」は success へ写像する（gate 条件が空集合に対して
+// 成立するため）。この写像は adapter の責務であり、core は結果だけを読む。
+type CheckRollupState string
+
+const (
+	CheckRollupPending CheckRollupState = "pending"
+	CheckRollupSuccess CheckRollupState = "success"
+	CheckRollupFailure CheckRollupState = "failure"
+)
+
+// MergeabilityState は GitHub が計算した merge 可能性である。
+// GitHub は計算中に不定値を返すため、それを`computing`として明示的に観測する。
+type MergeabilityState string
+
+const (
+	MergeabilityComputing   MergeabilityState = "computing"
+	MergeabilityMergeable   MergeabilityState = "mergeable"
+	MergeabilityConflicting MergeabilityState = "conflicting"
+)
+
+// MergeGateObservation は docs/spec/05_design/02_workflow.md の Merge と完了投影 が定める
+// 外形条件のうち、read-only な pull request / check 観測で確かめられるものである。
+//
+// 承認済み head と live head の一致は導出が head binding で確かめ、base の一致は
+// mutation 直前に merge_pull_request が live 照合する。ここに畳むと、claim checkpoint に
+// pin した base を導出が持つことになる。
+//
+// zero value は語彙外であり、gate 評価時に protocol 違反として拒否する。observer が
+// 埋め忘れた観測を「まだ待つ」へ倒すと、merge が黙って進まない Run になる。
+type MergeGateObservation struct {
+	RequiredChecks CheckRollupState
+	Mergeable      MergeabilityState
 }
 
 // CheckRunObservation は App 所有の check run 観測である。

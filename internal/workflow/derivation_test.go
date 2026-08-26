@@ -82,6 +82,14 @@ func testRevisionReport(head string) CommentObservation {
 	}
 }
 
+// mergeableGate は merge の外形条件がすべて成立している観測である。
+func mergeableGate() MergeGateObservation {
+	return MergeGateObservation{
+		RequiredChecks: CheckRollupSuccess,
+		Mergeable:      MergeabilityMergeable,
+	}
+}
+
 func evidenceCheck(name, head string) CheckRunObservation {
 	return CheckRunObservation{Name: name, Head: head, AppID: derivedImplementerApp}
 }
@@ -146,15 +154,20 @@ func TestDeriveEvaluatesEveryDerivedPhaseRow(t *testing.T) {
 	superseded := runObservation(PullRequestStateClosed, redHead, bootstrapCommit)
 	superseded.Branch = nil
 
-	merging := runObservation(PullRequestStateReady, greenHead, redHead, bootstrapCommit)
-	merging.CheckRuns = []CheckRunObservation{
+	// final approve は GREEN/check evidence と承認済み test の上にしか成立しない。
+	approvedChecks := []CheckRunObservation{
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+		evidenceCheck(CheckRunEvidenceGreen, greenHead),
+		evidenceCheck(CheckRunEvidenceChecks, greenHead),
 		verdictCheck(contract.ReviewFinalImplementation, contract.VerdictApprove, greenHead),
 	}
 
+	merging := runObservation(PullRequestStateReady, greenHead, redHead, bootstrapCommit)
+	merging.CheckRuns = approvedChecks
+	merging.PullRequests[0].MergeGate = mergeableGate()
+
 	finalizing := runObservation(PullRequestStateDraft, greenHead, redHead, bootstrapCommit)
-	finalizing.CheckRuns = []CheckRunObservation{
-		verdictCheck(contract.ReviewFinalImplementation, contract.VerdictApprove, greenHead),
-	}
+	finalizing.CheckRuns = approvedChecks
 
 	awaitingFinal := runObservation(PullRequestStateDraft, greenHead, redHead, bootstrapCommit)
 	awaitingFinal.CheckRuns = []CheckRunObservation{
@@ -791,6 +804,115 @@ func TestApplyRoundBudgetStopsTheRepairLoopAtTheLimit(t *testing.T) {
 		if got := ApplyRoundBudget(derivation, exhausted, limits); got != derivation {
 			t.Fatalf("%+v が予算判定で書き換えられた: %+v", derivation, got)
 		}
+	}
+}
+
+// merge の外形条件は Controller が read-only の観測で評価する。pending は待機であり
+// 品質 verdict でも failure でもない。check failure と conflict は merge_blocked である。
+func TestDeriveEvaluatesTheMergeGateBeforeDispatchingMerge(t *testing.T) {
+	approved := func(gate MergeGateObservation) Observation {
+		observation := runObservation(PullRequestStateReady, greenHead, redHead, bootstrapCommit)
+		observation.CheckRuns = []CheckRunObservation{
+			verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+			evidenceCheck(CheckRunEvidenceGreen, greenHead),
+			evidenceCheck(CheckRunEvidenceChecks, greenHead),
+			verdictCheck(contract.ReviewFinalImplementation, contract.VerdictApprove, greenHead),
+		}
+		observation.PullRequests[0].MergeGate = gate
+		return observation
+	}
+
+	tests := []struct {
+		name  string
+		gate  MergeGateObservation
+		phase Phase
+		next  ReconcileAction
+	}{
+		{"すべて成立", mergeableGate(), PhaseMergingPullRequest,
+			dispatchOperation(contract.OperationMergePullRequest)},
+		{"required check が pending",
+			MergeGateObservation{CheckRollupPending, MergeabilityMergeable},
+			PhaseMergingPullRequest, ReconcileAction{Kind: ReconcileAwaitMergeGate}},
+		{"mergeable を計算中",
+			MergeGateObservation{CheckRollupSuccess, MergeabilityComputing},
+			PhaseMergingPullRequest, ReconcileAction{Kind: ReconcileAwaitMergeGate}},
+		{"required check が failure",
+			MergeGateObservation{CheckRollupFailure, MergeabilityMergeable},
+			PhaseNeedsHuman,
+			stoppedEscalation(EscalationMergeBlocked, PhaseMergingPullRequest)},
+		{"conflict している",
+			MergeGateObservation{CheckRollupSuccess, MergeabilityConflicting},
+			PhaseNeedsHuman,
+			stoppedEscalation(EscalationMergeBlocked, PhaseMergingPullRequest)},
+		// 埋め忘れを「まだ待つ」へ倒すと merge が黙って進まない Run になる。
+		{"gate が観測されていない", MergeGateObservation{}, PhaseNeedsHuman,
+			escalation(EscalationProtocolValidationFailed)},
+		{"語彙外の rollup",
+			MergeGateObservation{CheckRollupState("green"), MergeabilityMergeable},
+			PhaseNeedsHuman, escalation(EscalationProtocolValidationFailed)},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := Derive(approved(testCase.gate), derivedConfig())
+			if got.Phase != testCase.phase || got.Next != testCase.next {
+				t.Fatalf("derivation = %+v, want phase=%q next=%+v",
+					got, testCase.phase, testCase.next)
+			}
+		})
+	}
+}
+
+// final approve は GREEN/check evidence と承認済み test の上にしか成立しない。
+// 前提を欠いた approve で finalize / merge へ進むと、gate を二つ飛ばして merge へ到達する。
+func TestDeriveRejectsFinalApprovalWithoutItsPrerequisites(t *testing.T) {
+	withoutEvidence := runObservation(PullRequestStateDraft, greenHead, redHead, bootstrapCommit)
+	withoutEvidence.CheckRuns = []CheckRunObservation{
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+		verdictCheck(contract.ReviewFinalImplementation, contract.VerdictApprove, greenHead),
+	}
+
+	withoutTestApproval := runObservation(PullRequestStateReady, greenHead, redHead, bootstrapCommit)
+	withoutTestApproval.CheckRuns = []CheckRunObservation{
+		evidenceCheck(CheckRunEvidenceGreen, greenHead),
+		evidenceCheck(CheckRunEvidenceChecks, greenHead),
+		verdictCheck(contract.ReviewFinalImplementation, contract.VerdictApprove, greenHead),
+	}
+	withoutTestApproval.PullRequests[0].MergeGate = mergeableGate()
+
+	for name, observation := range map[string]Observation{
+		"GREEN/check evidence が無い": withoutEvidence,
+		"承認済み test が系譜に無い":         withoutTestApproval,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := Derive(observation, derivedConfig())
+			if got.Phase != PhaseNeedsHuman ||
+				got.Next != escalation(EscalationProtocolValidationFailed) {
+				t.Fatalf("derivation = %+v, want protocol 違反の escalation", got)
+			}
+		})
+	}
+}
+
+// 系譜上の記録も live head と同じ強さで検証する。検証しないと、矛盾した verdict が
+// check run の並び順しだいで gate を通したり差し戻したりする。
+func TestDeriveRejectsContradictoryVerdictsInTheLineage(t *testing.T) {
+	observation := runObservation(
+		PullRequestStateDraft, greenHead, redHead, bootstrapCommit)
+	observation.CheckRuns = []CheckRunObservation{
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictRequestChanges, redHead),
+	}
+
+	got := Derive(observation, derivedConfig())
+	if got.Phase != PhaseNeedsHuman ||
+		got.Next != escalation(EscalationProtocolValidationFailed) {
+		t.Fatalf("derivation = %+v, want protocol 違反の escalation", got)
+	}
+
+	// 並び順を入れ替えても同じ結論になる。
+	observation.CheckRuns[0], observation.CheckRuns[1] = observation.CheckRuns[1], observation.CheckRuns[0]
+	if reversed := Derive(observation, derivedConfig()); reversed != got {
+		t.Fatalf("check run の並び順で結論が変わった: %+v", reversed)
 	}
 }
 
