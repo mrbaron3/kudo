@@ -34,10 +34,14 @@ const (
 	webhookDeliveryHeader  = "X-GitHub-Delivery"
 	webhookSignatureHeader = "X-Hub-Signature-256"
 	webhookSignaturePrefix = "sha256="
-	webhookIssuesEvent     = "issues"
 	maxWebhookDeliveryID   = 128
 	maxWebhookEventName    = 64
+	maxWebhookActionName   = 64
 )
+
+// IssuesEvent は reconcile trigger を運ぶ唯一の GitHub event 名である。
+// 受理した delivery を「event 語彙外」と「action 語彙外」に分ける判断はこの値に基づく。
+const IssuesEvent = "issues"
 
 // supportedIssueActions は docs/spec/05_design/04_github-routing.md が reconcile trigger として
 // 受け付けると宣言した issues action である。ここに無い action は「候補成立に関係しない」の
@@ -211,7 +215,7 @@ func (v *WebhookVerifier) Accept(header http.Header, body io.Reader) (WebhookDel
 		return delivery, reject(WebhookMissingIdentity, webhookDeliveryHeader+" header が無いか不正")
 	}
 	delivery.ID = deliveryID
-	if event != webhookIssuesEvent {
+	if event != IssuesEvent {
 		return delivery, nil
 	}
 	return parseIssuesPayload(delivery, raw)
@@ -285,8 +289,10 @@ func parseIssuesPayload(delivery WebhookDelivery, raw []byte) (WebhookDelivery, 
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return delivery, reject(WebhookMalformedPayload, "issues payload を JSON として解釈できない")
 	}
-	if payload.Action == "" {
-		return delivery, reject(WebhookMalformedPayload, "issues payload に action が無い")
+	// action も log field として運ぶため、header 値と同じ値域へ制約する。payload 由来の
+	// 任意長・改行入りの値が入ると、validHeaderToken が守っている record の形が別 field で破れる。
+	if !validHeaderToken(payload.Action, maxWebhookActionName) {
+		return delivery, reject(WebhookMalformedPayload, "issues payload の action が無いか不正")
 	}
 	delivery.Action = payload.Action
 	repository := Repository{Owner: payload.Repository.Owner.Login, Name: payload.Repository.Name}

@@ -52,20 +52,25 @@ func TestReadyzReflectsConfigurationAndCredentialReadiness(t *testing.T) {
 }
 
 // readiness 検査は外部 I/O を含む。応答しない check が readyz を無期限に占有すると、
-// orchestrator は「まだ判定中」と「準備できない」を区別できない。
+// orchestrator は「まだ判定中」と「準備できない」を区別できない。deadline が渡ること
+// 自体を検査し、実時間の経過を test の入力にしない。
 func TestReadyzBoundsTheReadinessCheck(t *testing.T) {
 	t.Parallel()
 
-	observed := make(chan error, 1)
-	verifier := newVerifierForTest(t)
+	const timeout = 3 * time.Second
+	observed := make(chan time.Duration, 1)
 	handler, err := NewHandler(Config{
-		Verifier:         verifier,
+		Verifier:         newVerifierForTest(t),
 		Trigger:          &recordingTrigger{},
-		ReadinessTimeout: 10 * time.Millisecond,
+		ReadinessTimeout: timeout,
 		Readiness: func(ctx context.Context) error {
-			<-ctx.Done()
-			observed <- ctx.Err()
-			return ctx.Err()
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				observed <- 0
+				return errors.New("readiness context has no deadline")
+			}
+			observed <- time.Until(deadline)
+			return nil
 		},
 	})
 	if err != nil {
@@ -73,16 +78,12 @@ func TestReadyzBoundsTheReadinessCheck(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, ReadyPath, nil))
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
 	}
-	select {
-	case err := <-observed:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("readiness context error = %v, want DeadlineExceeded", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("readiness check was never bounded")
+	remaining := <-observed
+	if remaining <= 0 || remaining > timeout {
+		t.Errorf("readiness deadline = %v from now, want a bound within %v", remaining, timeout)
 	}
 }
 

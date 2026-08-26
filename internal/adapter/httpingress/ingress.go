@@ -164,8 +164,10 @@ func (i *ingress) handleWebhook(writer http.ResponseWriter, request *http.Reques
 		status, outcome, message := classifyRejection(err)
 		extra := []slog.Attr{telemetry.ErrorType(err)}
 		if message != "" {
-			// message は verifier が構築した定型の診断文であり、payload も signature も
-			// 含まないことを test で固定している。
+			// message は verifier が構築した定型の診断文である。payload、signature、secret の
+			// 断片を含まないことは、全 rejection code に対する
+			// github.TestRejectionMessagesNeverCarryPayloadOrSignature が固定している。
+			// 診断を厚くする変更でここへ payload 由来の値を混ぜてはならない。
 			extra = append(extra, slog.String(telemetry.FieldError, message))
 		}
 		i.logDelivery(ctx, slog.LevelWarn, "webhook delivery を受理しなかった", delivery, outcome, status, extra...)
@@ -198,15 +200,18 @@ func (i *ingress) handleWebhook(writer http.ResponseWriter, request *http.Reques
 	writer.WriteHeader(http.StatusAccepted)
 }
 
-// classifyRejection は拒否 code を HTTP status へ写像する。response body には何も載せず、
-// 送信者が検証の内部段階を推測できないようにする。診断は log にだけ残す。
+// ignoredOutcome は「App の webhook 購読が広すぎる」（event 語彙外）と「GitHub が候補成立に
+// 関わる新しい action を送り始めた」（action 語彙外）を分ける。両者は同じ 204 になるため、
+// この outcome だけが運用上の signal になる。
 func ignoredOutcome(delivery github.WebhookDelivery) Outcome {
-	if delivery.Action != "" {
+	if delivery.Event == github.IssuesEvent {
 		return OutcomeIgnoredAction
 	}
 	return OutcomeIgnoredEvent
 }
 
+// classifyRejection は拒否 code を HTTP status へ写像する。response body には何も載せず、
+// 送信者が検証の内部段階を推測できないようにする。診断は log にだけ残す。
 func classifyRejection(err error) (int, Outcome, string) {
 	rejection, ok := github.RejectedWebhook(err)
 	if !ok {

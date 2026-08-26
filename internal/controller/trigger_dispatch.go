@@ -29,8 +29,16 @@ const (
 type Outcome string
 
 const (
-	OutcomeTriggerAccepted   Outcome = "trigger_accepted"
-	OutcomeTriggerDropped    Outcome = "trigger_dropped"
+	OutcomeTriggerAccepted Outcome = "trigger_accepted"
+	// OutcomeTriggerDropped は同時実行上限による drop である。
+	OutcomeTriggerDropped Outcome = "trigger_dropped"
+	// OutcomeTriggerStopped は shutdown 後に届いた trigger である。
+	// drop と分けるのは、503 が増えたときに「容量を上げるべき」と「停止中」を
+	// record から区別するためである。
+	OutcomeTriggerStopped Outcome = "trigger_stopped"
+	// OutcomeTriggerRejected は identity 不足の trigger である。adapter が identity を
+	// 検証済みで渡す限り現れず、現れた場合は producer 側の契約違反を意味する。
+	OutcomeTriggerRejected   Outcome = "trigger_rejected"
 	OutcomeReconcileFailed   Outcome = "reconcile_failed"
 	OutcomeReconcilePanicked Outcome = "reconcile_panicked"
 )
@@ -38,12 +46,18 @@ const (
 var (
 	// ErrDispatcherStopped は shutdown 後の trigger を表す。
 	ErrDispatcherStopped = errors.New("reconcile dispatcher は停止している")
+
 	// ErrDispatcherAtCapacity は同時実行上限による trigger の drop を表す。
 	// 落ちた delivery は polling が回収するため、escalation ではない。
 	//
 	// これは github-routing.md の`waiting_capacity`とは別概念である。`waiting_capacity`は
 	// ReconcileIssue が観測を実行したうえで返す結果（`ai-ready`を残して再評価）であり、
 	// こちらは観測へ到達させない受付側の背圧である。label にも Run にも影響しない。
+	//
+	// 「polling が回収する」という安全性が成立するのは webhook 経路に限る。polling 自身が
+	// 落とされた場合、候補を毎 cycle 同じ順で投入する poller では先頭 N 件が slot を取り
+	// 続け、末尾が回収されないまま飢餓する。poller はこの error を成功として捨てず、
+	// slot を待つか同じ cycle 内で再投入しなければならない。
 	ErrDispatcherAtCapacity = errors.New("reconcile dispatcher が同時実行上限に達している")
 )
 
@@ -108,24 +122,21 @@ func NewTriggerDispatcher(reconcile ReconcileIssue, config TriggerDispatcherConf
 // を意味しないためである。停止は Shutdown が一点で決める。
 func (d *TriggerDispatcher) TriggerReconcile(ctx context.Context, request workflow.ReconcileRequest) error {
 	if err := request.Validate(); err != nil {
+		d.logRefusal(ctx, OutcomeTriggerRejected, "identity 不足の reconcile trigger を拒否した", request)
 		return err
 	}
 
 	d.mu.Lock()
 	if d.stopped {
 		d.mu.Unlock()
+		d.logRefusal(ctx, OutcomeTriggerStopped, "shutdown 後の reconcile trigger を拒否した", request)
 		return ErrDispatcherStopped
 	}
 	select {
 	case d.slots <- struct{}{}:
 	default:
 		d.mu.Unlock()
-		d.logger.WarnContext(ctx, "reconcile trigger を同時実行上限で落とした",
-			slog.String(telemetry.FieldEvent, EventReconcileTrigger),
-			slog.String(telemetry.FieldOutcome, string(OutcomeTriggerDropped)),
-			telemetry.Issue(request.Issue),
-			telemetry.Trigger(request.Trigger),
-		)
+		d.logRefusal(ctx, OutcomeTriggerDropped, "reconcile trigger を同時実行上限で落とした", request)
 		return ErrDispatcherAtCapacity
 	}
 	d.wg.Add(1)
@@ -139,6 +150,17 @@ func (d *TriggerDispatcher) TriggerReconcile(ctx context.Context, request workfl
 	)
 	go d.run(request)
 	return nil
+}
+
+// logRefusal は起動しなかった trigger を outcome 別に記録する。ingress は message を
+// 載せない方針で 503 へ潰すため、理由の分類はこの record だけが持つ。
+func (d *TriggerDispatcher) logRefusal(ctx context.Context, outcome Outcome, message string, request workflow.ReconcileRequest) {
+	d.logger.LogAttrs(ctx, slog.LevelWarn, message,
+		slog.String(telemetry.FieldEvent, EventReconcileTrigger),
+		slog.String(telemetry.FieldOutcome, string(outcome)),
+		telemetry.Issue(request.Issue),
+		telemetry.Trigger(request.Trigger),
+	)
 }
 
 func (d *TriggerDispatcher) run(request workflow.ReconcileRequest) {

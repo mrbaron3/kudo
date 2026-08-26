@@ -470,3 +470,24 @@ func TestIgnoredDeliveriesAreDistinguishableAtDefaultLevel(t *testing.T) {
 		})
 	}
 }
+
+// 語彙外の分類根拠は event 名である。Action の有無から推測すると、issues 以外の event が
+// action を持つようになった時点で「新しい issues action が来ている」という誤った signal になる。
+func TestIgnoredOutcomeIsDerivedFromTheEventName(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		delivery github.WebhookDelivery
+		want     Outcome
+	}{
+		{"issuesAction", github.WebhookDelivery{Event: github.IssuesEvent, Action: "milestoned"}, OutcomeIgnoredAction},
+		{"otherEventWithAction", github.WebhookDelivery{Event: "pull_request", Action: "opened"}, OutcomeIgnoredEvent},
+		{"otherEventWithoutAction", github.WebhookDelivery{Event: "ping"}, OutcomeIgnoredEvent},
+	}
+	for _, testCase := range cases {
+		if got := ignoredOutcome(testCase.delivery); got != testCase.want {
+			t.Errorf("ignoredOutcome(%s) = %q, want %q", testCase.name, got, testCase.want)
+		}
+	}
+}

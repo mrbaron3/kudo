@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,12 +33,24 @@ func webhookRequest(deliveryID, action string) workflow.ReconcileRequest {
 type syncBuffer struct {
 	mu     sync.Mutex
 	buffer bytes.Buffer
+	// written は record が増えたことを待ち手へ知らせる。log は reconcile goroutine が
+	// 書くため、test 側に同期点が無いと経過時間で待つことになる。
+	written chan struct{}
+}
+
+func newSyncBuffer() *syncBuffer {
+	return &syncBuffer{written: make(chan struct{}, 1)}
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Write(p)
+	n, err := b.buffer.Write(p)
+	b.mu.Unlock()
+	select {
+	case b.written <- struct{}{}:
+	default:
+	}
+	return n, err
 }
 
 func (b *syncBuffer) Bytes() []byte {
@@ -49,7 +62,7 @@ func (b *syncBuffer) Bytes() []byte {
 func newTestDispatcher(t *testing.T, maxInFlight int, reconcile ReconcileIssue) (*TriggerDispatcher, *syncBuffer) {
 	t.Helper()
 
-	logs := &syncBuffer{}
+	logs := newSyncBuffer()
 	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	dispatcher, err := NewTriggerDispatcher(reconcile, TriggerDispatcherConfig{MaxInFlight: maxInFlight}, logger)
 	if err != nil {
@@ -293,10 +306,10 @@ func TestShutdownCancelsReconcileWhenGracePeriodExpires(t *testing.T) {
 	if err := dispatcher.TriggerReconcile(t.Context(), webhookRequest("delivery-1", "opened")); err != nil {
 		t.Fatalf("TriggerReconcile() error = %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Millisecond)
-	defer cancel()
-	if err := dispatcher.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Shutdown(expired grace) error = %v, want DeadlineExceeded", err)
+	ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
+	cancel()
+	if err := dispatcher.Shutdown(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Shutdown(expired grace) error = %v, want Canceled", err)
 	}
 	select {
 	case <-canceled:
@@ -339,14 +352,20 @@ func TestReconcilePanicIsContainedAndReleasesCapacity(t *testing.T) {
 func waitForCapacity(t *testing.T, dispatcher *TriggerDispatcher, request workflow.ReconcileRequest) {
 	t.Helper()
 
-	deadline := time.Now().Add(5 * time.Second)
+	watchdog := time.After(10 * time.Second)
 	for {
 		err := dispatcher.TriggerReconcile(t.Context(), request)
 		if err == nil {
 			return
 		}
-		if !errors.Is(err, ErrDispatcherAtCapacity) || time.Now().After(deadline) {
+		if !errors.Is(err, ErrDispatcherAtCapacity) {
 			t.Fatalf("TriggerReconcile() error = %v, want capacity to be released", err)
+		}
+		select {
+		case <-watchdog:
+			t.Fatal("capacity was never released")
+		default:
+			runtime.Gosched()
 		}
 	}
 }
@@ -380,12 +399,12 @@ func TestReconcileFailureIsLoggedWithCorrelationFields(t *testing.T) {
 	}
 }
 
-// waitForLogRecord は非同期に書かれる log record を polling で待つ。log の出力は
-// reconcile goroutine 側で起きるため、test 側の観測点と同期していない。
+// waitForLogRecord は record が書かれるたびに起きて条件を確かめる。経過時間は条件に
+// 使わず、time.After は test を hang させないための watchdog としてだけ置く。
 func waitForLogRecord(t *testing.T, logs *syncBuffer, match func(map[string]any) bool) map[string]any {
 	t.Helper()
 
-	deadline := time.Now().Add(5 * time.Second)
+	watchdog := time.After(10 * time.Second)
 	for {
 		captured := logs.Bytes()
 		for _, line := range bytes.Split(bytes.TrimSpace(captured), []byte("\n")) {
@@ -400,10 +419,11 @@ func waitForLogRecord(t *testing.T, logs *syncBuffer, match func(map[string]any)
 				return record
 			}
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-logs.written:
+		case <-watchdog:
 			t.Fatalf("no matching log record in %s", captured)
 		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -460,4 +480,34 @@ func TestReconcileFailureAndPanicRecordTypeAndStackWithoutMessages(t *testing.T)
 	if bytes.Contains(panicLogs.Bytes(), []byte(leak)) {
 		t.Errorf("logs %s contain the panic value", panicLogs.Bytes())
 	}
+}
+
+// ingress は error を単一の outcome へ潰す（message を載せないため）。潰した理由を
+// 機械可読な record に残すのは、その error を作った側の責務である。
+func TestRejectedTriggersAreClassifiedInTheDispatcherRecord(t *testing.T) {
+	t.Parallel()
+
+	stopped, stoppedLogs := newTestDispatcher(t, 1, func(context.Context, workflow.ReconcileRequest) error { return nil })
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+	defer cancel()
+	if err := stopped.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	if err := stopped.TriggerReconcile(t.Context(), webhookRequest("delivery-1", "opened")); !errors.Is(err, ErrDispatcherStopped) {
+		t.Fatalf("TriggerReconcile(after shutdown) error = %v, want ErrDispatcherStopped", err)
+	}
+	record := waitForLogRecord(t, stoppedLogs, func(record map[string]any) bool {
+		return record[telemetry.FieldOutcome] == string(OutcomeTriggerStopped)
+	})
+	if triggerID(record) != "delivery-1" {
+		t.Errorf("record %v does not correlate the delivery", record)
+	}
+
+	invalid, invalidLogs := newTestDispatcher(t, 1, func(context.Context, workflow.ReconcileRequest) error { return nil })
+	if err := invalid.TriggerReconcile(t.Context(), workflow.ReconcileRequest{}); !errors.Is(err, workflow.ErrInvalidReconcileRequest) {
+		t.Fatalf("TriggerReconcile(zero request) error = %v, want ErrInvalidReconcileRequest", err)
+	}
+	waitForLogRecord(t, invalidLogs, func(record map[string]any) bool {
+		return record[telemetry.FieldOutcome] == string(OutcomeTriggerRejected)
+	})
 }

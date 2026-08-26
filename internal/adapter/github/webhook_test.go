@@ -433,3 +433,95 @@ func TestAcceptRejectsMalformedEventNames(t *testing.T) {
 		}
 	}
 }
+
+// trigger 語彙は protocol baseline（docs/spec/05_design/04_github-routing.md）の値集合である。
+// 実装から期待値を取ると、allowlist から action が消えても test が緑のまま通る。
+func TestSupportedIssueActionsMatchesTheRoutingVocabulary(t *testing.T) {
+	t.Parallel()
+
+	want := []string{"opened", "reopened", "edited", "assigned", "unassigned", "labeled", "unlabeled", "closed"}
+	got := SupportedIssueActions()
+	if len(got) != len(want) {
+		t.Fatalf("SupportedIssueActions() = %v, want %v", got, want)
+	}
+	for index, action := range want {
+		if got[index] != action {
+			t.Errorf("SupportedIssueActions()[%d] = %q, want %q", index, got[index], action)
+		}
+	}
+}
+
+// action も log field として運ぶ。header 値へ課した値域の制約が payload 由来の値で
+// 破れていると、同じ record の別 field から任意長・任意内容が入り込む。
+func TestAcceptRejectsMalformedIssueActions(t *testing.T) {
+	t.Parallel()
+
+	verifier := testVerifier(t)
+	for _, action := range []string{strings.Repeat("a", 65), "opened\nlabeled", "opened labeled"} {
+		body := []byte(fmt.Sprintf(
+			`{"action":%q,"issue":{"number":18},"repository":{"name":"kudo","owner":{"login":"mrbaron3"}}}`, action))
+		delivery, err := acceptBody(t, verifier, "issues", "d-1", body)
+		if !errors.Is(err, WebhookMalformedPayload) {
+			t.Errorf("Accept(action=%q) error = %v, want %s", action, err, WebhookMalformedPayload)
+		}
+		if delivery.Action != "" {
+			t.Errorf("Accept(action=%q).Action = %q, want empty", action, delivery.Action)
+		}
+	}
+}
+
+// rejection message は ingress が log へ載せる唯一の自由記述である。全 code について
+// payload・signature・secret の断片を含まないことを固定する。
+func TestRejectionMessagesNeverCarryPayloadOrSignature(t *testing.T) {
+	t.Parallel()
+
+	const prose = "payload body must not become implementation input"
+	body := issuesPayload("opened", 18)
+	cases := []struct {
+		name   string
+		secret string
+		event  string
+		id     string
+		body   []byte
+		mutate func(http.Header)
+	}{
+		{name: "signatureInvalid", secret: "other-secret", event: "issues", id: "d-1", body: body},
+		{name: "payloadTooLarge", secret: testWebhookSecret, event: "issues", id: "d-1",
+			body: []byte(`{"action":"opened","padding":"` + strings.Repeat("x", 64) + `","prose":"` + prose + `"}`)},
+		{name: "missingEvent", secret: testWebhookSecret, event: "issues", id: "d-1", body: body,
+			mutate: func(h http.Header) { h.Del("X-GitHub-Event") }},
+		{name: "unsupportedMediaType", secret: testWebhookSecret, event: "issues", id: "d-1", body: body,
+			mutate: func(h http.Header) { h.Set("Content-Type", "text/plain") }},
+		{name: "missingIdentity", secret: testWebhookSecret, event: "issues", id: "d-1", body: body,
+			mutate: func(h http.Header) { h.Del("X-GitHub-Delivery") }},
+		{name: "malformedPayload", secret: testWebhookSecret, event: "issues", id: "d-1",
+			body: []byte(`{"prose":"` + prose + `"`)},
+		{name: "malformedAction", secret: testWebhookSecret, event: "issues", id: "d-1",
+			body: []byte(`{"action":"` + strings.Repeat("a", 65) + `","prose":"` + prose + `"}`)},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			verifier, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret, MaxPayloadBytes: 128})
+			if err != nil {
+				t.Fatalf("NewWebhookVerifier() error = %v", err)
+			}
+			header := signedHeader(t, testCase.secret, testCase.event, testCase.id, testCase.body)
+			signature := header.Get("X-Hub-Signature-256")
+			if testCase.mutate != nil {
+				testCase.mutate(header)
+			}
+			_, err = verifier.Accept(header, strings.NewReader(string(testCase.body)))
+			if err == nil {
+				t.Fatalf("Accept(%s) = nil error, want rejection", testCase.name)
+			}
+			message := err.Error()
+			for _, forbidden := range []string{prose, signature, testWebhookSecret, "other-secret", string(testCase.body)} {
+				if forbidden != "" && strings.Contains(message, forbidden) {
+					t.Errorf("rejection message %q contains %q", message, forbidden)
+				}
+			}
+		})
+	}
+}

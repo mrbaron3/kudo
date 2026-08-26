@@ -68,8 +68,15 @@ Trigger は observability に使う。candidate 判定や Issue Contract の入�
 
 `POST /webhooks/github`は GitHub `issues` event を受ける。adapter は raw body に対する signature を
 検証してから parse し、対象 IssueRef の reconcile を trigger して応答する。durable な受信記録は
-持たない。webhook は遅延、重複、順不同、欠落し得る通知であり、payload の Issue snapshot を source of
-truth にしない。欠落は polling が回収する。
+持たない。
+
+**前提**: GitHub App の webhook Content type を`application/json`に設定する。GitHub の既定は
+`application/x-www-form-urlencoded`であり、その形式では署名対象の raw body が`payload=<urlencoded JSON>`に
+なるため、signature が一致しても Issue identity を取り出せない。adapter は JSON 以外の delivery を
+受理せず、GitHub 側には delivery 失敗として記録される。
+
+webhook は遅延、重複、順不同、欠落し得る通知であり、payload の Issue snapshot を source of truth に
+しない。欠落は polling が回収する。
 
 少なくとも次の action を reconciliation trigger として受け付ける。
 
