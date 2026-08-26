@@ -157,3 +157,65 @@ func TestReadinessFailureLogsAReasonCodeWithoutTheErrorMessage(t *testing.T) {
 		t.Errorf("record %v does not carry the error type", record)
 	}
 }
+
+// context の cancel は合図であって強制ではない。ctx を無視する検査が居ても endpoint は
+// 期限内に応答しなければならない。probe は繰り返し届くため、復帰しない handler は
+// goroutine を積み上げる。deadline が実際に発火することを見るため、この test だけは
+// 短い実 timeout を入力にする。
+func TestReadyzRespondsWhenTheReadinessCheckIgnoresItsContext(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	handler, err := NewHandler(Config{
+		Verifier:         newVerifierForTest(t),
+		Trigger:          &recordingTrigger{},
+		ReadinessTimeout: 20 * time.Millisecond,
+		Readiness: func(context.Context) error {
+			<-release
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	done := make(chan int, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, ReadyPath, nil))
+		done <- recorder.Code
+	}()
+	select {
+	case status := <-done:
+		if status != http.StatusServiceUnavailable {
+			t.Errorf("status = %d, want %d", status, http.StatusServiceUnavailable)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("readyz never returned while the readiness check was blocked")
+	}
+}
+
+// readiness を別 goroutine で回すと、panic は net/http の recover に届かず process を落とす。
+// liveness endpoint ごと死ぬのは、readiness 実装の bug に対する応答として過剰である。
+func TestReadyzContainsAPanickingReadinessCheck(t *testing.T) {
+	t.Parallel()
+
+	const leak = "credential at /run/secrets/kudo_key"
+	ingress := newTestIngress(t, &recordingTrigger{}, func(context.Context) error {
+		panic(leak)
+	})
+	response := ingress.send(httptest.NewRequest(http.MethodGet, ReadyPath, nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	logs := ingress.logs.Bytes()
+	if bytes.Contains(logs, []byte(leak)) {
+		t.Errorf("logs %s contain the panic value", logs)
+	}
+	record := findRecord(t, logs, func(record map[string]any) bool {
+		return record[telemetry.FieldReason] == string(ReasonReadinessPanicked)
+	})
+	if stack, _ := record[telemetry.FieldStack].(string); !strings.Contains(stack, "httpingress") {
+		t.Errorf("record %v does not carry the panic stack", record)
+	}
+}

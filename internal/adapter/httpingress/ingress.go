@@ -11,6 +11,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/mrbaron3/kudo/internal/adapter/github"
@@ -53,6 +54,22 @@ const (
 	OutcomeReady          Outcome = "ready"
 	OutcomeNotReady       Outcome = "not_ready"
 )
+
+// Reason は ingress 自身が判定した not_ready の理由 code である。
+// ReadinessCheck が返す *NotReadyError の Reason とは別 namespace ではなく、同じ
+// telemetry field に載る値なので、衝突しない prefix を持たせる。
+type Reason string
+
+const (
+	// ReasonReadinessTimeout は検査が応答期限内に戻らなかったことを表す。
+	ReasonReadinessTimeout Reason = "readiness_check_timeout"
+	// ReasonReadinessPanicked は検査が panic したことを表す。
+	ReasonReadinessPanicked Reason = "readiness_check_panicked"
+)
+
+// errReadinessPanicked は panic した検査を「準備できない」へ写す sentinel である。
+// panic 値そのものは telemetry へ載せないため、error 値としても運ばない。
+var errReadinessPanicked = errors.New("readiness 検査が panic した")
 
 // DefaultReadinessTimeout は readiness 検査へ与える既定の猶予である。
 const DefaultReadinessTimeout = 5 * time.Second
@@ -237,7 +254,17 @@ func (i *ingress) handleReadyz(writer http.ResponseWriter, request *http.Request
 	ctx, cancel := context.WithTimeout(request.Context(), i.readinessTimeout)
 	defer cancel()
 
-	if err := i.readiness(ctx); err != nil {
+	// 検査を別 goroutine で回して ctx.Done() と select するのは、context の cancel が
+	// 合図であって強制ではないためである。ctx を無視する I/O を持つ検査が居ると、
+	// 同期呼び出しでは handler が期限を超えて残り、probe の反復ごとに goroutine が積む。
+	result := make(chan error, 1)
+	go i.checkReadiness(ctx, result)
+
+	select {
+	case err := <-result:
+		if err == nil {
+			break
+		}
 		attrs := []slog.Attr{
 			slog.String(telemetry.FieldEvent, EventReadiness),
 			slog.String(telemetry.FieldOutcome, string(OutcomeNotReady)),
@@ -251,6 +278,16 @@ func (i *ingress) handleReadyz(writer http.ResponseWriter, request *http.Request
 		i.logger.LogAttrs(ctx, slog.LevelWarn, "readiness 検査が通らない", attrs...)
 		writer.WriteHeader(http.StatusServiceUnavailable)
 		return
+	case <-ctx.Done():
+		i.logger.LogAttrs(ctx, slog.LevelWarn, "readiness 検査が応答期限内に戻らない",
+			slog.String(telemetry.FieldEvent, EventReadiness),
+			slog.String(telemetry.FieldOutcome, string(OutcomeNotReady)),
+			slog.Int(telemetry.FieldHTTPStatus, http.StatusServiceUnavailable),
+			slog.String(telemetry.FieldReason, string(ReasonReadinessTimeout)),
+			telemetry.ErrorType(ctx.Err()),
+		)
+		writer.WriteHeader(http.StatusServiceUnavailable)
+		return
 	}
 	i.logger.DebugContext(ctx, "readiness 検査が通った",
 		slog.String(telemetry.FieldEvent, EventReadiness),
@@ -258,6 +295,30 @@ func (i *ingress) handleReadyz(writer http.ResponseWriter, request *http.Request
 		slog.Int(telemetry.FieldHTTPStatus, http.StatusOK),
 	)
 	writeStatus(writer, http.StatusOK)
+}
+
+// checkReadiness は検査を実行し、結果を buffered channel へ渡す。handler が先に
+// 応答して受け取らなくても送信は blocking しない。
+//
+// panic を recover するのは、goroutine へ移したことで net/http の per-connection
+// recover が届かなくなるためである。readiness 実装の bug で process ごと落とすと、
+// liveness endpoint も webhook も同時に失われる。
+func (i *ingress) checkReadiness(ctx context.Context, result chan<- error) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		i.logger.LogAttrs(ctx, slog.LevelError, "readiness 検査が panic した",
+			slog.String(telemetry.FieldEvent, EventReadiness),
+			slog.String(telemetry.FieldOutcome, string(OutcomeNotReady)),
+			slog.String(telemetry.FieldReason, string(ReasonReadinessPanicked)),
+			telemetry.ErrorType(recovered),
+			slog.String(telemetry.FieldStack, string(debug.Stack())),
+		)
+		result <- errReadinessPanicked
+	}()
+	result <- i.readiness(ctx)
 }
 
 func writeStatus(writer http.ResponseWriter, status int) {
