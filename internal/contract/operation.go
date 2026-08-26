@@ -265,6 +265,16 @@ type OperationResult struct {
 	CompletedAt        time.Time
 }
 
+// ValidateOperationAttemptID は外部 mutation の前に attempt identity だけを検証する。
+// Result 構築まで遅らせると、不正な attempt が branch や Pull Request を作った後で
+// protocol error になるため、Issue Worker の preflight から利用する。
+func ValidateOperationAttemptID(attemptID string) error {
+	if !validProtocolID(attemptID) {
+		return protocolErr(ProtocolFieldInvalid, "attemptId", "identifier が不正: %q", attemptID)
+	}
+	return nil
+}
+
 // ClaimContextは、GitHubから各Operationで実行入力を再構築するためにRunへ固定する
 // content identityである。Issue本文、Task Context、Context Manifestのcanonical bytesは
 // 保持せず、Compiler versionとdigest、pinしたbaseだけを持つ。
@@ -286,8 +296,8 @@ func ValidateOperationResult(result OperationResult) error {
 	if !result.OperationDigest.Valid() {
 		return protocolErr(ProtocolFieldInvalid, "operationDigest", "digest が不正: %q", result.OperationDigest)
 	}
-	if !validProtocolID(result.AttemptID) {
-		return protocolErr(ProtocolFieldInvalid, "attemptId", "identifier が不正: %q", result.AttemptID)
+	if err := ValidateOperationAttemptID(result.AttemptID); err != nil {
+		return err
 	}
 	if !operationOutcomes[result.Outcome] {
 		return protocolErr(ProtocolFieldInvalid, "outcome", "operation outcome が不正: %q", result.Outcome)

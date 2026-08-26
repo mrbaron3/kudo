@@ -36,6 +36,7 @@ const (
 	ArtifactKindContextManifest        ArtifactKind = "context-manifest"
 	ArtifactKindExecutionPolicy        ArtifactKind = "execution-policy"
 	ArtifactKindEscalationPolicy       ArtifactKind = "escalation-policy"
+	ArtifactKindClaimCheckpoint        ArtifactKind = "claim-checkpoint"
 	ArtifactKindArtifactManifest       ArtifactKind = "artifact-manifest"
 	ArtifactKindPullRequestObservation ArtifactKind = "pull-request-observation"
 )
@@ -43,6 +44,7 @@ const (
 const (
 	MediaTypeMarkdown = "text/markdown; charset=utf-8"
 	MediaTypeYAML     = "application/yaml; charset=utf-8"
+	MediaTypeJSON     = "application/json"
 )
 
 // ArtifactPayloadはcanonical bytesとそのcontent identityを束ねる。
@@ -82,6 +84,7 @@ var artifactKindRules = map[ArtifactKind]artifactKindRule{
 	ArtifactKindContextManifest:        {schemaPrefix: contextManifestSchemaPrefix, mediaType: MediaTypeYAML},
 	ArtifactKindExecutionPolicy:        {schemaPrefix: executionPolicySchemaPrefix, mediaType: MediaTypeYAML},
 	ArtifactKindEscalationPolicy:       {schemaPrefix: escalationPolicySchemaPrefix, mediaType: MediaTypeYAML},
+	ArtifactKindClaimCheckpoint:        {schemaPrefix: claimCheckpointSchemaPrefix, mediaType: MediaTypeJSON},
 	ArtifactKindArtifactManifest:       {schemaPrefix: artifactManifestSchemaPrefix, mediaType: MediaTypeYAML},
 	ArtifactKindPullRequestObservation: {schemaPrefix: pullRequestObservationSchemaPrefix, mediaType: MediaTypeYAML},
 }

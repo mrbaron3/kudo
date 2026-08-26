@@ -158,7 +158,7 @@ claim operationはrepository identityとIssue numberを入力にし、次を行�
 3. native relationshipとContract blockを照合する
 4. parent identity、dependency completion、authority referenceを解決する
 5. base commitを固定し、referenceごとのdigestを計算する
-6. Compiler version、Issue Observation / Task Context / Context Manifestのref、body digest、base SHAをclaim checkpointとしてdraft PR bodyのmachine blockへ固定する
+6. Compiler version、Issue Observation / Task Context / Context Manifestのref、body digest、base SHAからなるclaim contextを、Execution / Escalation Policy refとともにclaim checkpointとしてdraft PR bodyのmachine blockへ固定する
 7. model-bearing Worker Operationの開始時と完了時にIssueとauthorityを再取得・再compileし、Task Context / Context Manifest refがclaim contextと一致することを検証する
 
 ### Issue Observation and Task Context

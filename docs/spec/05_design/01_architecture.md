@@ -84,7 +84,7 @@ lineage は closed PR の列として GitHub に残る。
 | --- | --- | --- |
 | candidate | Issue open + `ai-ready` label + dependency 完了 | 人間（label） |
 | claim | branch `kudo/issue-<n>` の存在（ref create は atomic） | Issue Worker |
-| Run と claim checkpoint | draft PR + PR body の machine block（Compiler version、Task Context / Context Manifest / Execution Policy digest、base SHA） | Issue Worker |
+| Run と claim checkpoint | draft PR + PR body の machine block（Compiler version、Task Context / Context Manifest / Execution / Escalation Policy digest、base SHA） | Issue Worker |
 | RED / GREEN / checks evidence | 対象 head への evidence check run（command、exit status、出力抜粋） | Issue Worker |
 | review verdict | 対象 head への verdict check run（verdict と request identity を output に記録） | Review Worker |
 | finding 本文 | PR comment（machine marker 付き） | Review Worker |
