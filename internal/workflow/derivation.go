@@ -16,6 +16,10 @@ const PhaseCandidate Phase = "candidate"
 //
 // 明示的な値を置くのは、zero value と「導出した結果 Run が無い」を区別するためである。
 // 空文字を返すと、呼び出し側の未初期化と導出結果が同じ形になる。
+//
+// PhaseCandidate と PhaseNone は durable 語彙（Phases）に無いため、Phase.Active /
+// Terminal / Paused の述語はこの 2 値に対して意味を持たない。導出結果の分類には
+// Next の ReconcileActionKind を使う。
 const PhaseNone Phase = "none"
 
 // derivedPhases は docs/spec/05_design/02_workflow.md の Derived phases 表の行を、表の
@@ -125,9 +129,17 @@ func (c DeriveConfig) Validate() error {
 	return nil
 }
 
-// errUnmappedObservation は Derived phases 表のどの行にも安全に一致しない観測である。
+// 導出が観測を受理できない理由は 2 種類あり、人間が取るべき対処が違う。
 // 導出内部の制御にだけ使い、外へは needs_human の Derivation として出る。
-var errUnmappedObservation = errors.New("観測が Derived phases 表のどの行にも一致しない")
+var (
+	// errExternalMutation は、Kudo の Operation では作れない形へ record surface が
+	// 変えられた観測である（Run 中の Issue close、intent の無い merge、branch の消失等）。
+	errExternalMutation = errors.New("Kudo の Operation では作れない観測である")
+	// errInvalidRecord は、記録や観測そのものが protocol を満たさない場合である
+	// （語彙外 verdict、同じ head の矛盾 verdict、live head を含まない系譜等）。
+	// 同じ input の retry では復旧できないため、外部干渉と分けて人へ返す。
+	errInvalidRecord = errors.New("記録が versioned protocol を満たさない")
+)
 
 // Derive は観測 snapshot から現在 phase と次 action を導出する。
 //
@@ -143,8 +155,11 @@ func Derive(observation Observation, config DeriveConfig) Derivation {
 	}
 	derivation, err := derive(observation, config)
 	if err != nil {
-		// 未知の観測は「継続できない外部干渉」として人へ返す。理由 code の語彙は
-		// docs/spec/05_design/04_github-routing.md が正本であり、ここで増やさない。
+		// 理由 code の語彙は docs/spec/05_design/04_github-routing.md が正本であり、
+		// ここで増やさない。分類できない error も含め、既定は停止側へ倒す。
+		if errors.Is(err, errInvalidRecord) {
+			return escalated(EscalationProtocolValidationFailed)
+		}
 		return escalated(EscalationExternalMutationConflict)
 	}
 	return derivation
@@ -158,18 +173,23 @@ func escalated(reason EscalationReason) Derivation {
 }
 
 func derive(observation Observation, config DeriveConfig) (Derivation, error) {
+	// snapshot が別 Issue のものなら、それ以上の判断は全部あてにならない。config 側の
+	// identity だけを信じて claim を dispatch すると、取り違えた観測が mutation になる。
+	if observation.Issue.Number != config.Issue {
+		return Derivation{}, errInvalidRecord
+	}
 	if slices.Contains(observation.Issue.Labels, config.NeedsHumanLabel) {
 		return Derivation{Phase: PhaseNeedsHuman, Next: ReconcileAction{Kind: ReconcileAwaitHuman}}, nil
 	}
 
-	active, closed, err := classifyPullRequests(observation.PullRequests)
+	active, lineage, err := classifyPullRequests(observation.PullRequests)
 	if err != nil {
 		return Derivation{}, err
 	}
 	switch {
-	case closed == pullRequestLineageMerged:
-		return Derivation{Phase: PhaseMerged, Next: ReconcileAction{Kind: ReconcileRecordCompletion}}, nil
-	case active == nil && closed == pullRequestLineageClosed:
+	case lineage.merged != nil:
+		return deriveMerged(observation, config, *lineage.merged)
+	case active == nil && lineage.closed:
 		return Derivation{Phase: PhaseSuperseded, Next: ReconcileAction{Kind: ReconcileNone}}, nil
 	}
 
@@ -180,17 +200,17 @@ func derive(observation Observation, config DeriveConfig) (Derivation, error) {
 	// merge も supersede もしていない Run の途中で Issue が閉じられるのは外部干渉で
 	// あり、安全な checkpoint で止める（docs/spec/05_design/04_github-routing.md）。
 	if observation.Issue.State != IssueStateOpen && (branch != nil || active != nil) {
-		return Derivation{}, errUnmappedObservation
+		return Derivation{}, errExternalMutation
 	}
 
 	switch {
 	case active != nil:
 		if branch == nil {
 			// PR の記録面だけが残り、compare-and-push の対象が消えている。
-			return Derivation{}, errUnmappedObservation
+			return Derivation{}, errExternalMutation
 		}
 		if !validLineage(*active) {
-			return Derivation{}, errUnmappedObservation
+			return Derivation{}, errInvalidRecord
 		}
 		return deriveRun(observation, config, *active)
 	case branch != nil:
@@ -203,40 +223,72 @@ func derive(observation Observation, config DeriveConfig) (Derivation, error) {
 	}
 }
 
-// pullRequestLineage は Run の記録面が終端に達したかの分類である。
-type pullRequestLineage int
-
-const (
-	pullRequestLineageNone pullRequestLineage = iota
-	pullRequestLineageClosed
-	pullRequestLineageMerged
-)
+// pullRequestLineage は終端した記録面の分類である。merged は「どの head が base へ
+// 入ったか」を intent と照合するため、真偽ではなく観測そのものを保持する。
+type pullRequestLineage struct {
+	merged *PullRequestObservation
+	closed bool
+}
 
 // classifyPullRequests は open な Run の PR と、終端した lineage を切り分ける。
 //
 // open な PR が複数ある観測は排他が壊れている（1 IssueRef の active Run は最大一つ）。
 // どちらを Run とみなしても片方の記録が捨てられるため、選ばずに fail-closed へ倒す。
+// merged が複数ある観測も同じ理由で受理しない。
 func classifyPullRequests(pullRequests []PullRequestObservation) (*PullRequestObservation, pullRequestLineage, error) {
 	var active *PullRequestObservation
-	lineage := pullRequestLineageNone
+	var lineage pullRequestLineage
 	for index, pullRequest := range pullRequests {
 		switch pullRequest.State {
 		case PullRequestStateMerged:
-			lineage = pullRequestLineageMerged
-		case PullRequestStateClosed:
-			if lineage != pullRequestLineageMerged {
-				lineage = pullRequestLineageClosed
+			if lineage.merged != nil {
+				return nil, lineage, errExternalMutation
 			}
+			lineage.merged = &pullRequests[index]
+		case PullRequestStateClosed:
+			lineage.closed = true
 		case PullRequestStateDraft, PullRequestStateReady:
 			if active != nil {
-				return nil, lineage, errUnmappedObservation
+				return nil, lineage, errExternalMutation
 			}
 			active = &pullRequests[index]
 		default:
-			return nil, lineage, errUnmappedObservation
+			return nil, lineage, errInvalidRecord
 		}
 	}
 	return active, lineage, nil
+}
+
+// deriveMerged は merged 観測が Kudo 自身の merge の再観測かを確かめる。
+//
+// merge は取り消せない mutation なので、外形が merged であることだけを根拠に完了へ
+// 投影しない。Issue Worker は merge 直前に対象 head を含む intent comment を自分の
+// 名義で記録する。intent と一致しない merged は Kudo の merge ではなく、品質 verdict
+// にも変換できない外部干渉である（docs/spec/05_design/02_workflow.md の Merge と完了投影）。
+func deriveMerged(observation Observation, config DeriveConfig,
+	merged PullRequestObservation) (Derivation, error) {
+	if !hasMarker(observation, config.Implementer.CommentAuthorID,
+		CommentMarkerMergeIntent, merged.Number, merged.Head) {
+		return Derivation{}, errExternalMutation
+	}
+	return Derivation{Phase: PhaseMerged, Next: ReconcileAction{Kind: ReconcileRecordCompletion}}, nil
+}
+
+// hasMarker は指定 actor 名義で、指定 PR の指定 head へ束縛された marker があるかを返す。
+// comment 本文は repository write 権限者が編集できるため、marker の存在だけで
+// gate を通さず、作成 identity と head binding を必ず併せて確認する。
+func hasMarker(observation Observation, authorID int64, kind CommentMarkerKind,
+	pullRequest int64, head string) bool {
+	if head == "" {
+		return false
+	}
+	for _, comment := range observation.Comments {
+		if comment.AuthorID == authorID && comment.PullRequest == pullRequest &&
+			comment.Marker != nil && comment.Marker.Kind == kind && comment.Marker.Head == head {
+			return true
+		}
+	}
+	return false
 }
 
 // validLineage は系譜が live head から始まっているかを検証する。live head を含まない
@@ -254,7 +306,7 @@ func activeBranch(branch *BranchObservation, config DeriveConfig) (*BranchObserv
 		return nil, nil
 	}
 	if branch.Name != IssueBranchName(config.Issue) || branch.Head == "" {
-		return nil, errUnmappedObservation
+		return nil, errExternalMutation
 	}
 	return branch, nil
 }
@@ -314,6 +366,16 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 		}, nil
 	}
 
+	// 承認済み test の変更が必要になった implement は、承認済み checkpoint へ rollback して
+	// test-revision-report を記録する。rollback 先は承認済み test head そのものなので、
+	// verdict を先に読むと approve を見つけて implement を再 dispatch し続けてしまう。
+	// report の head binding は「その head の approval はもう実装の根拠にならない」を表す
+	// （docs/spec/05_design/02_workflow.md の GREEN and refactor）。
+	if hasMarker(observation, config.Implementer.CommentAuthorID,
+		CommentMarkerTestRevisionReport, pullRequest.Number, head) {
+		return dispatch(PhaseAuthoringTests, contract.OperationReviseTests), nil
+	}
+
 	testVerdict, err := verdictOn(checks, config, CheckRunTestValidity, head)
 	if err != nil {
 		return Derivation{}, err
@@ -346,7 +408,7 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 	}
 	// draft でない PR が final approve を持たない。ready 化は final approve だけが
 	// gate であり、外形が合わない Run を進めない。
-	return Derivation{}, errUnmappedObservation
+	return Derivation{}, errExternalMutation
 }
 
 func dispatch(phase Phase, operation contract.OperationKind) Derivation {
@@ -378,7 +440,8 @@ func authorOperation(observation Observation, config DeriveConfig,
 		return contract.OperationReviseTests
 	}
 	for _, comment := range observation.Comments {
-		if comment.AuthorID == config.Implementer.CommentAuthorID && comment.Marker != nil &&
+		if comment.AuthorID == config.Implementer.CommentAuthorID &&
+			comment.PullRequest == pullRequest.Number && comment.Marker != nil &&
 			comment.Marker.Kind == CommentMarkerTestRevisionReport {
 			return contract.OperationReviseTests
 		}
@@ -402,10 +465,10 @@ func verdictOn(checks []CheckRunObservation, config DeriveConfig,
 		switch check.Verdict {
 		case contract.VerdictApprove, contract.VerdictRequestChanges, contract.VerdictNeedsHuman:
 		default:
-			return "", errUnmappedObservation
+			return "", errInvalidRecord
 		}
 		if found != "" && found != check.Verdict {
-			return "", errUnmappedObservation
+			return "", errInvalidRecord
 		}
 		found = check.Verdict
 	}

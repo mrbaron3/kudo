@@ -13,8 +13,11 @@ import (
 // 個別の行ではなく allowedDerivedTransition の規則が扱う。どの phase からでも
 // 起こりうる動きを全行へ書き写すと、行が増えたときに漏れる。
 var declaredDerivedTransitions = map[Phase][]Phase{
-	PhaseNone:                  {PhaseCandidate},
-	PhaseCandidate:             {PhaseNone, PhaseClaimed},
+	PhaseNone: {PhaseCandidate},
+	// claim Operation は branch ref create から draft PR の ensure までを一度に行うため、
+	// 正常な claim では claimed を観測せずに authoring_tests へ進む。claimed は branch
+	// 作成後に中断した Run を再開するときだけ現れる中間観測である。
+	PhaseCandidate:             {PhaseNone, PhaseClaimed, PhaseAuthoringTests},
 	PhaseClaimed:               {PhaseAuthoringTests},
 	PhaseAuthoringTests:        {PhaseAwaitingTestReview},
 	PhaseAwaitingTestReview:    {PhaseImplementing, PhaseAuthoringTests},
@@ -24,7 +27,7 @@ var declaredDerivedTransitions = map[Phase][]Phase{
 	PhaseMergingPullRequest:    {PhaseMerged},
 	PhaseMerged:                nil,
 	// supersede の後始末（PR close、branch 削除）が終わってからだけ新しい Run を作れる。
-	PhaseSuperseded: {PhaseNone, PhaseCandidate, PhaseClaimed},
+	PhaseSuperseded: {PhaseNone, PhaseCandidate, PhaseClaimed, PhaseAuthoringTests},
 	// needs_human からの復帰先は停止 phase（resume）か新しい Run（supersede）であり、
 	// どちらかは記録済み ResumeIdentity の照合が決める。phase の組だけでは絞れない。
 	PhaseNeedsHuman: nil,

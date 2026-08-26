@@ -15,6 +15,8 @@ const (
 	derivedImplementerCommentAuthor = int64(303)
 	derivedReviewerCommentAuthor    = int64(404)
 
+	runPullRequestNumber = int64(700)
+
 	bootstrapCommit = "1111111111111111111111111111111111111111"
 	redHead         = "2222222222222222222222222222222222222222"
 	greenHead       = "3333333333333333333333333333333333333333"
@@ -52,12 +54,32 @@ func runObservation(state PullRequestState, lineage ...string) Observation {
 	observation := openIssue(string(StatusInProgress))
 	observation.Branch = &BranchObservation{Name: IssueBranchName(derivedIssue), Head: lineage[0]}
 	observation.PullRequests = []PullRequestObservation{{
-		Number:      700,
+		Number:      runPullRequestNumber,
 		State:       state,
 		Head:        lineage[0],
 		HeadLineage: lineage,
 	}}
 	return observation
+}
+
+// mergeIntent は Issue Worker が merge 直前に自分の名義で記録する intent である。
+func mergeIntent(head string) CommentObservation {
+	return CommentObservation{
+		ID:          9001,
+		PullRequest: runPullRequestNumber,
+		AuthorID:    derivedImplementerCommentAuthor,
+		Marker:      &CommentMarkerObservation{Kind: CommentMarkerMergeIntent, Head: head},
+	}
+}
+
+// testRevisionReport は implement lane の差し戻しを rollback 先の head へ束縛する。
+func testRevisionReport(head string) CommentObservation {
+	return CommentObservation{
+		ID:          9002,
+		PullRequest: runPullRequestNumber,
+		AuthorID:    derivedImplementerCommentAuthor,
+		Marker:      &CommentMarkerObservation{Kind: CommentMarkerTestRevisionReport, Head: head},
+	}
 }
 
 func evidenceCheck(name, head string) CheckRunObservation {
@@ -109,10 +131,12 @@ func cloneObservation(observation Observation) Observation {
 func TestDeriveEvaluatesEveryDerivedPhaseRow(t *testing.T) {
 	needsHuman := runObservation(PullRequestStateMerged, greenHead, redHead, bootstrapCommit)
 	needsHuman.Issue.Labels = []string{string(StatusNeedsHuman)}
+	needsHuman.Comments = []CommentObservation{mergeIntent(greenHead)}
 
 	merged := runObservation(PullRequestStateMerged, greenHead, redHead, bootstrapCommit)
 	merged.Issue.State = IssueStateClosed
 	merged.Issue.Labels = []string{string(StatusMerged)}
+	merged.Comments = []CommentObservation{mergeIntent(greenHead)}
 
 	superseded := runObservation(PullRequestStateClosed, redHead, bootstrapCommit)
 
@@ -255,8 +279,74 @@ func TestDeriveRoutesReviewVerdictsToTheRepairLoop(t *testing.T) {
 	}
 }
 
+// implement lane が返した test_revision_required は、承認済み test head へ rollback した
+// うえで report を記録する。live head の approve をそのまま読むと implement を再 dispatch
+// し続けるため、report を先に評価して test gate を開き直す。
+func TestDeriveReopensTestGateAfterTestRevisionRequired(t *testing.T) {
+	rolledBack := runObservation(PullRequestStateDraft, redHead, bootstrapCommit)
+	rolledBack.CheckRuns = []CheckRunObservation{
+		evidenceCheck(CheckRunEvidenceRed, redHead),
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+	}
+	rolledBack.Comments = []CommentObservation{testRevisionReport(redHead)}
+
+	got := Derive(rolledBack, derivedConfig())
+	if got.Phase != PhaseAuthoringTests ||
+		got.Next != dispatchOperation(contract.OperationReviseTests) {
+		t.Fatalf("derivation = %+v, want revise_tests への差し戻し", got)
+	}
+	// 再観測しても同じ継続になる（process が落ちても implement へ戻らない）。
+	if again := Derive(rolledBack, derivedConfig()); again != got {
+		t.Fatalf("再観測で継続が変わった: %+v", again)
+	}
+
+	// 差し戻し後に新しい test head を publish すれば、report は過去の head へ束縛された
+	// ままなので implementation lane を塞がない。
+	revisedHead := "6666666666666666666666666666666666666666"
+	revised := runObservation(PullRequestStateDraft, revisedHead, redHead, bootstrapCommit)
+	revised.CheckRuns = []CheckRunObservation{
+		evidenceCheck(CheckRunEvidenceRed, revisedHead),
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+	}
+	revised.Comments = []CommentObservation{testRevisionReport(redHead)}
+	if got := Derive(revised, derivedConfig()); got.Phase != PhaseAwaitingTestReview ||
+		got.Next != requestReviewAction(contract.ReviewTestValidity) {
+		t.Fatalf("差し戻し後の新 head の derivation = %+v", got)
+	}
+
+	// 他 actor 名義の report は差し戻しの根拠にならない。
+	spoofed := runObservation(PullRequestStateDraft, redHead, bootstrapCommit)
+	spoofed.CheckRuns = rolledBack.CheckRuns
+	report := testRevisionReport(redHead)
+	report.AuthorID = derivedReviewerCommentAuthor
+	spoofed.Comments = []CommentObservation{report}
+	if got := Derive(spoofed, derivedConfig()); got.Phase != PhaseImplementing {
+		t.Fatalf("Reviewer 名義の report で差し戻した: %+v", got)
+	}
+}
+
+// Derived phases 表は implementing を awaiting_test_review より上に置くが、live head に
+// 未 review の RED evidence がある間は系譜上の approve を実装の根拠にしない。
+// workflow.md の GREEN and refactor が「新しい approval を得るまで implementation へ
+// 戻らない」と定めるためで、表どおりに評価すると test gate を迂回できる。
+func TestDeriveRequiresANewApprovalForRevisedTestHeads(t *testing.T) {
+	revisedHead := "7777777777777777777777777777777777777777"
+	observation := runObservation(PullRequestStateDraft, revisedHead, redHead, bootstrapCommit)
+	observation.CheckRuns = []CheckRunObservation{
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+		evidenceCheck(CheckRunEvidenceRed, revisedHead),
+	}
+
+	got := Derive(observation, derivedConfig())
+	if got.Phase != PhaseAwaitingTestReview ||
+		got.Next != requestReviewAction(contract.ReviewTestValidity) {
+		t.Fatalf("derivation = %+v, want 新しい test review の要求", got)
+	}
+}
+
 // AC-2: 表のいずれの行にも安全に一致しない観測は継続へ倒さず、needs_human と
-// 明示的な escalation action になる。
+// 明示的な escalation action になる。理由 code は「外部干渉」と「記録の protocol 違反」を
+// 区別する。差し戻された人間が取るべき対処が違うためである。
 func TestDeriveFailsClosedForUnmappedObservations(t *testing.T) {
 	corruptBranch := openIssue(string(StatusInProgress))
 	corruptBranch.Branch = &BranchObservation{Name: IssueBranchName(derivedIssue)}
@@ -276,11 +366,51 @@ func TestDeriveFailsClosedForUnmappedObservations(t *testing.T) {
 		Number: 701, State: PullRequestStateDraft, Head: redHead, HeadLineage: []string{redHead},
 	})
 
-	brokenLineage := runObservation(PullRequestStateDraft, redHead, bootstrapCommit)
-	brokenLineage.PullRequests[0].HeadLineage = []string{bootstrapCommit}
-
 	closedIssueWithOpenRun := runObservation(PullRequestStateDraft, redHead, bootstrapCommit)
 	closedIssueWithOpenRun.Issue.State = IssueStateClosed
+
+	// Kudo の merge intent に紐付かない merged 観測は完了ではなく外部干渉である。
+	mergedWithoutIntent := runObservation(PullRequestStateMerged, greenHead, redHead, bootstrapCommit)
+	mergedWithoutIntent.Issue.State = IssueStateClosed
+
+	mergedIntentOnOtherHead := runObservation(PullRequestStateMerged, greenHead, redHead, bootstrapCommit)
+	mergedIntentOnOtherHead.Issue.State = IssueStateClosed
+	mergedIntentOnOtherHead.Comments = []CommentObservation{mergeIntent(redHead)}
+
+	mergedIntentFromReviewer := runObservation(PullRequestStateMerged, greenHead, redHead, bootstrapCommit)
+	mergedIntentFromReviewer.Issue.State = IssueStateClosed
+	intent := mergeIntent(greenHead)
+	intent.AuthorID = derivedReviewerCommentAuthor
+	mergedIntentFromReviewer.Comments = []CommentObservation{intent}
+
+	for name, observation := range map[string]Observation{
+		"branch head が解決できない":              corruptBranch,
+		"別 Issue の branch を渡された":           foreignBranch,
+		"branch が消えた Run":                  pullRequestWithoutBranch,
+		"final approve の無い ready PR":       readyWithoutApproval,
+		"open な Run が複数ある":                 twoOpenRuns,
+		"Run 進行中に Issue が closed された":      closedIssueWithOpenRun,
+		"merge intent の無い merged":          mergedWithoutIntent,
+		"merge intent が別 head を指す":         mergedIntentOnOtherHead,
+		"merge intent が Implementer 名義でない": mergedIntentFromReviewer,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := Derive(observation, derivedConfig())
+			if got.Phase != PhaseNeedsHuman {
+				t.Fatalf("phase = %q, want %q", got.Phase, PhaseNeedsHuman)
+			}
+			if got.Next != escalation(EscalationExternalMutationConflict) {
+				t.Fatalf("next = %+v, want 外部干渉の escalation", got.Next)
+			}
+		})
+	}
+}
+
+// AC-2: 記録そのものが protocol を満たさない観測は、外部干渉と別の理由 code で止める。
+// 同じ input の retry では復旧しないため、retry ではなく人間の是正が必要である。
+func TestDeriveFailsClosedForRecordsThatViolateTheProtocol(t *testing.T) {
+	brokenLineage := runObservation(PullRequestStateDraft, redHead, bootstrapCommit)
+	brokenLineage.PullRequests[0].HeadLineage = []string{bootstrapCommit}
 
 	unreadableVerdict := runObservation(PullRequestStateDraft, redHead, bootstrapCommit)
 	unreadableVerdict.CheckRuns = []CheckRunObservation{
@@ -295,24 +425,22 @@ func TestDeriveFailsClosedForUnmappedObservations(t *testing.T) {
 		verdictCheck(contract.ReviewTestValidity, contract.VerdictRequestChanges, redHead),
 	}
 
+	// 別 Issue の snapshot を渡された場合、config 側の identity だけを信じて claim を
+	// dispatch すると取り違えた観測が mutation になる。
+	foreignIssue := openIssue(LabelReady)
+	foreignIssue.Issue.Number = derivedIssue + 1
+
 	for name, observation := range map[string]Observation{
-		"branch head が解決できない":         corruptBranch,
-		"別 Issue の branch を渡された":      foreignBranch,
-		"branch が消えた Run":             pullRequestWithoutBranch,
-		"final approve の無い ready PR":  readyWithoutApproval,
-		"open な Run が複数ある":            twoOpenRuns,
-		"live head を含まない系譜":           brokenLineage,
-		"Run 進行中に Issue が closed された": closedIssueWithOpenRun,
-		"verdict 値が語彙に無い":             unreadableVerdict,
-		"同じ head に矛盾する verdict がある":   conflictingVerdicts,
+		"live head を含まない系譜":         brokenLineage,
+		"verdict 値が語彙に無い":           unreadableVerdict,
+		"同じ head に矛盾する verdict がある": conflictingVerdicts,
+		"別 Issue の snapshot を渡された":  foreignIssue,
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := Derive(observation, derivedConfig())
-			if got.Phase != PhaseNeedsHuman {
-				t.Fatalf("phase = %q, want %q", got.Phase, PhaseNeedsHuman)
-			}
-			if got.Next != escalation(EscalationExternalMutationConflict) {
-				t.Fatalf("next = %+v, want 明示的な escalation", got.Next)
+			if got.Phase != PhaseNeedsHuman ||
+				got.Next != escalation(EscalationProtocolValidationFailed) {
+				t.Fatalf("derivation = %+v, want protocol 違反の escalation", got)
 			}
 		})
 	}

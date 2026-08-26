@@ -13,20 +13,30 @@ func at(minute int) time.Time {
 
 func findingComment(id, authorID int64, kind contract.ReviewKind, minute int) CommentObservation {
 	return CommentObservation{
-		ID:        id,
-		AuthorID:  authorID,
-		CreatedAt: at(minute),
-		Marker:    &CommentMarkerObservation{Kind: CommentMarkerFinding, Review: kind},
+		ID:          id,
+		PullRequest: runPullRequestNumber,
+		AuthorID:    authorID,
+		CreatedAt:   at(minute),
+		Marker:      &CommentMarkerObservation{Kind: CommentMarkerFinding, Review: kind},
 	}
 }
 
 func revisionReportComment(id, authorID int64, minute int) CommentObservation {
 	return CommentObservation{
-		ID:        id,
-		AuthorID:  authorID,
-		CreatedAt: at(minute),
-		Marker:    &CommentMarkerObservation{Kind: CommentMarkerTestRevisionReport},
+		ID:          id,
+		PullRequest: runPullRequestNumber,
+		AuthorID:    authorID,
+		CreatedAt:   at(minute),
+		Marker: &CommentMarkerObservation{
+			Kind: CommentMarkerTestRevisionReport,
+			Head: redHead,
+		},
 	}
+}
+
+// countedRun は round 計数の対象になる open な Run の観測骨格を返す。
+func countedRun() Observation {
+	return runObservation(PullRequestStateDraft, redHead, bootstrapCommit)
 }
 
 func requireRounds(t *testing.T, observation Observation, config DeriveConfig) DerivedReviewRounds {
@@ -41,7 +51,7 @@ func requireRounds(t *testing.T, observation Observation, config DeriveConfig) D
 // AC-3: Reviewer 名義の marker 付き finding comment と、Implementer 名義の
 // test-revision-report だけが round を消費する。無人区間の起点は直近の ai-ready 付与である。
 func TestDeriveReviewRoundsCountsOnlyAuthenticatedMarkers(t *testing.T) {
-	observation := openIssue(string(StatusInProgress))
+	observation := countedRun()
 	observation.Issue.LabelEvents = []LabelEventObservation{
 		{Label: LabelReady, Added: true, OccurredAt: at(0)},
 		{Label: LabelReady, Added: false, OccurredAt: at(1)},
@@ -64,9 +74,11 @@ func TestDeriveReviewRoundsCountsOnlyAuthenticatedMarkers(t *testing.T) {
 		findingComment(8, derivedImplementerCommentAuthor, contract.ReviewTestValidity, 56),
 		findingComment(9, 999, contract.ReviewFinalImplementation, 57),
 		revisionReportComment(10, derivedReviewerCommentAuthor, 58),
-		{ID: 11, AuthorID: derivedReviewerCommentAuthor, CreatedAt: at(59)},
-		{ID: 12, AuthorID: derivedReviewerCommentAuthor, CreatedAt: at(59),
-			Marker: &CommentMarkerObservation{Kind: CommentMarkerFinding, Review: "security"}},
+		{ID: 11, PullRequest: runPullRequestNumber, AuthorID: derivedReviewerCommentAuthor,
+			CreatedAt: at(59)},
+		{ID: 12, PullRequest: runPullRequestNumber, AuthorID: derivedReviewerCommentAuthor,
+			CreatedAt: at(59),
+			Marker:    &CommentMarkerObservation{Kind: CommentMarkerFinding, Review: "security"}},
 	}
 
 	got := requireRounds(t, observation, derivedConfig())
@@ -82,7 +94,7 @@ func TestDeriveReviewRoundsCountsOnlyAuthenticatedMarkers(t *testing.T) {
 // 無人区間の起点が観測できない場合は、生涯 counter と同じ範囲を数える。
 // 観測の欠落で counter を 0 にすると、上限が効かないまま loop が回り続ける。
 func TestDeriveReviewRoundsWithoutReadyEventCountsEverything(t *testing.T) {
-	observation := openIssue(string(StatusInProgress))
+	observation := countedRun()
 	observation.Comments = []CommentObservation{
 		findingComment(1, derivedReviewerCommentAuthor, contract.ReviewTestValidity, 10),
 		findingComment(2, derivedReviewerCommentAuthor, contract.ReviewFinalImplementation, 20),
@@ -100,7 +112,7 @@ func TestDeriveReviewRoundsWithoutReadyEventCountsEverything(t *testing.T) {
 
 // 導出は pure であり、同じ観測から常に同じ counter を返し、観測を書き換えない。
 func TestDeriveReviewRoundsIsPure(t *testing.T) {
-	observation := openIssue(string(StatusInProgress))
+	observation := countedRun()
 	observation.Issue.LabelEvents = []LabelEventObservation{
 		{Label: LabelReady, Added: true, OccurredAt: at(5)},
 	}
@@ -124,10 +136,35 @@ func TestDeriveReviewRoundsIsPure(t *testing.T) {
 	}
 }
 
+// supersede した旧 Run の finding は現在の無人区間へ混入しない。混入すると新しい Run の
+// 予算が実際より早く尽き、ADR-0001 が受け入れた「escalation が遅れる向き」の逆へ倒れる。
+func TestDeriveReviewRoundsIgnoresSupersededLineage(t *testing.T) {
+	observation := countedRun()
+	observation.PullRequests = append(observation.PullRequests, PullRequestObservation{
+		Number: 600, State: PullRequestStateClosed, Head: bootstrapCommit,
+		HeadLineage: []string{bootstrapCommit},
+	})
+	stale := findingComment(1, derivedReviewerCommentAuthor, contract.ReviewTestValidity, 10)
+	stale.PullRequest = 600
+	observation.Comments = []CommentObservation{
+		stale,
+		findingComment(2, derivedReviewerCommentAuthor, contract.ReviewTestValidity, 20),
+	}
+
+	got := requireRounds(t, observation, derivedConfig())
+	want := DerivedReviewRounds{
+		CurrentStretch: ReviewRounds{TestValidity: 1},
+		Lifetime:       ReviewRounds{TestValidity: 1},
+	}
+	if got != want {
+		t.Fatalf("rounds = %+v, want %+v", got, want)
+	}
+}
+
 // 設定が壊れている場合に 0 を返さない。0 を返すと上限判定が「まだ余裕がある」へ
 // 倒れ、無人 loop が止まらなくなる。
 func TestDeriveReviewRoundsRejectsIncompleteConfiguration(t *testing.T) {
-	observation := openIssue(string(StatusInProgress))
+	observation := countedRun()
 	observation.Comments = []CommentObservation{
 		findingComment(1, derivedReviewerCommentAuthor, contract.ReviewTestValidity, 10),
 	}

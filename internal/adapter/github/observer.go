@@ -160,7 +160,7 @@ func (g *Gateway) ObserveIssue(ctx context.Context, number int64) (IssueSnapshot
 	if err != nil {
 		return IssueSnapshot{}, err
 	}
-	branchName := IssueBranchName(number)
+	branchName := workflow.IssueBranchName(number)
 	branch, err := g.getBranch(ctx, branchName)
 	if err != nil {
 		return IssueSnapshot{}, err
@@ -190,13 +190,6 @@ func (g *Gateway) ObserveIssue(ctx context.Context, number int64) (IssueSnapshot
 		Branch:        branch,
 		PullRequests:  pulls,
 	}, nil
-}
-
-// IssueBranchName は claim branch 名の規則を workflow core と共有する。
-// 観測側と mutation 側で規則がずれると ref create の排他が効かなくなるため、
-// adapter は名前を自前で組み立てない。
-func IssueBranchName(number int64) string {
-	return workflow.IssueBranchName(number)
 }
 
 // ListCandidateIssues は routing query の全 page を読み、Pull Request を除外する。

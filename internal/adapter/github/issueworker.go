@@ -13,6 +13,7 @@ import (
 	"github.com/mrbaron3/kudo/internal/contract"
 	"github.com/mrbaron3/kudo/internal/issueworker"
 	"github.com/mrbaron3/kudo/internal/livecontext"
+	"github.com/mrbaron3/kudo/internal/workflow"
 )
 
 var _ issueworker.GitHub = (*Gateway)(nil)
@@ -183,7 +184,7 @@ func (g *Gateway) ResolveClaimBase(ctx context.Context, issue contract.IssueRef,
 	if residue == nil || residue.SHA == branch.SHA {
 		return base, nil
 	}
-	if residue.Name != IssueBranchName(int64(issue.Number)) || !shaPattern.MatchString(residue.SHA) {
+	if residue.Name != workflow.IssueBranchName(int64(issue.Number)) || !shaPattern.MatchString(residue.SHA) {
 		return issueworker.ClaimBase{}, fmt.Errorf("%w: claim residue branch identityが不正", issueworker.ErrClaimConflict)
 	}
 	residueBase, err := g.validateClaimBootstrap(ctx, issue, residue.SHA, "")
@@ -489,7 +490,7 @@ func (g *Gateway) validateClaimMutation(issue contract.IssueRef, branchName, sha
 	if err := g.validateIssueRef(issue); err != nil {
 		return err
 	}
-	if branchName != IssueBranchName(int64(issue.Number)) || !shaPattern.MatchString(sha) {
+	if branchName != workflow.IssueBranchName(int64(issue.Number)) || !shaPattern.MatchString(sha) {
 		return fmt.Errorf("claim branch name または SHA が不正")
 	}
 	return nil

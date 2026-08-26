@@ -14,6 +14,10 @@ func TestValidateDerivedTransitionDeclaresTheNormalFlow(t *testing.T) {
 	allowed := [][2]Phase{
 		{PhaseNone, PhaseCandidate},
 		{PhaseCandidate, PhaseClaimed},
+		// claim は branch ref create と draft PR の ensure を一つの Operation で行うため、
+		// 正常な claim は claimed を経由せず authoring_tests へ進む。
+		{PhaseCandidate, PhaseAuthoringTests},
+		{PhaseSuperseded, PhaseAuthoringTests},
 		{PhaseClaimed, PhaseAuthoringTests},
 		{PhaseAuthoringTests, PhaseAwaitingTestReview},
 		{PhaseAwaitingTestReview, PhaseImplementing},
@@ -40,8 +44,9 @@ func TestValidateDerivedTransitionDeclaresTheNormalFlow(t *testing.T) {
 		// final approve を飛ばして merge する。
 		{PhaseAwaitingFinalReview, PhaseMergingPullRequest},
 		{PhaseAuthoringTests, PhaseMerged},
-		// claim を飛ばして作業を始める。
-		{PhaseCandidate, PhaseAuthoringTests},
+		// review gate を飛ばして実装や merge へ入る。
+		{PhaseCandidate, PhaseImplementing},
+		{PhaseCandidate, PhaseMergingPullRequest},
 		// merged は terminal である。
 		{PhaseMerged, PhaseImplementing},
 		{PhaseMerged, PhaseSuperseded},

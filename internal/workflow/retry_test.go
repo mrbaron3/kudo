@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -117,6 +118,30 @@ func TestAttemptTrackerForgetsCompletedOperations(t *testing.T) {
 	}
 }
 
+// policy は tracker が固定する。呼び出し側が構築後に map を書き換えても backoff は
+// 変わらない。共有していると、検証を通っていない値で待ち、Next と競合すれば
+// concurrent map access になる。
+func TestAttemptTrackerFixesThePolicyAtConstruction(t *testing.T) {
+	policy := sampleRetryPolicy()
+	tracker, err := NewAttemptTracker(policy, fixedClock{}, NoJitter{})
+	if err != nil {
+		t.Fatalf("NewAttemptTracker: %v", err)
+	}
+	policy.BaseDelay[contract.FailureTimeout] = time.Hour
+	delete(policy.BaseDelay, contract.FailureRateLimit)
+
+	schedule, err := tracker.Next("run-700/implement", contract.FailureTimeout)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if schedule.Delay != time.Second {
+		t.Fatalf("delay = %s, want %s", schedule.Delay, time.Second)
+	}
+	if _, err := tracker.Next("run-700/review", contract.FailureRateLimit); err != nil {
+		t.Fatalf("削除された class の backoff を失った: %v", err)
+	}
+}
+
 // quality verdict や語彙外の値を retry class として受理しない。受理すると
 // review 判断が backoff 対象の transport failure に化ける。
 func TestAttemptTrackerRejectsUnknownFailureClass(t *testing.T) {
@@ -178,8 +203,11 @@ func TestProportionalJitterOnlyShortensWithinFraction(t *testing.T) {
 	}{
 		{"下限", ProportionalJitter{Fraction: 0.2, Float64: func() float64 { return 0 }},
 			10 * time.Second, 8 * time.Second},
-		{"上限", ProportionalJitter{Fraction: 0.2, Float64: func() float64 { return 1 }},
-			10 * time.Second, 10 * time.Second},
+		// Float64 の契約は [0,1) なので上端は開区間である。契約内の最大値で境界を示す。
+		{"上端", ProportionalJitter{
+			Fraction: 0.2,
+			Float64:  func() float64 { return math.Nextafter(1, 0) },
+		}, 10 * time.Second, 10 * time.Second},
 		{"中間", ProportionalJitter{Fraction: 0.5, Float64: func() float64 { return 0.5 }},
 			10 * time.Second, 7500 * time.Millisecond},
 		{"乱数源なし", ProportionalJitter{Fraction: 0.5}, 10 * time.Second, 10 * time.Second},

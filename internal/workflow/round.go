@@ -38,10 +38,17 @@ func DeriveReviewRounds(observation Observation, config DeriveConfig) (DerivedRe
 	if err := config.Validate(); err != nil {
 		return DerivedReviewRounds{}, fmt.Errorf("review round を導出できない: %w", err)
 	}
+	record, err := runPullRequest(observation)
+	if err != nil {
+		return DerivedReviewRounds{}, fmt.Errorf("review round を導出できない: %w", err)
+	}
 	boundary, hasBoundary := latestReadyLabelAdd(observation.Issue.LabelEvents, config.ReadyLabel)
 
 	var rounds DerivedReviewRounds
 	for _, comment := range observation.Comments {
+		if record == nil || comment.PullRequest != record.Number {
+			continue
+		}
 		gate, ok := roundConsumingGate(comment, config)
 		if !ok {
 			continue
@@ -97,10 +104,29 @@ func roundConsumingGate(comment CommentObservation, config DeriveConfig) (contra
 	return "", false
 }
 
+// addRound は gate ごとの counter を進める。語彙外の gate を既定で test 側へ数えない。
+// 到達不能を前提にした既定は、gate 語彙が増えたときに黙って予算を削る。
 func addRound(rounds *ReviewRounds, gate contract.ReviewKind) {
-	if gate == contract.ReviewFinalImplementation {
+	switch gate {
+	case contract.ReviewTestValidity:
+		rounds.TestValidity++
+	case contract.ReviewFinalImplementation:
 		rounds.FinalImplementation++
-		return
 	}
-	rounds.TestValidity++
+}
+
+// runPullRequest は round を数える対象の記録面を返す。
+//
+// Run の lineage には supersede した旧 PR が closed のまま残るため、Issue 全体の
+// comment を数えると旧 Run の round が現在の無人区間へ混入する。ADR-0001 が受け入れた
+// 計数のずれは escalation が遅れる向きだけなので、過大計上は避ける。
+func runPullRequest(observation Observation) (*PullRequestObservation, error) {
+	active, lineage, err := classifyPullRequests(observation.PullRequests)
+	if err != nil {
+		return nil, err
+	}
+	if active != nil {
+		return active, nil
+	}
+	return lineage.merged, nil
 }

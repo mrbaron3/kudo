@@ -148,24 +148,39 @@ const (
 	CommentMarkerFinding CommentMarkerKind = "finding"
 	// CommentMarkerTestRevisionReport は implement lane が返した`test_revision_required`の
 	// 根拠 report である。quality verdict ではないが test gate を再び開くため、
-	// test_validity の無人 round 予算を消費する。
+	// test_validity の無人 round 予算を消費し、実装 lane を止めて revise_tests へ戻す。
 	CommentMarkerTestRevisionReport CommentMarkerKind = "test-revision-report"
+	// CommentMarkerMergeIntent は Issue Worker が merge 直前に記録する intent である。
+	// merged 観測がこの intent と一致するかどうかが、自分の mutation の再観測と
+	// 外部干渉を分ける（docs/spec/05_design/02_workflow.md の Merge と完了投影）。
+	CommentMarkerMergeIntent CommentMarkerKind = "merge-intent"
 )
 
 // CommentMarkerObservation は comment に埋め込まれた marker の分類結果である。
+//
 // marker が書いている round 番号は保持しない。round は marker 付き comment の計数から
 // 導出するものであり、記録された数値を信じると人為的な編集が counter を動かせる。
+// Head は逆に保持する。rollback checkpoint と merge intent は「どの commit に対する
+// 記録か」が意味そのものであり、head を落とすと過去の記録と現在の head を区別できない。
 type CommentMarkerObservation struct {
 	Kind CommentMarkerKind
 	// Review は Kind が CommentMarkerFinding のとき、どの gate の finding かを表す。
 	Review contract.ReviewKind
+	// Head は Kind が CommentMarkerTestRevisionReport または CommentMarkerMergeIntent の
+	// とき、その記録が束縛される commit SHA である。finding では空にする。
+	Head string
 }
 
 // CommentObservation は Pull Request 上の comment 観測である。
+//
 // Body を持たないのは、gate 判断が marker と作成 identity だけを使うためである。
+// PullRequest を持つのは、Run の lineage に closed / merged な旧 PR が残るためである。
+// どの PR の記録かを型で表さないと、旧 Run の finding が現在の無人区間へ混入し、
+// round 予算が実際より早く尽きる。
 type CommentObservation struct {
-	ID        int64
-	AuthorID  int64
-	CreatedAt time.Time
-	Marker    *CommentMarkerObservation
+	ID          int64
+	PullRequest int64
+	AuthorID    int64
+	CreatedAt   time.Time
+	Marker      *CommentMarkerObservation
 }

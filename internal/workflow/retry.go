@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -27,7 +28,8 @@ type NoJitter struct{}
 
 func (NoJitter) Apply(delay time.Duration) time.Duration { return delay }
 
-// ProportionalJitter は delay を [(1-Fraction)*delay, delay] の範囲へ縮める。
+// ProportionalJitter は delay を [(1-Fraction)*delay, delay) の範囲へ縮める。
+// Float64 が [0,1) を返す契約なので、上端の delay そのものには到達しない。
 //
 // Float64 は [0,1) の乱数源であり、注入する。乱数源が無い、または Fraction が
 // 範囲外の場合は delay をそのまま返す。分散が無い側へ倒すのは、設定漏れが
@@ -123,8 +125,12 @@ func NewAttemptTracker(policy RetryPolicy, clock Clock, jitter Jitter) (*Attempt
 	if jitter == nil {
 		return nil, fmt.Errorf("attempt tracker には jitter の注入が必要である")
 	}
+	// BaseDelay は値渡しでも map の参照を共有する。呼び出し側が構築後に書き換えると
+	// 検証を通っていない backoff で動き、Next と同時に触られれば concurrent map access
+	// になる。tracker 専用の複製を持つことで policy を固定する。
+	fixed := RetryPolicy{BaseDelay: maps.Clone(policy.BaseDelay), MaxDelay: policy.MaxDelay}
 	return &AttemptTracker{
-		policy:   policy,
+		policy:   fixed,
 		clock:    clock,
 		jitter:   jitter,
 		attempts: map[string]int{},
