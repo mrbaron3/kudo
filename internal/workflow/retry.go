@@ -178,16 +178,16 @@ func (t *AttemptTracker) Forget(operationID string) {
 // exponentialDelay は base を attempt-1 回倍にし、max で頭打ちにする。
 // shift 演算ではなく加算 loop なのは、attempt が増えても overflow で待ち時間が
 // 負や 0 へ折り返さないようにするためである。
-func exponentialDelay(base time.Duration, attempt int, max time.Duration) time.Duration {
+func exponentialDelay(base time.Duration, attempt int, maxDelay time.Duration) time.Duration {
 	delay := base
 	for range attempt - 1 {
-		if delay >= max-delay {
-			return max
+		if delay >= maxDelay-delay {
+			return maxDelay
 		}
 		delay *= 2
 	}
-	if delay > max {
-		return max
+	if delay > maxDelay {
+		return maxDelay
 	}
 	return delay
 }

@@ -106,6 +106,10 @@ func escalation(reason EscalationReason) ReconcileAction {
 	return ReconcileAction{Kind: ReconcileEscalateHuman, Reason: reason}
 }
 
+func stoppedEscalation(reason EscalationReason, stoppedAt Phase) ReconcileAction {
+	return ReconcileAction{Kind: ReconcileEscalateHuman, Reason: reason, StoppedAt: stoppedAt}
+}
+
 func cloneObservation(observation Observation) Observation {
 	clone := observation
 	clone.Issue.Assignees = append([]string(nil), observation.Issue.Assignees...)
@@ -138,7 +142,9 @@ func TestDeriveEvaluatesEveryDerivedPhaseRow(t *testing.T) {
 	merged.Issue.Labels = []string{string(StatusMerged)}
 	merged.Comments = []CommentObservation{mergeIntent(greenHead)}
 
+	// 後始末（PR close と branch 削除）が終わった lineage だけが superseded である。
 	superseded := runObservation(PullRequestStateClosed, redHead, bootstrapCommit)
+	superseded.Branch = nil
 
 	merging := runObservation(PullRequestStateReady, greenHead, redHead, bootstrapCommit)
 	merging.CheckRuns = []CheckRunObservation{
@@ -152,6 +158,7 @@ func TestDeriveEvaluatesEveryDerivedPhaseRow(t *testing.T) {
 
 	awaitingFinal := runObservation(PullRequestStateDraft, greenHead, redHead, bootstrapCommit)
 	awaitingFinal.CheckRuns = []CheckRunObservation{
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
 		evidenceCheck(CheckRunEvidenceGreen, greenHead),
 		evidenceCheck(CheckRunEvidenceChecks, greenHead),
 	}
@@ -267,7 +274,7 @@ func TestDeriveRoutesReviewVerdictsToTheRepairLoop(t *testing.T) {
 		{"差し戻し後の新 head も repair lane を維持する", afterFinalRequestChanges, PhaseImplementing,
 			dispatchOperation(contract.OperationRepairImplementation)},
 		{"needs_human verdict は自動 loop を止める", needsHumanVerdict, PhaseNeedsHuman,
-			escalation(EscalationReviewNeedsHuman)},
+			stoppedEscalation(EscalationReviewNeedsHuman, PhaseAwaitingTestReview)},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -344,6 +351,60 @@ func TestDeriveRequiresANewApprovalForRevisedTestHeads(t *testing.T) {
 	}
 }
 
+// 系譜に古い approve が残っていても、それより新しい差し戻し（request_changes または
+// test-revision-report）があれば実装へ進まない。差し戻し後に新しい test head を push した
+// 直後（RED evidence の記録前）で process が落ちる窓を塞ぐ。
+func TestDeriveDoesNotReuseAnApprovalOlderThanTheLatestTestGateRecord(t *testing.T) {
+	revisedHead := "8888888888888888888888888888888888888888"
+	rejectedHead := "9999999999999999999999999999999999999999"
+
+	// A(redHead) で approve → 差し戻し → B(rejectedHead) で request_changes →
+	// C(revisedHead) を push した直後で RED evidence はまだ無い。
+	afterRequestChanges := runObservation(
+		PullRequestStateDraft, revisedHead, rejectedHead, redHead, bootstrapCommit)
+	afterRequestChanges.CheckRuns = []CheckRunObservation{
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+		evidenceCheck(CheckRunEvidenceRed, rejectedHead),
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictRequestChanges, rejectedHead),
+	}
+
+	// A で approve → implement が test_revision_required を返して report を記録 →
+	// revise が B(revisedHead) を push した直後で RED evidence はまだ無い。
+	afterRevisionReport := runObservation(
+		PullRequestStateDraft, revisedHead, redHead, bootstrapCommit)
+	afterRevisionReport.CheckRuns = []CheckRunObservation{
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+		evidenceCheck(CheckRunEvidenceRed, redHead),
+	}
+	afterRevisionReport.Comments = []CommentObservation{testRevisionReport(redHead)}
+
+	for name, observation := range map[string]Observation{
+		"新しい request_changes が古い approve を隠す": afterRequestChanges,
+		"新しい差し戻し report が古い approve を隠す":      afterRevisionReport,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := Derive(observation, derivedConfig())
+			if got.Phase != PhaseAuthoringTests ||
+				got.Next != dispatchOperation(contract.OperationReviseTests) {
+				t.Fatalf("derivation = %+v, want test lane での revise_tests", got)
+			}
+		})
+	}
+
+	// 逆に、差し戻しより新しい approve は実装の根拠になる。
+	reapproved := runObservation(
+		PullRequestStateDraft, revisedHead, rejectedHead, redHead, bootstrapCommit)
+	reapproved.CheckRuns = []CheckRunObservation{
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictRequestChanges, rejectedHead),
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, revisedHead),
+	}
+	if got := Derive(reapproved, derivedConfig()); got.Phase != PhaseImplementing ||
+		got.Next != dispatchOperation(contract.OperationImplement) {
+		t.Fatalf("再 approve 後の derivation = %+v", got)
+	}
+}
+
 // AC-2: 表のいずれの行にも安全に一致しない観測は継続へ倒さず、needs_human と
 // 明示的な escalation action になる。理由 code は「外部干渉」と「記録の protocol 違反」を
 // 区別する。差し戻された人間が取るべき対処が違うためである。
@@ -383,7 +444,12 @@ func TestDeriveFailsClosedForUnmappedObservations(t *testing.T) {
 	intent.AuthorID = derivedReviewerCommentAuthor
 	mergedIntentFromReviewer.Comments = []CommentObservation{intent}
 
+	// 後始末の途中で止まった supersede と、進行中 Run の PR を人間が close した観測は
+	// どちらも「closed PR + 残存 branch」として現れる。無言の停止にしない。
+	closedWithBranch := runObservation(PullRequestStateClosed, redHead, bootstrapCommit)
+
 	for name, observation := range map[string]Observation{
+		"branch が残ったまま PR が closed された":    closedWithBranch,
 		"branch head が解決できない":              corruptBranch,
 		"別 Issue の branch を渡された":           foreignBranch,
 		"branch が消えた Run":                  pullRequestWithoutBranch,
@@ -430,11 +496,20 @@ func TestDeriveFailsClosedForRecordsThatViolateTheProtocol(t *testing.T) {
 	foreignIssue := openIssue(LabelReady)
 	foreignIssue.Issue.Number = derivedIssue + 1
 
+	// 承認済み test を系譜に持たない final evidence は test gate を通していない記録である。
+	finalEvidenceWithoutTestApproval := runObservation(
+		PullRequestStateDraft, greenHead, redHead, bootstrapCommit)
+	finalEvidenceWithoutTestApproval.CheckRuns = []CheckRunObservation{
+		evidenceCheck(CheckRunEvidenceGreen, greenHead),
+		evidenceCheck(CheckRunEvidenceChecks, greenHead),
+	}
+
 	for name, observation := range map[string]Observation{
-		"live head を含まない系譜":         brokenLineage,
-		"verdict 値が語彙に無い":           unreadableVerdict,
-		"同じ head に矛盾する verdict がある": conflictingVerdicts,
-		"別 Issue の snapshot を渡された":  foreignIssue,
+		"test approve の無い final evidence": finalEvidenceWithoutTestApproval,
+		"live head を含まない系譜":               brokenLineage,
+		"verdict 値が語彙に無い":                 unreadableVerdict,
+		"同じ head に矛盾する verdict がある":       conflictingVerdicts,
+		"別 Issue の snapshot を渡された":        foreignIssue,
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := Derive(observation, derivedConfig())
@@ -458,6 +533,14 @@ func TestDeriveFailsClosedForIncompleteConfiguration(t *testing.T) {
 		"Reviewer App が無い":       func(config *DeriveConfig) { config.Reviewer.CheckRunAppID = 0 },
 		"Implementer author が無い": func(config *DeriveConfig) { config.Implementer.CommentAuthorID = 0 },
 		"Reviewer author が無い":    func(config *DeriveConfig) { config.Reviewer.CommentAuthorID = 0 },
+		// 同一 identity では Implementer 名義の kudo/test-validity を Reviewer の verdict と
+		// 区別できず、自己承認の禁止が構造で担保されない。
+		"App identity が分離されていない": func(config *DeriveConfig) {
+			config.Reviewer.CheckRunAppID = config.Implementer.CheckRunAppID
+		},
+		"comment author が分離されていない": func(config *DeriveConfig) {
+			config.Reviewer.CommentAuthorID = config.Implementer.CommentAuthorID
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := derivedConfig()
@@ -611,6 +694,103 @@ func TestDeriveReproducesTheSameContinuationAfterRestart(t *testing.T) {
 	if afterRestart.Phase != PhaseImplementing ||
 		afterRestart.Next != dispatchOperation(contract.OperationImplement) {
 		t.Fatalf("restart 後の継続 = %+v", afterRestart)
+	}
+}
+
+// Derivation は Run の記録面（PR 番号と live head）を運ぶ。どの PR が Run かの分類を
+// 呼び出し側が書き直すと、open PR が複数ある観測の fail-closed 規則がそちらへ漏れる。
+func TestDeriveCarriesTheRunRecordSurface(t *testing.T) {
+	observation := runObservation(PullRequestStateDraft, redHead, bootstrapCommit)
+	observation.CheckRuns = []CheckRunObservation{evidenceCheck(CheckRunEvidenceRed, redHead)}
+
+	got := Derive(observation, derivedConfig())
+	if got.PullRequest != runPullRequestNumber || got.Head != redHead {
+		t.Fatalf("記録面 = PR %d head %s", got.PullRequest, got.Head)
+	}
+
+	merged := runObservation(PullRequestStateMerged, greenHead, redHead, bootstrapCommit)
+	merged.Issue.State = IssueStateClosed
+	merged.Comments = []CommentObservation{mergeIntent(greenHead)}
+	if got := Derive(merged, derivedConfig()); got.PullRequest != runPullRequestNumber ||
+		got.Head != greenHead {
+		t.Fatalf("merged の記録面 = PR %d head %s", got.PullRequest, got.Head)
+	}
+
+	// Run がまだ無い観測では zero value になる。
+	if got := Derive(openIssue(LabelReady), derivedConfig()); got.PullRequest != 0 || got.Head != "" {
+		t.Fatalf("candidate の記録面 = PR %d head %q", got.PullRequest, got.Head)
+	}
+}
+
+// 上限に達した request_changes は修正 Operation を発行せず needs_human へ送る。
+// approve は上限に達していても次の gate へ進む。
+func TestApplyRoundBudgetStopsTheRepairLoopAtTheLimit(t *testing.T) {
+	limits := contract.ReviewRoundLimits{TestValidity: 3, FinalImplementation: 2}
+	revise := Derivation{
+		Phase:       PhaseAuthoringTests,
+		Next:        dispatchOperation(contract.OperationReviseTests),
+		PullRequest: runPullRequestNumber,
+		Head:        redHead,
+	}
+	repair := Derivation{
+		Phase:       PhaseImplementing,
+		Next:        dispatchOperation(contract.OperationRepairImplementation),
+		PullRequest: runPullRequestNumber,
+		Head:        greenHead,
+	}
+
+	tests := []struct {
+		name        string
+		derivation  Derivation
+		rounds      ReviewRounds
+		wantStopped bool
+		stoppedAt   Phase
+	}{
+		{"予算が残る test gate", revise, ReviewRounds{TestValidity: 2}, false, ""},
+		{"上限に達した test gate", revise, ReviewRounds{TestValidity: 3}, true, PhaseAwaitingTestReview},
+		{"上限を超えた test gate", revise, ReviewRounds{TestValidity: 9}, true, PhaseAwaitingTestReview},
+		{"予算が残る final gate", repair, ReviewRounds{FinalImplementation: 1}, false, ""},
+		{"上限に達した final gate", repair, ReviewRounds{FinalImplementation: 2}, true,
+			PhaseAwaitingFinalReview},
+		// gate ごとに独立した予算である。片方を使い切っても他方は止まらない。
+		{"別 gate の消費は影響しない", repair, ReviewRounds{TestValidity: 9}, false, ""},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := ApplyRoundBudget(testCase.derivation,
+				DerivedReviewRounds{CurrentStretch: testCase.rounds}, limits)
+			if !testCase.wantStopped {
+				if got != testCase.derivation {
+					t.Fatalf("予算内で書き換えられた: %+v", got)
+				}
+				return
+			}
+			want := Derivation{
+				Phase:       PhaseNeedsHuman,
+				Next:        stoppedEscalation(EscalationReviewRoundLimitExceeded, testCase.stoppedAt),
+				PullRequest: testCase.derivation.PullRequest,
+				Head:        testCase.derivation.Head,
+			}
+			if got != want {
+				t.Fatalf("derivation = %+v, want %+v", got, want)
+			}
+		})
+	}
+
+	// 差し戻し以外の action は予算を消費しないので書き換えない。
+	exhausted := DerivedReviewRounds{
+		CurrentStretch: ReviewRounds{TestValidity: 9, FinalImplementation: 9},
+	}
+	for _, derivation := range []Derivation{
+		{Phase: PhaseImplementing, Next: dispatchOperation(contract.OperationImplement)},
+		{Phase: PhaseAuthoringTests, Next: dispatchOperation(contract.OperationAuthorTests)},
+		{Phase: PhaseMergingPullRequest, Next: dispatchOperation(contract.OperationMergePullRequest)},
+		{Phase: PhaseAwaitingTestReview, Next: requestReviewAction(contract.ReviewTestValidity)},
+		{Phase: PhaseMerged, Next: ReconcileAction{Kind: ReconcileRecordCompletion}},
+	} {
+		if got := ApplyRoundBudget(derivation, exhausted, limits); got != derivation {
+			t.Fatalf("%+v が予算判定で書き換えられた: %+v", derivation, got)
+		}
 	}
 }
 

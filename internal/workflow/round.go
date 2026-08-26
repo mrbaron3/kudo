@@ -38,6 +38,11 @@ func DeriveReviewRounds(observation Observation, config DeriveConfig) (DerivedRe
 	if err := config.Validate(); err != nil {
 		return DerivedReviewRounds{}, fmt.Errorf("review round を導出できない: %w", err)
 	}
+	if observation.Issue.Number != config.Issue {
+		return DerivedReviewRounds{}, fmt.Errorf(
+			"review round を導出できない: 観測は Issue %d のもので、対象は Issue %d である",
+			observation.Issue.Number, config.Issue)
+	}
 	record, err := runPullRequest(observation)
 	if err != nil {
 		return DerivedReviewRounds{}, fmt.Errorf("review round を導出できない: %w", err)
@@ -49,7 +54,7 @@ func DeriveReviewRounds(observation Observation, config DeriveConfig) (DerivedRe
 		if record == nil || comment.PullRequest != record.Number {
 			continue
 		}
-		gate, ok := roundConsumingGate(comment, config)
+		gate, ok := roundConsumingGate(observation, comment, config)
 		if !ok {
 			continue
 		}
@@ -81,7 +86,12 @@ func latestReadyLabelAdd(events []LabelEventObservation, readyLabel string) (tim
 }
 
 // roundConsumingGate は comment が round を消費するかと、消費する gate を返す。
-func roundConsumingGate(comment CommentObservation, config DeriveConfig) (contract.ReviewKind, bool) {
+//
+// 語彙外の gate を持つ finding marker は計上しない。marker 自体は protocol 違反だが、
+// その検出は record を書いた側の validation の責務であり、ここで error にすると
+// counter が返らなくなって上限判定が止まる。
+func roundConsumingGate(observation Observation, comment CommentObservation,
+	config DeriveConfig) (contract.ReviewKind, bool) {
 	if comment.Marker == nil {
 		return "", false
 	}
@@ -92,9 +102,18 @@ func roundConsumingGate(comment CommentObservation, config DeriveConfig) (contra
 		}
 		switch comment.Marker.Review {
 		case contract.ReviewTestValidity, contract.ReviewFinalImplementation:
-			return comment.Marker.Review, true
+		default:
+			return "", false
 		}
-		return "", false
+		// approve にも advisory finding が付きうる（review-protocol-v1alpha1.md）。
+		// approve は次の gate へ進むので自動修正 loop の churn を生まず、予算を消費しない。
+		// 判定の根拠は改竄できない verdict check run 側に置く。approve と証明できた
+		// finding だけを除外し、head も check run も観測できない場合は計上する。
+		// 逆に倒すと、観測の欠落で予算が減らず無人 loop が止まらなくなる。
+		if approvedFinding(observation, config, comment.Marker) {
+			return "", false
+		}
+		return comment.Marker.Review, true
 	case CommentMarkerTestRevisionReport:
 		if comment.AuthorID != config.Implementer.CommentAuthorID {
 			return "", false
@@ -102,6 +121,20 @@ func roundConsumingGate(comment CommentObservation, config DeriveConfig) (contra
 		return contract.ReviewTestValidity, true
 	}
 	return "", false
+}
+
+// approvedFinding は finding marker が approve verdict に付随する記録かを返す。
+func approvedFinding(observation Observation, config DeriveConfig,
+	marker *CommentMarkerObservation) bool {
+	if marker.Head == "" {
+		return false
+	}
+	name := CheckRunTestValidity
+	if marker.Review == contract.ReviewFinalImplementation {
+		name = CheckRunFinalImplementation
+	}
+	verdict, err := verdictOn(observation.CheckRuns, config, name, marker.Head)
+	return err == nil && verdict == contract.VerdictApprove
 }
 
 // addRound は gate ごとの counter を進める。語彙外の gate を既定で test 側へ数えない。

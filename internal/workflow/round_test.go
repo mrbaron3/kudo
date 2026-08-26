@@ -161,6 +161,44 @@ func TestDeriveReviewRoundsIgnoresSupersededLineage(t *testing.T) {
 	}
 }
 
+// approve に付く advisory finding は自動修正 loop を生まないため round を消費しない。
+// 判定の根拠は改竄できない verdict check run に置き、approve と証明できない finding は
+// 計上する（観測の欠落で予算が減らず無人 loop が止まらなくなる側へ倒さない）。
+func TestDeriveReviewRoundsExcludesOnlyProvenApproveFindings(t *testing.T) {
+	advisory := findingComment(1, derivedReviewerCommentAuthor, contract.ReviewTestValidity, 10)
+	advisory.Marker.Head = redHead
+	blocking := findingComment(2, derivedReviewerCommentAuthor, contract.ReviewFinalImplementation, 20)
+	blocking.Marker.Head = greenHead
+	// head を観測できない finding は approve と証明できないので計上する。
+	unbound := findingComment(3, derivedReviewerCommentAuthor, contract.ReviewTestValidity, 30)
+
+	observation := countedRun()
+	observation.CheckRuns = []CheckRunObservation{
+		verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, redHead),
+		verdictCheck(contract.ReviewFinalImplementation, contract.VerdictRequestChanges, greenHead),
+	}
+	observation.Comments = []CommentObservation{advisory, blocking, unbound}
+
+	got := requireRounds(t, observation, derivedConfig())
+	want := DerivedReviewRounds{
+		CurrentStretch: ReviewRounds{TestValidity: 1, FinalImplementation: 1},
+		Lifetime:       ReviewRounds{TestValidity: 1, FinalImplementation: 1},
+	}
+	if got != want {
+		t.Fatalf("rounds = %+v, want %+v", got, want)
+	}
+}
+
+// 別 Issue の観測から counter を返さない。取り違えた counter で上限を判定すると、
+// 進行中の Run が別 Issue の round 数で停止しうる。
+func TestDeriveReviewRoundsRejectsForeignObservations(t *testing.T) {
+	observation := countedRun()
+	observation.Issue.Number = derivedIssue + 1
+	if _, err := DeriveReviewRounds(observation, derivedConfig()); err == nil {
+		t.Fatal("別 Issue の観測から counter を返した")
+	}
+}
+
 // 設定が壊れている場合に 0 を返さない。0 を返すと上限判定が「まだ余裕がある」へ
 // 倒れ、無人 loop が止まらなくなる。
 func TestDeriveReviewRoundsRejectsIncompleteConfiguration(t *testing.T) {

@@ -166,8 +166,9 @@ type CommentMarkerObservation struct {
 	Kind CommentMarkerKind
 	// Review は Kind が CommentMarkerFinding のとき、どの gate の finding かを表す。
 	Review contract.ReviewKind
-	// Head は Kind が CommentMarkerTestRevisionReport または CommentMarkerMergeIntent の
-	// とき、その記録が束縛される commit SHA である。finding では空にする。
+	// Head はその記録が束縛される commit SHA である。差し戻し checkpoint と merge intent
+	// では意味そのものであり、finding では対応する verdict check run を引くための join key
+	// になる（advisory finding だけの approve を round から外すために使う）。
 	Head string
 }
 

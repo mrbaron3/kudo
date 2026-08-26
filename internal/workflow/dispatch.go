@@ -54,25 +54,31 @@ func NewRunDispatcher() *RunDispatcher {
 }
 
 // Dispatch は runKey の flight が無ければ operation を開始し、既にあればその flight を
-// 返す。join した呼び出し側の operation は実行しない。二重実行を避けるのが目的で
-// あり、「後から来た方を実行する」意味論を持たない。
+// 返す。started は operation を実際に開始したかである。
 //
-// 返り値は必ず非 nil であり、拒否された dispatch も Wait できる完了済み flight として
-// 返る。呼び出し側が nil 判定と Wait の両方を書き分けずに済むようにするためである。
-func (d *RunDispatcher) Dispatch(runKey string, operation func() error) *Flight {
+// join した呼び出し側の operation は実行しない。二重実行を避けるのが目的であり、
+// 「後から来た方を実行する」意味論を持たない。started を返すのは、join した flight の
+// 結果が別の Operation の結果だからである。started が false の呼び出し側は、その結果を
+// 自分の Operation の結果として扱ってはならない。stateless reconciler では、進行中の
+// Operation が record surface を進めた後に再観測すれば次の action が導出されるため、
+// join 側は待つか、そのまま戻って次の reconcile に委ねるのが正しい。
+//
+// 返り値の flight は必ず非 nil であり、拒否された dispatch も Wait できる完了済み flight
+// として返る。呼び出し側が nil 判定と Wait の両方を書き分けずに済むようにするためである。
+func (d *RunDispatcher) Dispatch(runKey string, operation func() error) (flight *Flight, started bool) {
 	if runKey == "" {
-		return settledFlight(ErrRunKeyRequired)
+		return settledFlight(ErrRunKeyRequired), false
 	}
 	if operation == nil {
-		return settledFlight(ErrOperationRequired)
+		return settledFlight(ErrOperationRequired), false
 	}
 
 	d.mu.Lock()
 	if existing, ok := d.flights[runKey]; ok {
 		d.mu.Unlock()
-		return existing
+		return existing, false
 	}
-	flight := &Flight{done: make(chan struct{})}
+	flight = &Flight{done: make(chan struct{})}
 	d.flights[runKey] = flight
 	d.mu.Unlock()
 
@@ -85,7 +91,7 @@ func (d *RunDispatcher) Dispatch(runKey string, operation func() error) *Flight 
 		}()
 		err = operation()
 	}()
-	return flight
+	return flight, true
 }
 
 // finish は flight を完了させ、registry から外す。完了済み flight を残すと、

@@ -27,26 +27,37 @@ func TestRunDispatcherCoalescesOneRunWithoutSerializingOthers(t *testing.T) {
 	wantErr := errors.New("run-700 の結果")
 	var primaryCalls, duplicateCalls atomic.Int32
 
-	first := dispatcher.Dispatch("run-700", func() error {
+	first, startedFirst := dispatcher.Dispatch("run-700", func() error {
 		primaryCalls.Add(1)
 		close(started)
 		<-release
 		return wantErr
 	})
+	if !startedFirst {
+		t.Fatal("最初の dispatch が Operation を開始していない")
+	}
 	waitForSignal(t, started, "run-700 の開始")
 
-	second := dispatcher.Dispatch("run-700", func() error {
+	second, startedSecond := dispatcher.Dispatch("run-700", func() error {
 		duplicateCalls.Add(1)
 		return nil
 	})
 	if first != second {
 		t.Fatal("同じ Run の同時 dispatch が同じ flight を共有していない")
 	}
+	// join した側は自分の Operation を実行していない。結果を自分のものとして扱えない
+	// ことが、この真偽値で呼び出し側に見える必要がある。
+	if startedSecond {
+		t.Fatal("join した dispatch が Operation を開始したと報告した")
+	}
 
-	other := dispatcher.Dispatch("run-701", func() error {
+	other, startedOther := dispatcher.Dispatch("run-701", func() error {
 		close(otherStarted)
 		return nil
 	})
+	if !startedOther {
+		t.Fatal("別 Run の dispatch が開始されていない")
+	}
 	waitForSignal(t, otherStarted, "別 Run の開始")
 	if err := other.Wait(); err != nil {
 		t.Fatalf("run-701: %v", err)
@@ -65,7 +76,10 @@ func TestRunDispatcherCoalescesOneRunWithoutSerializingOthers(t *testing.T) {
 	}
 
 	// 完了した flight は registry から外れ、次の Operation を開始できる。
-	third := dispatcher.Dispatch("run-700", func() error { return nil })
+	third, startedThird := dispatcher.Dispatch("run-700", func() error { return nil })
+	if !startedThird {
+		t.Fatal("完了後の dispatch が Operation を開始していない")
+	}
 	if third == first {
 		t.Fatal("完了済み flight が次の Operation へ再利用された")
 	}
@@ -79,15 +93,18 @@ func TestRunDispatcherCoalescesOneRunWithoutSerializingOthers(t *testing.T) {
 func TestRunDispatcherRejectsUnkeyedOrEmptyOperations(t *testing.T) {
 	dispatcher := NewRunDispatcher()
 
-	if err := dispatcher.Dispatch("", func() error { return nil }).Wait(); !errors.Is(err, ErrRunKeyRequired) {
-		t.Fatalf("空 key の結果 = %v, want %v", err, ErrRunKeyRequired)
+	emptyKey, started := dispatcher.Dispatch("", func() error { return nil })
+	if err := emptyKey.Wait(); !errors.Is(err, ErrRunKeyRequired) || started {
+		t.Fatalf("空 key の結果 = %v (started=%v), want %v", err, started, ErrRunKeyRequired)
 	}
-	if err := dispatcher.Dispatch("run-700", nil).Wait(); !errors.Is(err, ErrOperationRequired) {
-		t.Fatalf("nil Operation の結果 = %v, want %v", err, ErrOperationRequired)
+	missingOperation, started := dispatcher.Dispatch("run-700", nil)
+	if err := missingOperation.Wait(); !errors.Is(err, ErrOperationRequired) || started {
+		t.Fatalf("nil Operation の結果 = %v (started=%v), want %v", err, started, ErrOperationRequired)
 	}
 	// 失敗した dispatch が registry を汚さない。
-	if err := dispatcher.Dispatch("run-700", func() error { return nil }).Wait(); err != nil {
-		t.Fatalf("後続 dispatch: %v", err)
+	accepted, started := dispatcher.Dispatch("run-700", func() error { return nil })
+	if err := accepted.Wait(); err != nil || !started {
+		t.Fatalf("後続 dispatch = %v (started=%v)", err, started)
 	}
 }
 
@@ -100,13 +117,14 @@ func TestRunDispatcherRunsOneFlightUnderConcurrentDispatch(t *testing.T) {
 	var calls atomic.Int32
 	var dispatched, finished sync.WaitGroup
 
-	primary := dispatcher.Dispatch("run-700", func() error {
+	primary, _ := dispatcher.Dispatch("run-700", func() error {
 		calls.Add(1)
 		close(started)
 		<-release
 		return nil
 	})
 	waitForSignal(t, started, "run-700 の開始")
+	var joined atomic.Int32
 
 	const joiners = 32
 	dispatched.Add(joiners)
@@ -114,10 +132,13 @@ func TestRunDispatcherRunsOneFlightUnderConcurrentDispatch(t *testing.T) {
 	for range joiners {
 		go func() {
 			defer finished.Done()
-			flight := dispatcher.Dispatch("run-700", func() error {
+			flight, started := dispatcher.Dispatch("run-700", func() error {
 				calls.Add(1)
 				return nil
 			})
+			if !started {
+				joined.Add(1)
+			}
 			// 進行中の flight へ join したことを確定させてから release する。
 			dispatched.Done()
 			if err := flight.Wait(); err != nil {
@@ -134,5 +155,8 @@ func TestRunDispatcherRunsOneFlightUnderConcurrentDispatch(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("state-advancing Operation の実行回数 = %d, want 1", got)
+	}
+	if got := joined.Load(); got != joiners {
+		t.Fatalf("join した dispatch = %d, want %d", got, joiners)
 	}
 }

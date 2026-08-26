@@ -75,12 +75,26 @@ type ReconcileAction struct {
 	Operation contract.OperationKind
 	Review    contract.ReviewKind
 	Reason    EscalationReason
+	// StoppedAt は Kind が ReconcileEscalateHuman のとき、停止した時点の phase である。
+	// Derivation.Phase は停止後の needs_human になるため、これが無いと status comment に
+	// 必須の停止 phase を復元できない。表のどの行にも一致しない観測では zero value にし、
+	// 「停止 phase を特定できない」ことも比較できるようにする。
+	StoppedAt Phase
 }
 
 // Derivation は観測から導出した現在 phase と次 action である。
+//
+// Run の記録面 identity（Pull Request 番号と live head）を併せて返す。どの PR が Run か、
+// open PR が複数ある観測をどう扱うかの規則は導出の一部であり、呼び出し側が同じ分類を
+// 書き直すと観測組合せの穴がそちらへ漏れる。Run がまだ無い phase では zero value になる。
+//
+// round 予算は反映していない。上限は claim 時に pin した Escalation Policy 由来で観測に
+// 現れないため、ApplyRoundBudget で合成する。
 type Derivation struct {
-	Phase Phase
-	Next  ReconcileAction
+	Phase       Phase
+	Next        ReconcileAction
+	PullRequest int64
+	Head        string
 }
 
 // DeriveConfig は導出が使う deployment 固定の identity 境界である。
@@ -92,9 +106,13 @@ type DeriveConfig struct {
 	Assignee        string
 	ReadyLabel      string
 	NeedsHumanLabel string
-	// Implementer と Reviewer は同じ値でもよい。App 分離前の立ち上がり期間は単一
-	// identity で動かすことを ADR-0001 が許容しており、その間は自己承認の禁止が
-	// 内部規律へ退化する。identity が揃っていること自体は検証する。
+	// Implementer と Reviewer は別 identity でなければならない。同じ値を許すと、
+	// Implementer が作った`kudo/test-validity`が Reviewer 名義の verdict として gate を
+	// 通り、自己承認の禁止が構造ではなく規約に退化する。
+	//
+	// implementation-plan の立ち上がりが認める単一 PAT identity は、verdict を評価しない
+	// 区間（gateway と claim）のためのものであり、Review Worker 着手までに App を分離する
+	// 前提である。verdict を読むこの core では分離を必須にする。
 	Implementer ActorIdentity
 	Reviewer    ActorIdentity
 }
@@ -126,6 +144,11 @@ func (c DeriveConfig) Validate() error {
 			return fmt.Errorf("%w: %s", ErrDeriveConfigIncomplete, field.name)
 		}
 	}
+	if c.Implementer.CheckRunAppID == c.Reviewer.CheckRunAppID ||
+		c.Implementer.CommentAuthorID == c.Reviewer.CommentAuthorID {
+		return fmt.Errorf("%w: Implementer と Reviewer は別 identity でなければならない",
+			ErrDeriveConfigIncomplete)
+	}
 	return nil
 }
 
@@ -151,24 +174,61 @@ var (
 // 再観測だけで同じ継続が再現できることを、引数の形で保証する。
 func Derive(observation Observation, config DeriveConfig) Derivation {
 	if err := config.Validate(); err != nil {
-		return escalated(EscalationExternalConfigurationRequired)
+		return escalated(EscalationExternalConfigurationRequired, PhaseNew)
 	}
 	derivation, err := derive(observation, config)
 	if err != nil {
 		// 理由 code の語彙は docs/spec/05_design/04_github-routing.md が正本であり、
 		// ここで増やさない。分類できない error も含め、既定は停止側へ倒す。
 		if errors.Is(err, errInvalidRecord) {
-			return escalated(EscalationProtocolValidationFailed)
+			return escalated(EscalationProtocolValidationFailed, PhaseNew)
 		}
-		return escalated(EscalationExternalMutationConflict)
+		return escalated(EscalationExternalMutationConflict, PhaseNew)
 	}
 	return derivation
 }
 
-func escalated(reason EscalationReason) Derivation {
+// ApplyRoundBudget は差し戻し dispatch を無人区間の round 予算と突き合わせる。
+//
+// pure である。Derive は観測だけから次 action を決めるが、round 上限は claim 時に pin した
+// Escalation Policy 由来で観測に現れない。上限に達した`request_changes`は修正 Operation を
+// 発行せず`review_round_limit_exceeded`で needs_human へ送る（docs/spec/05_design/02_workflow.md の
+// Review round 上限）。この合成点が無いと、無人 loop の唯一の防波堤が呼び出し側の
+// 書き忘れで開く。
+//
+// 予算を消費するのは差し戻し（revise_tests / repair_implementation）だけである。approve は
+// 上限に達していても次の gate へ進む。差し戻し以外の action はそのまま返す。
+func ApplyRoundBudget(derivation Derivation, rounds DerivedReviewRounds,
+	limits contract.ReviewRoundLimits) Derivation {
+	if derivation.Next.Kind != ReconcileDispatchOperation {
+		return derivation
+	}
+	var reached bool
+	var stoppedAt Phase
+	switch derivation.Next.Operation {
+	case contract.OperationReviseTests:
+		reached = roundLimitReached(rounds.CurrentStretch.TestValidity, limits.TestValidity)
+		stoppedAt = PhaseAwaitingTestReview
+	case contract.OperationRepairImplementation:
+		reached = roundLimitReached(rounds.CurrentStretch.FinalImplementation,
+			limits.FinalImplementation)
+		stoppedAt = PhaseAwaitingFinalReview
+	default:
+		return derivation
+	}
+	if !reached {
+		return derivation
+	}
+	stopped := escalated(EscalationReviewRoundLimitExceeded, stoppedAt)
+	stopped.PullRequest = derivation.PullRequest
+	stopped.Head = derivation.Head
+	return stopped
+}
+
+func escalated(reason EscalationReason, stoppedAt Phase) Derivation {
 	return Derivation{
 		Phase: PhaseNeedsHuman,
-		Next:  ReconcileAction{Kind: ReconcileEscalateHuman, Reason: reason},
+		Next:  ReconcileAction{Kind: ReconcileEscalateHuman, Reason: reason, StoppedAt: stoppedAt},
 	}
 }
 
@@ -186,16 +246,27 @@ func derive(observation Observation, config DeriveConfig) (Derivation, error) {
 	if err != nil {
 		return Derivation{}, err
 	}
-	switch {
-	case lineage.merged != nil:
+	if lineage.merged != nil {
 		return deriveMerged(observation, config, *lineage.merged)
-	case active == nil && lineage.closed:
-		return Derivation{Phase: PhaseSuperseded, Next: ReconcileAction{Kind: ReconcileNone}}, nil
 	}
 
 	branch, err := activeBranch(observation.Branch, config)
 	if err != nil {
 		return Derivation{}, err
+	}
+
+	if active == nil && lineage.closed {
+		// 後始末（PR close と branch 削除）が終わった lineage だけが superseded である。
+		// branch が残っている限り新しい claim は ref create で失敗するため、ここを
+		// 「行うことが無い」で返すと誰も branch を消さず、新しい Run も escalation も
+		// 起きない無言の停止になる。中断した supersede と、進行中 Run の PR を人間が
+		// close した観測（intent に紐付かない close）は、どちらもこの形で現れる。
+		// workflow.md は close intent の marker を定義していないため両者を区別できず、
+		// 人へ返す側へ倒す（Escalation and resumption / Merge と完了投影）。
+		if branch != nil {
+			return Derivation{}, errExternalMutation
+		}
+		return Derivation{Phase: PhaseSuperseded, Next: ReconcileAction{Kind: ReconcileNone}}, nil
 	}
 	// merge も supersede もしていない Run の途中で Issue が閉じられるのは外部干渉で
 	// あり、安全な checkpoint で止める（docs/spec/05_design/04_github-routing.md）。
@@ -212,7 +283,13 @@ func derive(observation Observation, config DeriveConfig) (Derivation, error) {
 		if !validLineage(*active) {
 			return Derivation{}, errInvalidRecord
 		}
-		return deriveRun(observation, config, *active)
+		derivation, deriveErr := deriveRun(observation, config, *active)
+		if deriveErr != nil {
+			return Derivation{}, deriveErr
+		}
+		derivation.PullRequest = active.Number
+		derivation.Head = active.Head
+		return derivation, nil
 	case branch != nil:
 		return Derivation{
 			Phase: PhaseClaimed,
@@ -271,7 +348,12 @@ func deriveMerged(observation Observation, config DeriveConfig,
 		CommentMarkerMergeIntent, merged.Number, merged.Head) {
 		return Derivation{}, errExternalMutation
 	}
-	return Derivation{Phase: PhaseMerged, Next: ReconcileAction{Kind: ReconcileRecordCompletion}}, nil
+	return Derivation{
+		Phase:       PhaseMerged,
+		Next:        ReconcileAction{Kind: ReconcileRecordCompletion},
+		PullRequest: merged.Number,
+		Head:        merged.Head,
+	}, nil
 }
 
 // hasMarker は指定 actor 名義で、指定 PR の指定 head へ束縛された marker があるかを返す。
@@ -301,6 +383,14 @@ func validLineage(pullRequest PullRequestObservation) bool {
 
 // activeBranch は claim branch の観測を検証して返す。名前が claim 対象と違う観測は、
 // 別 Issue の branch を Run の排他として扱わないために拒否する。
+//
+// branch head と Pull Request head の一致は要求しない。両者は別 request で観測され、
+// GitHub は push 後の Pull Request head を非同期に更新するため、compare-and-push の
+// 直後には正常運転でも不一致が観測される。ここを fail-closed にすると、自分の publish の
+// たびに`ai-needs-human`が付く。外部 push による head 不一致の検出は、mutation 時の
+// compare-and-push と merge 時の期待 head 照合が担う
+// （docs/spec/05_design/02_workflow.md の Idempotency and recovery）。導出は Run の
+// 記録面である Pull Request の head を live head として使う。
 func activeBranch(branch *BranchObservation, config DeriveConfig) (*BranchObservation, error) {
 	if branch == nil {
 		return nil, nil
@@ -352,11 +442,18 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 	case contract.VerdictRequestChanges:
 		return dispatch(PhaseImplementing, contract.OperationRepairImplementation), nil
 	case contract.VerdictNeedsHuman:
-		return escalated(EscalationReviewNeedsHuman), nil
+		return escalated(EscalationReviewNeedsHuman, PhaseAwaitingFinalReview), nil
 	}
 
 	if hasEvidence(checks, config, CheckRunEvidenceGreen, head) &&
 		hasEvidence(checks, config, CheckRunEvidenceChecks, head) {
+		// 承認済み test を系譜に持たない final evidence は、test gate を通さずに
+		// 実装が進んだ記録である。final review へ回すと gate を一つ飛ばして
+		// merge まで到達しうるため、記録側の protocol 違反として止める。
+		if !verdictInLineage(checks, config, CheckRunTestValidity,
+			contract.VerdictApprove, pullRequest.HeadLineage) {
+			return Derivation{}, errInvalidRecord
+		}
 		return Derivation{
 			Phase: PhaseAwaitingFinalReview,
 			Next: ReconcileAction{
@@ -386,15 +483,14 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 	case contract.VerdictRequestChanges:
 		return dispatch(PhaseAuthoringTests, contract.OperationReviseTests), nil
 	case contract.VerdictNeedsHuman:
-		return escalated(EscalationReviewNeedsHuman), nil
+		return escalated(EscalationReviewNeedsHuman, PhaseAwaitingTestReview), nil
 	}
 
 	// live head に未 review の RED evidence がある間は、系譜上の approve を実装の
 	// 根拠にしない。test を書き換えた head は新しい approval を得るまで implementation
 	// へ戻れない（docs/spec/05_design/02_workflow.md の GREEN and refactor）。
 	redOnHead := hasEvidence(checks, config, CheckRunEvidenceRed, head)
-	if !redOnHead && verdictInLineage(checks, config, CheckRunTestValidity,
-		contract.VerdictApprove, pullRequest.HeadLineage) {
+	if !redOnHead && testGateApproved(observation, config, pullRequest) {
 		return dispatch(PhaseImplementing, implementOperation(checks, config, pullRequest)), nil
 	}
 	if redOnHead {
@@ -486,6 +582,54 @@ func verdictInLineage(checks []CheckRunObservation, config DeriveConfig,
 		}
 	}
 	return false
+}
+
+// testGateApproved は、系譜上でもっとも新しい test gate の記録が approve かを返す。
+//
+// approve の存在だけを見ると、その後の request_changes や test-revision-report で
+// 一度閉じた gate を、古い approve を根拠に開き直せてしまう。差し戻し後に新しい
+// test head を push した直後（RED evidence をまだ記録していない窓）で process が
+// 落ちると、再観測が implement を再 dispatch して test gate を迂回する。
+//
+// 系譜は新しい順なので、index が小さいほど新しい記録である。同じ head に approve と
+// 差し戻し report が並ぶ場合は report を新しいものとして扱う。implement は approve の
+// 後にしか走らないためである。
+func testGateApproved(observation Observation, config DeriveConfig,
+	pullRequest PullRequestObservation) bool {
+	verdictAt, verdict := latestVerdictInLineage(observation.CheckRuns, config,
+		CheckRunTestValidity, pullRequest.HeadLineage)
+	if verdictAt < 0 || verdict != contract.VerdictApprove {
+		return false
+	}
+	revisionAt := latestRevisionReportInLineage(observation, config, pullRequest)
+	return revisionAt < 0 || verdictAt < revisionAt
+}
+
+// latestVerdictInLineage は系譜上でもっとも新しい Reviewer 名義 verdict の位置と値を返す。
+// 記録が無ければ index に -1 を返す。
+func latestVerdictInLineage(checks []CheckRunObservation, config DeriveConfig,
+	name string, lineage []string) (int, contract.ReviewVerdict) {
+	for index, commit := range lineage {
+		for _, check := range checks {
+			if check.Name == name && check.Head == commit &&
+				check.AppID == config.Reviewer.CheckRunAppID {
+				return index, check.Verdict
+			}
+		}
+	}
+	return -1, ""
+}
+
+// latestRevisionReportInLineage は系譜上でもっとも新しい test-revision-report の位置を返す。
+func latestRevisionReportInLineage(observation Observation, config DeriveConfig,
+	pullRequest PullRequestObservation) int {
+	for index, commit := range pullRequest.HeadLineage {
+		if hasMarker(observation, config.Implementer.CommentAuthorID,
+			CommentMarkerTestRevisionReport, pullRequest.Number, commit) {
+			return index
+		}
+	}
+	return -1
 }
 
 // hasEvidence は head へ束縛された Implementer 名義の evidence があるかを返す。
