@@ -794,3 +794,34 @@ func TestDeriveLabelEventDoesNotRecordDeploymentConfigurationFailures(t *testing
 		t.Fatalf("DeriveLabelEvent() = %q, %v, want no label event", got, ok)
 	}
 }
+
+// 起動時検証は記録側 adapter の受理集合を満たさなければならない。adapter が拒む
+// label 名を起動時に通すと、claim 後の収束が毎回ローカル error になり、status label の
+// 記録と ai-ready の消費が永久に進まない（設定は通ったのに何も起きない無言の停止）。
+func TestLabelSetRejectsNamesTheRecorderCannotUse(t *testing.T) {
+	t.Parallel()
+
+	for name, value := range map[string]string{
+		"51 文字":     strings.Repeat("a", 51),
+		"制御文字を含む":   "ai\nready",
+		"不正な UTF-8": "ai-\xff-ready",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			labels := DefaultLabelSet()
+			labels.Ready = value
+			if err := labels.Validate(); err == nil {
+				t.Fatalf("Validate() = nil, want error")
+			}
+		})
+	}
+
+	t.Run("50 文字は受理する", func(t *testing.T) {
+		t.Parallel()
+		labels := DefaultLabelSet()
+		labels.Ready = strings.Repeat("a", 50)
+		if err := labels.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+}

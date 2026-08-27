@@ -1066,3 +1066,25 @@ func TestDeriveReclaimsAfterSupersedeCleanupCompleted(t *testing.T) {
 		}
 	})
 }
+
+// merged な kudo PR と active な kudo PR が同じ Issue に併存する観測は、Kudo の
+// Operation では作れない。merged を優先して完了を投影すると、進行中の Run を外部干渉
+// として止めないまま Issue を close し、その PR を誰も管理しない状態で残す。
+// 複数 active・複数 merged と同じく fail-closed へ倒す。
+func TestDeriveRejectsMergedAndActiveRunObservedTogether(t *testing.T) {
+	t.Parallel()
+
+	observation := runObservation(PullRequestStateMerged, greenHead, redHead, bootstrapCommit)
+	observation.Issue.State = IssueStateClosed
+	observation.Comments = []CommentObservation{mergeIntent(greenHead)}
+	observation.PullRequests = append(observation.PullRequests, PullRequestObservation{
+		Number: 701, State: PullRequestStateDraft, Head: redHead, HeadLineage: []string{redHead},
+	})
+
+	got := Derive(observation, derivedConfig())
+	if got.Phase != PhaseNeedsHuman ||
+		got.Next.Reason != EscalationExternalMutationConflict {
+		t.Fatalf("Derive() = %s / %+v, want %s / external_mutation_conflict",
+			got.Phase, got.Next, PhaseNeedsHuman)
+	}
+}

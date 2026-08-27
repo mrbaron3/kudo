@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mrbaron3/kudo/internal/contract"
 	"github.com/mrbaron3/kudo/internal/telemetry"
@@ -68,6 +70,11 @@ const (
 	// OutcomeLabelRecorded はこの記録が label / close / comment を変えたことを表す。
 	OutcomeLabelRecorded Outcome = "label_recorded"
 )
+
+// MaxLabelNameBytes は GitHub の label name として記録できる最大 byte 数である。
+// 記録側 adapter（internal/adapter/github の validLabelName）と同じ値でなければ、
+// 起動時に通った設定が記録時に必ず失敗する。
+const MaxLabelNameBytes = 50
 
 // ErrUnknownLabelEvent は語彙外の label event を表す。
 var ErrUnknownLabelEvent = errors.New("label event が語彙に無い")
@@ -145,6 +152,13 @@ func (s LabelSet) Validate() error {
 		// 起動時には通った設定が polling の恒久的な停止になる。
 		if strings.Contains(value, ",") {
 			return fmt.Errorf("label set の %s に comma は使えない: %q", field, value)
+		}
+		// 長さ・UTF-8・制御文字は記録側 adapter が拒む条件である。起動時に通すと、
+		// claim 後の収束が毎回ローカル error になり、status label の記録も`ai-ready`の
+		// 消費も永久に進まない。設定境界の受理集合は後段 adapter に合わせる。
+		if len(value) > MaxLabelNameBytes || !utf8.ValidString(value) ||
+			strings.ContainsFunc(value, unicode.IsControl) {
+			return fmt.Errorf("label set の %s が label name として不正である: %q", field, value)
 		}
 		key := strings.ToLower(value)
 		if other, exists := seen[key]; exists {

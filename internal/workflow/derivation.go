@@ -325,6 +325,11 @@ type pullRequestLineage struct {
 // open な PR が複数ある観測は排他が壊れている（1 IssueRef の active Run は最大一つ）。
 // どちらを Run とみなしても片方の記録が捨てられるため、選ばずに fail-closed へ倒す。
 // merged が複数ある観測も同じ理由で受理しない。
+//
+// merged と active の併存も同じ扱いにする。merged な kudo PR がある Issue は claimable
+// 条件を満たさないため、Kudo の Operation ではこの組を作れない。merged を優先して完了を
+// 投影すると、進行中の Run を外部干渉として止めないまま Issue を close し、その PR を
+// 誰も管理しない状態で残す。
 func classifyPullRequests(pullRequests []PullRequestObservation) (*PullRequestObservation, pullRequestLineage, error) {
 	var active *PullRequestObservation
 	var lineage pullRequestLineage
@@ -345,6 +350,9 @@ func classifyPullRequests(pullRequests []PullRequestObservation) (*PullRequestOb
 		default:
 			return nil, lineage, errInvalidRecord
 		}
+	}
+	if active != nil && lineage.merged != nil {
+		return nil, lineage, errExternalMutation
 	}
 	return active, lineage, nil
 }
