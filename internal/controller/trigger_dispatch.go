@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync"
 
 	"github.com/mrbaron3/kudo/internal/contract"
@@ -148,13 +149,14 @@ func (d *TriggerDispatcher) TriggerReconcile(ctx context.Context, request workfl
 		d.logRefusal(ctx, OutcomeTriggerStopped, "shutdown 後の reconcile trigger を拒否した", request)
 		return ErrDispatcherStopped
 	}
-	if _, running := d.inFlight[request.Issue]; running {
+	key := issueKey(request.Issue)
+	if _, running := d.inFlight[key]; running {
 		// 実行中の Issue への trigger は、完了後の 1 回の再実行へ畳む。slot は取らない。
 		// 成功として返すのは、この trigger の目的（live state をもう一度観測する）が
 		// 果たされるためである。落としたことにすると poller が同じ cycle 内で
 		// 待ち続け、自分が起動した reconcile の完了を待つことになる。
 		pending := request
-		d.inFlight[request.Issue] = &pending
+		d.inFlight[key] = &pending
 		d.mu.Unlock()
 		d.logger.DebugContext(ctx, "実行中の Issue への reconcile trigger を再実行へ畳んだ",
 			slog.String(telemetry.FieldEvent, EventReconcileTrigger),
@@ -171,7 +173,7 @@ func (d *TriggerDispatcher) TriggerReconcile(ctx context.Context, request workfl
 		d.logRefusal(ctx, OutcomeTriggerDropped, "reconcile trigger を同時実行上限で落とした", request)
 		return ErrDispatcherAtCapacity
 	}
-	d.inFlight[request.Issue] = nil
+	d.inFlight[key] = nil
 	d.wg.Add(1)
 	d.mu.Unlock()
 
@@ -204,16 +206,17 @@ func (d *TriggerDispatcher) logRefusal(ctx context.Context, outcome Outcome, mes
 func (d *TriggerDispatcher) run(request workflow.ReconcileRequest) {
 	defer d.wg.Done()
 	defer func() { <-d.slots }()
+	key := issueKey(request.Issue)
 	for {
 		d.runOnce(request)
 		d.mu.Lock()
-		pending := d.inFlight[request.Issue]
+		pending := d.inFlight[key]
 		if pending == nil {
-			delete(d.inFlight, request.Issue)
+			delete(d.inFlight, key)
 			d.mu.Unlock()
 			return
 		}
-		d.inFlight[request.Issue] = nil
+		d.inFlight[key] = nil
 		d.mu.Unlock()
 		request = *pending
 	}
@@ -249,6 +252,16 @@ func (d *TriggerDispatcher) runOnce(request workflow.ReconcileRequest) {
 			telemetry.Trigger(request.Trigger),
 			telemetry.ErrorType(err),
 		)
+	}
+}
+
+// issueKey は in-flight 表の key を GitHub の case-insensitive な identity へ揃える。
+// 表記だけが違う IssueRef が別 key になると、同じ Issue が並行に走る。
+func issueKey(ref contract.IssueRef) contract.IssueRef {
+	return contract.IssueRef{
+		Owner:      strings.ToLower(ref.Owner),
+		Repository: strings.ToLower(ref.Repository),
+		Number:     ref.Number,
 	}
 }
 

@@ -270,6 +270,46 @@ func TestTriggerReconcileSerializesTheSameIssueAndRerunsOnce(t *testing.T) {
 	}
 }
 
+// 表記だけが違う IssueRef を別 Issue として並行実行しない。GitHub の identity は
+// case-insensitive であり、経路ごとに表記が揃う保証は adapter 側にしか無い。
+func TestTriggerReconcileSerializesIssueRefsThatDifferOnlyByCase(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	var concurrent, peak, runs atomic.Int64
+	dispatcher, _ := newTestDispatcher(t, 4, func(context.Context, workflow.ReconcileRequest) error {
+		current := concurrent.Add(1)
+		for {
+			observed := peak.Load()
+			if current <= observed || peak.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		if runs.Add(1) == 1 {
+			<-release
+		}
+		concurrent.Add(-1)
+		return nil
+	})
+
+	lower := webhookRequestFor(18, "delivery-1", "opened")
+	upper := lower
+	upper.Issue = contract.IssueRef{Owner: "MrBaron3", Repository: "Kudo", Number: 18}
+	upper.Trigger.ID = "delivery-2"
+	for _, request := range []workflow.ReconcileRequest{lower, upper} {
+		if err := dispatcher.TriggerReconcile(t.Context(), request); err != nil {
+			t.Fatalf("TriggerReconcile() error = %v", err)
+		}
+	}
+	close(release)
+	if err := dispatcher.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	if peak.Load() != 1 {
+		t.Fatalf("表記違いの同じ Issue を最大 %d 本まで並行実行した", peak.Load())
+	}
+}
+
 // 重複配送は観測の再実行になるだけである。adapter 側に受信記録を持たせない。
 func TestTriggerReconcileDoesNotDeduplicateDeliveries(t *testing.T) {
 	t.Parallel()

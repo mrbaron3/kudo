@@ -17,9 +17,10 @@ import (
 //
 // 先頭 4 値は docs/spec/05_design/04_github-routing.md の Transition rules の行に 1:1 で
 // 対応する。残る 2 値は「同じ行を、その一度きりの副作用が済んだ後に再観測した」ことを
-// 表す。label の add / remove 集合は対応する行と同じで、close と案内 comment だけを
-// 行わない。行を増やしているのではなく、行の再適用が人間の操作を押し戻さないように
-// 分けている。
+// 表し、同書の Transition rules に再観測の差分として明記してある。差分は 2 点だけである。
+// merge 完了の再観測は Issue を close しない（close は初回記録の副作用）。needs human の
+// 再観測は`ai-ready`を除去対象から外す（人間所有の resume trigger を消費しない）。
+// 行を増やしているのではなく、行の再適用が人間の操作を押し戻さないように分けている。
 //
 // closed vocabulary にしているのは、値が増えたときに既定分岐が誤った label 操作を
 // しないようにするためである。label は workflow state の正本ではなく、check run /
