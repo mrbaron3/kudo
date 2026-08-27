@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -60,8 +61,15 @@ func (g *Gateway) observeRateLimit(header http.Header) {
 // body を返さないのは、polling の query result を実装入力にしないためである。
 // Issue Contract は claim 直前の live read から compile する
 // （docs/spec/05_design/04_github-routing.md の Polling fallback）。
-func (g *Gateway) ListCandidateIssueRefs(ctx context.Context, filter CandidateFilter) ([]contract.IssueRef, error) {
-	issues, err := g.ListCandidateIssues(ctx, filter)
+//
+// 引数が application 側の workflow.CandidateFilter なのは、この method が Controller の
+// Discovery port を満たすためである。GitHub の query 語彙（label）と application の
+// 語彙（ready label）の対応付けは、adapter であるここが行う。
+func (g *Gateway) ListCandidateIssueRefs(ctx context.Context, filter workflow.CandidateFilter) ([]contract.IssueRef, error) {
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	issues, err := g.ListCandidateIssues(ctx, CandidateFilter{Assignee: filter.Assignee, Label: filter.ReadyLabel})
 	if err != nil {
 		return nil, err
 	}
@@ -136,3 +144,43 @@ func (g *Gateway) issueRef(number int64) (contract.IssueRef, bool) {
 		Number:     converted,
 	}, true
 }
+
+// EnsureIssueComment は Controller が名付けた record kind の comment を収束させる。
+//
+// GitHub 上の record を「同じものか」と判断する規則は adapter の所有であり、
+// Controller は kind と本文だけを決める。
+//
+// この marker の Digest は本文の content digest ではなく、repository / Issue / kind から
+// 決まる identity digest である。本文が収束対象の record（案内 comment）では、content
+// digest を identity にすると文面を変えるたびに別 marker になり、同じ内容の comment が
+// 増える。head や round に束縛されない Controller の記録だけがこの形を使い、evidence /
+// verdict の check run は従来どおり content と head へ束縛した marker を使う。
+func (g *Gateway) EnsureIssueComment(ctx context.Context, issueNumber int64, kind, body string) (bool, error) {
+	if issueNumber <= 0 {
+		return false, fmt.Errorf("Issue number は正数でなければならない")
+	}
+	marker := Marker{
+		Repository: g.repository,
+		Issue:      issueNumber,
+		Kind:       kind,
+		Digest:     recordIdentityDigest(g.repository, issueNumber, kind),
+	}
+	_, change, err := g.EnsureCommentContent(ctx, issueNumber, CommentRecord{Marker: marker, Body: body})
+	if err != nil {
+		return false, err
+	}
+	return change != CommentUnchanged, nil
+}
+
+// recordIdentityDigest は本文に依存しない record identity の digest を返す。
+func recordIdentityDigest(repository Repository, issue int64, kind string) string {
+	payload := recordIdentitySchema + "\n" +
+		repository.String() + "\n" +
+		strconv.FormatInt(issue, 10) + "\n" +
+		kind + "\n"
+	return string(contract.SHA256([]byte(payload)))
+}
+
+// recordIdentitySchema は identity digest の入力形式を version 付きで固定する。
+// 形式を変えると過去の record が別 identity になるため、変更は marker の互換性判断を伴う。
+const recordIdentitySchema = "kudo.record-identity/v1alpha1"

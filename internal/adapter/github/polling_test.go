@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mrbaron3/kudo/internal/contract"
+	"github.com/mrbaron3/kudo/internal/workflow"
 )
 
 // nextPageLink は GitHub と同じく、現在の query を保ったまま page だけを進める
@@ -105,9 +106,8 @@ func TestListCandidateIssueRefsReturnsIdentityWithoutBody(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	refs, err := testGateway(server.Client(), server.URL).ListCandidateIssueRefs(t.Context(), CandidateFilter{
-		Assignee: "mrbaron3", Label: "ai-ready",
-	})
+	refs, err := testGateway(server.Client(), server.URL).ListCandidateIssueRefs(t.Context(),
+		workflow.CandidateFilter{Assignee: "mrbaron3", ReadyLabel: "ai-ready"})
 	if err != nil {
 		t.Fatalf("ListCandidateIssueRefs() error = %v", err)
 	}

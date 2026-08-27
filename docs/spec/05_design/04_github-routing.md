@@ -110,6 +110,11 @@ Polling は任意の追加機能ではなく、Webhook 欠落を回復する必�
   であり、webhook を失っていても polling がここから進行を再開する。
 - poll cycle 自体に claim、dependency、label mutation の business logic を置かない。
 - rate limit または一時 failure 時は jitter 付き backoff を使い、最後の成功時刻と backlog を監視する。
+  GitHub が`Retry-After`または rate limit reset で示した時刻は backoff の下限として尊重する。
+- poll cycle は逐次であり、前の cycle が終わるまで次を始めない。同時実行上限で受け付けられ
+  なかった IssueRef は成功として捨てず、cycle の持ち時間内で再投入する。使い切った分は
+  backlog として記録し、次の cycle が同じ live state から再発見する。投入順は cycle ごとに
+  回転させ、上限に張り付いた状態でも末尾の IssueRef が飢餓しないようにする。
 
 Polling の query result も authority ではない。claim 直前の live Issue read を省略しない。全候補を
 繰り返し発見しても、branch ref create の atomicity と marker により二重実行しない。
