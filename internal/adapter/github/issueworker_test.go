@@ -32,7 +32,8 @@ func TestIssueWorkerGatewayObservesTypedClaimCheckpoint(t *testing.T) {
 		case "/repos/acme/widgets/issues/17/parent":
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Issue does not have a parent"}`)
-		case "/repos/acme/widgets/issues/17/sub_issues", "/repos/acme/widgets/issues/17/comments", "/repos/acme/widgets/issues/44/comments":
+		case "/repos/acme/widgets/issues/17/events", "/repos/acme/widgets/issues/17/sub_issues",
+			"/repos/acme/widgets/issues/17/comments", "/repos/acme/widgets/issues/44/comments":
 			fmt.Fprint(w, `[]`)
 		case "/repos/acme/widgets/branches/kudo/issue-17":
 			fmt.Fprint(w, `{"name":"kudo/issue-17","commit":{"sha":"`+adapterHeadSHA+`"}}`)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -54,6 +55,13 @@ type Gateway struct {
 	apiVersion string
 	repository Repository
 	recorder   *RecorderIdentity
+
+	// mu は rate limit 観測だけを守る。gateway は同時に複数の request を実行できる
+	// ため、最後の観測は共有 mutable state になる。credential と接続先は
+	// constructor で固定され変わらないので、この lock の対象ではない。
+	mu                sync.Mutex
+	rateLimit         RateLimitSnapshot
+	rateLimitObserved bool
 }
 
 // Actor は GitHub user または App user の観測 metadata である。
@@ -164,6 +172,20 @@ type PullRequest struct {
 	CheckRuns []CheckRun
 }
 
+// IssueLabelEvent は Issue 上の label 付与・除去の観測である。
+//
+// 現在の label set では復元できない事実を運ぶ。直近の`ai-ready`付与（無人区間の起点）と、
+// Kudo 自身が完了を記録したかは、どちらも履歴でしか判断できない。Actor を持つのは、
+// 同じ label を人間も付けられるためである。
+type IssueLabelEvent struct {
+	ID    int64
+	Label string
+	// Added は付与なら true、除去なら false である。
+	Added      bool
+	Actor      Actor
+	OccurredAt time.Time
+}
+
 // IssueSnapshot は phase 導出に必要な Issue 周辺の read model である。
 // GitHub API response type は含まず、workflow の判断も行わない。
 type IssueSnapshot struct {
@@ -172,6 +194,7 @@ type IssueSnapshot struct {
 	Parent        *IssueMetadata
 	SubIssues     []IssueMetadata
 	IssueComments []Comment
+	LabelEvents   []IssueLabelEvent
 	Branch        *Branch
 	PullRequests  []PullRequest
 }

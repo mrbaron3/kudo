@@ -207,13 +207,18 @@ func TestSupportedActionsOutsideCandidacyAreNoOps(t *testing.T) {
 	state := newFakeLiveState(false, len(actions))
 	server := newIngressServer(t, state, len(actions))
 
+	// 1 件ずつ完了を待つのは、同じ Issue への trigger を dispatcher が直列化し、実行中に
+	// 届いた分を 1 回の再実行へ畳むためである（trigger_dispatch.go の single-flight）。
+	// まとめて投げると「何回観測されるか」は畳まれ方に依存し、この test が確かめたい
+	// 「どの supported action も同じ reconciliation を通り、live state に基づく no-op に
+	// なる」とは別の性質を測ってしまう。
 	for index, action := range actions {
 		response := deliver(t, server, fmt.Sprintf("delivery-%d", index), action, 18)
 		if response.StatusCode != http.StatusAccepted {
 			t.Fatalf("status(%s) = %d, want %d", action, response.StatusCode, http.StatusAccepted)
 		}
+		waitForReconciles(t, state, 1)
 	}
-	waitForReconciles(t, state, len(actions))
 
 	runs, observations := state.snapshot()
 	if runs != 0 {

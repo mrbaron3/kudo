@@ -128,7 +128,10 @@ validation する。少なくとも次を持つ。
 | `KUDO_REPOSITORIES` | 許可された`owner/repository`一覧 |
 | `KUDO_TARGET_ASSIGNEE` | 既定`mrbaron3` |
 | `KUDO_READY_LABEL` | 既定`ai-ready` |
-| `KUDO_POLL_INTERVAL` | 既定`15m`。正数かつ最低値を検証する |
+| `KUDO_POLL_INTERVAL` | 既定`15m`、最低`1m`。単位付きの正の duration を要求する |
+| `KUDO_POLL_BACKOFF_INITIAL` | poll 失敗後の初回 backoff。既定`30s`、最低`1s` |
+| `KUDO_POLL_BACKOFF_MAX` | poll backoff の上限。既定`15m`。初回値を下回る設定は拒否する |
+| `KUDO_POLL_CAPACITY_RETRY_INTERVAL` | 同時実行上限で落ちた IssueRef を再投入するまでの待機。既定`5s`、最低`1s`、`KUDO_POLL_INTERVAL`以下 |
 | `KUDO_WORKSPACE_ROOT` | 既定`/var/lib/kudo/workspaces` |
 | `KUDO_PROVIDER_ALLOWLIST` | `codex`、`claude`の許可集合 |
 | `KUDO_GITHUB_<ACTOR>_APP_ID_FILE` | actor ごとの GitHub App ID を読む file。`<ACTOR>`は`COORDINATOR`、`IMPLEMENTER`、`REVIEWER` |
@@ -137,6 +140,7 @@ validation する。少なくとも次を持つ。
 | `KUDO_ISSUE_PROVIDER` | Issue Worker Operation に使う required provider。`codex`または`claude` |
 | `KUDO_REVIEW_PROVIDER` | Review Request に使う required provider。`codex`または`claude` |
 | `KUDO_MAX_CONCURRENCY` | 同時 Operation 上限（in-process semaphore） |
+| `KUDO_MAX_INFLIGHT_RECONCILE` | 同時に走らせる`ReconcileIssue`の上限。既定`4`、許容範囲`1`〜`1024`。`KUDO_MAX_CONCURRENCY`とは別軸で、観測と導出を含む reconcile の受付側 capacity である |
 | `KUDO_OPERATION_TIMEOUT` | Operation kind ごとの deadline policy 参照 |
 | `KUDO_ATTEMPT_RETRIES` | 一つの logical Operation で初回後に許す追加 attempt 数。既定`3`、許容範囲`1`〜`10` |
 | `KUDO_REVIEW_ROUNDS_TEST_VALIDITY` | `test_validity` gate の review round 上限。既定`3`、許容範囲`1`〜`10` |

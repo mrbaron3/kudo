@@ -33,6 +33,46 @@ const (
 	FieldHTTPStatus = "http_status"
 	// FieldWebhookEvent は GitHub webhook の event 名である。
 	FieldWebhookEvent = "webhook_event"
+	// FieldLabelEvent は Controller が label として記録した導出 event である。
+	FieldLabelEvent = "label_event"
+)
+
+// polling の運用 field。webhook 欠落の回復経路が生きているかは、cycle の間隔・所要時間・
+// 最終成功時刻・backlog・rate limit 残量の組でしか判断できない
+// （docs/spec/05_design/03_runtime-platform.md の Observability and operations）。
+const (
+	// FieldRepository は poll 対象の`owner/name`である。列挙が失敗して IssueRef が
+	// 一つも得られない record では、これが唯一の対象 identity になる。
+	FieldRepository = "repository"
+	// FieldDurationMillis は cycle の所要時間である。
+	FieldDurationMillis = "duration_ms"
+	// FieldLastSuccessAt は直近に成功した poll cycle の終了時刻である。
+	FieldLastSuccessAt = "last_success_at"
+	// FieldRateLimitRemaining は直近の GitHub response が報告した残量である。
+	FieldRateLimitRemaining = "rate_limit_remaining"
+	// FieldBacklog は cycle が投入し切れなかった IssueRef の件数である。
+	FieldBacklog = "backlog"
+	// FieldDiscovered は重複排除後に発見した IssueRef の件数である。
+	FieldDiscovered = "discovered"
+	// FieldSubmitted は ReconcileIssue へ投入できた件数である。
+	FieldSubmitted = "submitted"
+	// FieldCandidates は candidate query が返した件数である。
+	FieldCandidates = "candidates"
+	// FieldOpenRuns は open な kudo Pull Request から再発見した件数である。
+	FieldOpenRuns = "open_runs"
+	// FieldRecovered は Kudo 所有 label の組合せから再発見した件数である。
+	// 記録が途中で失敗した投影と、完了済み Issue への再依頼はこの経路でしか見つからない。
+	FieldRecovered = "recovered"
+	// FieldCapacityWaits は同時実行上限で再投入を待った回数である。
+	FieldCapacityWaits = "capacity_waits"
+	// FieldFailures は列挙に失敗した repository の件数である。
+	FieldFailures = "failures"
+	// FieldDelayMillis は次の cycle までの待機である。回復経路が止まっている時間は
+	// この値でしか観測できない。
+	FieldDelayMillis = "delay_ms"
+	// FieldRetryable は失敗が一時障害として分類されているかである。恒久的な設定不備と
+	// 一時障害は backoff の挙動が同じなので、この分類だけが運用上の区別になる。
+	FieldRetryable = "retryable"
 )
 
 // Issue の correlation field。repository は GitHub の`owner/name`表記へ canonicalize する。

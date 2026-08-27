@@ -12,6 +12,7 @@ import (
 
 	"github.com/mrbaron3/kudo/internal/contract"
 	"github.com/mrbaron3/kudo/internal/livecontext"
+	"github.com/mrbaron3/kudo/internal/workflow"
 )
 
 type Status string
@@ -26,9 +27,11 @@ const (
 	StatusFailedTransport      Status = "failed_transport"
 )
 
+// routing 対象の既定値は workflow の宣言を唯一の正本にする。値を書き写すと、
+// polling と claim が別の assignee / label を候補条件に使う状態を作れてしまう。
 const (
-	DefaultTargetAssignee = "mrbaron3"
-	DefaultReadyLabel     = "ai-ready"
+	DefaultTargetAssignee = workflow.DefaultTargetAssignee
+	DefaultReadyLabel     = workflow.LabelReady
 )
 
 // ErrClaimConflict は観測済みのclaim residueを正規の同一Runへ結び付けられないことを表す。

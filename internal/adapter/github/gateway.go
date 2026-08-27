@@ -64,6 +64,26 @@ func (e *TransportFailure) Error() string {
 
 func (e *TransportFailure) Unwrap() error { return e.Err }
 
+// RetryAfterHint は GitHub が示した最短再試行間隔を返す。
+//
+// Retry-After を優先するのは、secondary rate limit では reset 時刻ではなく
+// この header が唯一の指示だからである。primary rate limit では reset までの
+// 残りが下限になる。どちらも無い、または既に過ぎている場合は false を返し、
+// 呼び出し側の backoff 方針へ委ねる。now を引数に取るのは、gateway が clock を
+// 保持せず、待機を決める側の時刻で判断させるためである。
+func (e *TransportFailure) RetryAfterHint(now time.Time) (time.Duration, bool) {
+	if e.RetryAfter > 0 {
+		return e.RetryAfter, true
+	}
+	if e.RateLimitReset.IsZero() {
+		return 0, false
+	}
+	if remaining := e.RateLimitReset.Sub(now); remaining > 0 {
+		return remaining, true
+	}
+	return 0, false
+}
+
 func (e *TransportFailure) Retryable() bool {
 	switch e.Class {
 	case FailureTimeout, FailureNetwork, FailureRateLimit, FailureSecondaryRateLimit, FailureUnavailable:
@@ -192,6 +212,7 @@ func (g *Gateway) request(
 		}
 	}
 	defer response.Body.Close()
+	g.observeRateLimit(response.Header)
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
 		return responseData{}, &TransportFailure{

@@ -19,8 +19,12 @@ import (
 )
 
 func webhookRequest(deliveryID, action string) workflow.ReconcileRequest {
+	return webhookRequestFor(18, deliveryID, action)
+}
+
+func webhookRequestFor(issue int, deliveryID, action string) workflow.ReconcileRequest {
 	return workflow.ReconcileRequest{
-		Issue: contract.IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 18},
+		Issue: contract.IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: issue},
 		Trigger: workflow.Trigger{
 			Source: workflow.TriggerWebhookDelivery,
 			ID:     deliveryID,
@@ -208,10 +212,11 @@ func TestTriggerReconcileDropsDeliveriesBeyondCapacity(t *testing.T) {
 		return nil
 	})
 
-	if err := dispatcher.TriggerReconcile(t.Context(), webhookRequest("delivery-1", "opened")); err != nil {
+	if err := dispatcher.TriggerReconcile(t.Context(), webhookRequestFor(18, "delivery-1", "opened")); err != nil {
 		t.Fatalf("TriggerReconcile(first) error = %v", err)
 	}
-	err := dispatcher.TriggerReconcile(t.Context(), webhookRequest("delivery-2", "labeled"))
+	// 別 Issue でなければならない。同じ Issue への trigger は slot を取らず再実行へ畳まれる。
+	err := dispatcher.TriggerReconcile(t.Context(), webhookRequestFor(19, "delivery-2", "labeled"))
 	if !errors.Is(err, ErrDispatcherAtCapacity) {
 		t.Fatalf("TriggerReconcile(second) error = %v, want ErrDispatcherAtCapacity", err)
 	}
@@ -221,6 +226,88 @@ func TestTriggerReconcileDropsDeliveriesBeyondCapacity(t *testing.T) {
 		return record[telemetry.FieldOutcome] == string(OutcomeTriggerDropped) &&
 			triggerID(record) == "delivery-2"
 	})
+}
+
+// 同じ Issue の reconcile は同時に走らせない。記録は「現在値を確認してから書く」冪等
+// mutation なので、並行に通すと両方が「記録が無い」を観測してから両方が書ける。
+func TestTriggerReconcileSerializesTheSameIssueAndRerunsOnce(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	var concurrent, peak, runs atomic.Int64
+	dispatcher, _ := newTestDispatcher(t, 4, func(context.Context, workflow.ReconcileRequest) error {
+		current := concurrent.Add(1)
+		for {
+			observed := peak.Load()
+			if current <= observed || peak.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		if runs.Add(1) == 1 {
+			<-release
+		}
+		concurrent.Add(-1)
+		return nil
+	})
+
+	same := webhookRequestFor(18, "delivery-1", "opened")
+	for range 3 {
+		if err := dispatcher.TriggerReconcile(t.Context(), same); err != nil {
+			t.Fatalf("TriggerReconcile() error = %v", err)
+		}
+	}
+	close(release)
+	if err := dispatcher.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	if peak.Load() != 1 {
+		t.Fatalf("同じ Issue の reconcile を最大 %d 本まで並行実行した", peak.Load())
+	}
+	// 実行中に届いた 2 件は 1 回の再実行へ畳む。観測はやり直せば同じ結果になるため、
+	// 中間の trigger を個別に実行する意味が無い。
+	if runs.Load() != 2 {
+		t.Fatalf("reconcile 実行回数 = %d, want 2（初回 + 畳んだ再実行 1 回）", runs.Load())
+	}
+}
+
+// 表記だけが違う IssueRef を別 Issue として並行実行しない。GitHub の identity は
+// case-insensitive であり、経路ごとに表記が揃う保証は adapter 側にしか無い。
+func TestTriggerReconcileSerializesIssueRefsThatDifferOnlyByCase(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	var concurrent, peak, runs atomic.Int64
+	dispatcher, _ := newTestDispatcher(t, 4, func(context.Context, workflow.ReconcileRequest) error {
+		current := concurrent.Add(1)
+		for {
+			observed := peak.Load()
+			if current <= observed || peak.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		if runs.Add(1) == 1 {
+			<-release
+		}
+		concurrent.Add(-1)
+		return nil
+	})
+
+	lower := webhookRequestFor(18, "delivery-1", "opened")
+	upper := lower
+	upper.Issue = contract.IssueRef{Owner: "MrBaron3", Repository: "Kudo", Number: 18}
+	upper.Trigger.ID = "delivery-2"
+	for _, request := range []workflow.ReconcileRequest{lower, upper} {
+		if err := dispatcher.TriggerReconcile(t.Context(), request); err != nil {
+			t.Fatalf("TriggerReconcile() error = %v", err)
+		}
+	}
+	close(release)
+	if err := dispatcher.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	if peak.Load() != 1 {
+		t.Fatalf("表記違いの同じ Issue を最大 %d 本まで並行実行した", peak.Load())
+	}
 }
 
 // 重複配送は観測の再実行になるだけである。adapter 側に受信記録を持たせない。
