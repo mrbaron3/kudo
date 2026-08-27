@@ -2,6 +2,7 @@ package controller
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +166,46 @@ func TestLoadLabelSetRejectsAnAmbiguousReadyLabel(t *testing.T) {
 			t.Parallel()
 			if _, err := LoadLabelSet(envLookup(map[string]string{EnvReadyLabel: value})); err == nil {
 				t.Fatalf("不正な ready label %q を受理した", value)
+			}
+		})
+	}
+}
+
+// KUDO_REPOSITORIES は 03_runtime-platform.md の Configuration contract が定める
+// 「許可された owner/repository 一覧」である。webhook secret は GitHub App の
+// installation 全体で共有されるため、この allowlist が無いと対象外 repository の
+// delivery が署名検証を通り、reconcile の同時実行枠を消費する。
+func TestLoadRepositoriesParsesTheAllowlistStrictly(t *testing.T) {
+	t.Parallel()
+
+	t.Run("canonical 化して重複を排除する", func(t *testing.T) {
+		t.Parallel()
+		got, err := LoadRepositories(envLookup(map[string]string{
+			EnvRepositories: " MrBaron3/Kudo , other/widgets ,mrbaron3/kudo ",
+		}))
+		if err != nil {
+			t.Fatalf("LoadRepositories() error = %v", err)
+		}
+		want := []string{"mrbaron3/kudo", "other/widgets"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("LoadRepositories() = %v, want %v", got, want)
+		}
+	})
+
+	for name, value := range map[string]string{
+		"未設定":      "",
+		"空要素":      "mrbaron3/kudo,,other/widgets",
+		"owner のみ": "mrbaron3",
+		"階層が深い":    "mrbaron3/kudo/extra",
+		"owner が空": "/kudo",
+		"name が空":  "mrbaron3/",
+		"空白だけの要素":  "mrbaron3/kudo, ",
+		"制御文字を含む":  "mrbaron3/ku\ndo",
+	} {
+		t.Run("拒否: "+name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := LoadRepositories(envLookup(map[string]string{EnvRepositories: value})); err == nil {
+				t.Fatalf("LoadRepositories(%q) = nil error, want error", value)
 			}
 		})
 	}

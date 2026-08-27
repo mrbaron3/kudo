@@ -17,6 +17,7 @@ const (
 	EnvTargetAssignee            = "KUDO_TARGET_ASSIGNEE"
 	EnvReadyLabel                = "KUDO_READY_LABEL"
 	EnvMaxInFlightReconcile      = "KUDO_MAX_INFLIGHT_RECONCILE"
+	EnvRepositories              = "KUDO_REPOSITORIES"
 )
 
 // 同時に走らせる ReconcileIssue の上限。KUDO_MAX_CONCURRENCY（同時 Operation 上限）とは
@@ -160,4 +161,40 @@ func lookupString(lookup Lookup, key, fallback string) (string, error) {
 		return "", fmt.Errorf("%s が空である", key)
 	}
 	return trimmed, nil
+}
+
+// LoadRepositories は Kudo が扱う repository の allowlist を environment から読む。
+//
+// 戻り値は canonical な`owner/name`（小文字）を宣言順に重複排除した一覧である。
+// GitHub の repository identity は case-insensitive なので、表記差を別 repository として
+// 扱わない。poller の PollSource と webhook の allowlist は同じこの解析結果を使う。
+// 片方だけが独自に文字列を解釈すると、列挙する集合と受け付ける集合がずれる。
+//
+// 空や形式不正を既定で補わずに拒否するのは、allowlist の欠落が「全 repository を
+// 受け付ける」へ倒れるためである。webhook secret は GitHub App の installation 全体で
+// 共有されるので、その既定は対象外 repository の delivery を実行対象にする
+// （docs/spec/05_design/03_runtime-platform.md の Configuration contract、
+// docs/spec/05_design/04_github-routing.md の Candidate selection）。
+func LoadRepositories(lookup Lookup) ([]string, error) {
+	if lookup == nil {
+		return nil, fmt.Errorf("environment lookup は必須")
+	}
+	raw, _ := lookup(EnvRepositories)
+	if strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("%s は必須", EnvRepositories)
+	}
+	var repositories []string
+	seen := make(map[string]struct{})
+	for _, entry := range strings.Split(raw, ",") {
+		canonical, err := canonicalRepository(entry)
+		if err != nil {
+			return nil, fmt.Errorf("%s が不正: %w", EnvRepositories, err)
+		}
+		if _, exists := seen[canonical]; exists {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		repositories = append(repositories, canonical)
+	}
+	return repositories, nil
 }

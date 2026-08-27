@@ -157,6 +157,18 @@ func (d WebhookDelivery) ReconcileRequest() (workflow.ReconcileRequest, bool) {
 type WebhookConfig struct {
 	// Secret は GitHub App の webhook secret である。空を許さない。
 	Secret string
+	// Repositories は Kudo が扱う repository の allowlist である。canonical な
+	// `owner/name`（小文字）を要求し、空を許さない。
+	//
+	// GitHub App の webhook secret は installation 全体で共有されるため、署名検証は
+	// 「Kudo の App が受け取った」ことしか示さず、「対象 repository の event である」
+	// ことを示さない。allowlist が無いと、App が install された別 repository の
+	// delivery も reconcile の同時実行枠を消費する。
+	//
+	// 解析（環境変数の分割・canonical 化・形式検証）は Controller の設定境界が持ち、
+	// この adapter は照合だけを行う。両者が独自に文字列を解釈すると、polling が
+	// 列挙する集合と webhook が受け付ける集合がずれる。
+	Repositories []string
 	// MaxPayloadBytes は 0 のとき DefaultWebhookMaxPayloadBytes になる。
 	MaxPayloadBytes int64
 }
@@ -165,6 +177,7 @@ type WebhookConfig struct {
 // phase 導出、candidate 判定、GitHub への mutation は行わない。
 type WebhookVerifier struct {
 	secret          []byte
+	repositories    map[string]struct{}
 	maxPayloadBytes int64
 }
 
@@ -177,11 +190,30 @@ func NewWebhookVerifier(config WebhookConfig) (*WebhookVerifier, error) {
 	if config.MaxPayloadBytes < 0 || config.MaxPayloadBytes > MaxWebhookPayloadBytes {
 		return nil, fmt.Errorf("GitHub webhook payload 上限が不正: %d", config.MaxPayloadBytes)
 	}
+	// 空を「全 repository を許可」へ倒さない。設定漏れが対象外 repository の delivery を
+	// 実行対象にするためである。
+	if len(config.Repositories) == 0 {
+		return nil, errors.New("webhook が受け付ける repository の allowlist は必須")
+	}
+	repositories := make(map[string]struct{}, len(config.Repositories))
+	for _, entry := range config.Repositories {
+		owner, name, found := strings.Cut(entry, "/")
+		repository := Repository{Owner: owner, Name: name}
+		if !found || validateRepository(repository) != nil {
+			return nil, fmt.Errorf("webhook の repository allowlist が不正: %q", entry)
+		}
+		canonical := repository.canonical()
+		repositories[canonical.Owner+"/"+canonical.Name] = struct{}{}
+	}
 	limit := config.MaxPayloadBytes
 	if limit == 0 {
 		limit = DefaultWebhookMaxPayloadBytes
 	}
-	return &WebhookVerifier{secret: []byte(config.Secret), maxPayloadBytes: limit}, nil
+	return &WebhookVerifier{
+		secret:          []byte(config.Secret),
+		repositories:    repositories,
+		maxPayloadBytes: limit,
+	}, nil
 }
 
 // Accept は raw body に対する署名を検証してから payload を解釈する。
@@ -218,7 +250,7 @@ func (v *WebhookVerifier) Accept(header http.Header, body io.Reader) (WebhookDel
 	if event != IssuesEvent {
 		return delivery, nil
 	}
-	return parseIssuesPayload(delivery, raw)
+	return v.parseIssuesPayload(delivery, raw)
 }
 
 func (v *WebhookVerifier) readPayload(body io.Reader) ([]byte, error) {
@@ -284,7 +316,7 @@ type apiWebhookIssuesEvent struct {
 	} `json:"repository"`
 }
 
-func parseIssuesPayload(delivery WebhookDelivery, raw []byte) (WebhookDelivery, error) {
+func (v *WebhookVerifier) parseIssuesPayload(delivery WebhookDelivery, raw []byte) (WebhookDelivery, error) {
 	var payload apiWebhookIssuesEvent
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return delivery, reject(WebhookMalformedPayload, "issues payload を JSON として解釈できない")
@@ -311,6 +343,16 @@ func parseIssuesPayload(delivery WebhookDelivery, raw []byte) (WebhookDelivery, 
 		Repository: repository.Name,
 		Number:     payload.Issue.Number,
 	}
-	delivery.Supported = slices.Contains(supportedIssueActions, payload.Action)
+	// 対象外 repository は拒否ではなく no-op 受理にする。4xx を返すと GitHub 側の
+	// delivery 失敗として記録され、運用上の雑音が候補成立に関係する失敗を埋める。
+	// 判断材料は allowlist だけであり、business rule（candidate 判定）は持たない。
+	delivery.Supported = v.configured(repository) &&
+		slices.Contains(supportedIssueActions, payload.Action)
 	return delivery, nil
+}
+
+// configured は canonical 化済みの repository が allowlist にあるかを返す。
+func (v *WebhookVerifier) configured(repository Repository) bool {
+	_, allowed := v.repositories[repository.Owner+"/"+repository.Name]
+	return allowed
 }

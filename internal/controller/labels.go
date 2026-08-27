@@ -140,6 +140,12 @@ func (s LabelSet) Validate() error {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("label set の %s が空である", field)
 		}
+		// comma を拒むのは、Kudo 所有 label の列挙（回復経路の query）が label を
+		// comma 区切りで渡すためである。値に comma を含めると列挙が必ず失敗し、
+		// 起動時には通った設定が polling の恒久的な停止になる。
+		if strings.Contains(value, ",") {
+			return fmt.Errorf("label set の %s に comma は使えない: %q", field, value)
+		}
 		key := strings.ToLower(value)
 		if other, exists := seen[key]; exists {
 			return fmt.Errorf("label set の %s と %s が同じ label name である", other, field)
@@ -334,13 +340,16 @@ func (r *LabelRecorder) Record(ctx context.Context, issue contract.IssueRef, eve
 		removals = append(removals, resolve(r.labels))
 	}
 	added, removed, err := r.surface.ConvergeLabels(ctx, number, transition.add(r.labels), removals)
-	if err != nil {
-		return record, err
-	}
+	// 途中失敗でも、そこまでに起きた mutation は record に残す。捨てると呼び出し側の
+	// 記録が「何も変えていない」と読め、失敗した reconcile の後に GitHub 上で何が
+	// 変わっているかを record から追えなくなる。
 	if added {
 		record.Added = transition.add(r.labels)
 	}
 	record.Removed = removed
+	if err != nil {
+		return record, err
+	}
 	r.logRecord(ctx, issue, record)
 	return record, nil
 }
@@ -398,9 +407,8 @@ func alreadyMergedGuidance(labels LabelSet) string {
 // させる理由が無い。
 //
 // label 名の比較は case-insensitive である。GitHub 上の label identity が case-insensitive
-// であり、記録側（ConvergeLabels）が同じ規則で収束するためである。ただし phase 導出側
-// （internal/workflow の deriveCandidate）は完全一致のままであり、system 全体でこの規則が
-// 揃っているわけではない。集約は導出 core を所有する Issue の判断になる。
+// であり、記録側（ConvergeLabels）と導出側（internal/workflow の containsIdentity）が
+// 同じ規則で照合するためである。
 //
 // 第 2 返り値が false になるのは、この写像が記録すべき label を持たない観測である。
 // 具体的には claim 前の候補 / 候補外（Kudo の記録対象ではない）と、PhaseSuperseded
@@ -421,6 +429,16 @@ func DeriveLabelEvent(derivation workflow.Derivation, issue workflow.IssueObserv
 		}
 		return LabelEventMergeRecorded, true
 	case workflow.ReconcileEscalateHuman:
+		// deployment 全体の設定不備は Issue 固有の瑕疵ではない。観測ではなく process 設定が
+		// 原因なので、reconcile された全 Issue が同じ結果になる。label へ記録すると 1 cycle で
+		// repository 中の候補から人間所有の`ai-ready`が全部外れ、設定を直しても Issue ごとに
+		// 付け直すまで一件も再開しない。docs/spec/05_design/04_github-routing.md は
+		// 「dependency 待ち、capacity 待ち、一時 transport failure では`ai-ready`を消費しない」
+		// と定めており、Issue 側に瑕疵の無い停止で人間の trigger を消費しない原則を示す。
+		// 運用者への通知は telemetry と readiness が担う（接続は #24）。
+		if derivation.Next.Reason == workflow.EscalationExternalConfigurationRequired {
+			return "", false
+		}
 		return LabelEventRunNeedsHuman, true
 	case workflow.ReconcileAwaitHuman:
 		return LabelEventNeedsHumanRecorded, true

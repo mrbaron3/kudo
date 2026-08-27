@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -213,4 +214,32 @@ func nameWord(name string) string {
 		return "origin"
 	}
 	return "cycle"
+}
+
+// Retry-After は秒で届く。表現できない大きさをそのまま Duration へ掛けると wrap して
+// 負値になり、RetryAfterHint が「指示なし」へ落ちる。指示が消えると呼び出し側は通常の
+// backoff で再試行し、GitHub が示した下限を黙って破る。
+func TestRetryAfterSecondsSaturateInsteadOfWrapping(t *testing.T) {
+	t.Parallel()
+
+	for name, testCase := range map[string]struct {
+		seconds int64
+		want    time.Duration
+	}{
+		"表現できる最大":    {maxDurationSeconds, time.Duration(maxDurationSeconds) * time.Second},
+		"最大の 1 つ上":   {maxDurationSeconds + 1, time.Duration(math.MaxInt64)},
+		"int64 に近い値": {math.MaxInt64 - 1, time.Duration(math.MaxInt64)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := secondsToDuration(testCase.seconds)
+			if got != testCase.want {
+				t.Fatalf("secondsToDuration(%d) = %v, want %v", testCase.seconds, got, testCase.want)
+			}
+			failure := &TransportFailure{Class: FailureRateLimit, RetryAfter: got}
+			if hint, ok := failure.RetryAfterHint(time.Unix(0, 0)); !ok || hint <= 0 {
+				t.Fatalf("RetryAfterHint() = %v, %v, want a positive hint", hint, ok)
+			}
+		})
+	}
 }

@@ -269,6 +269,16 @@ func derive(observation Observation, config DeriveConfig) (Derivation, error) {
 		if branch != nil {
 			return Derivation{}, errExternalMutation
 		}
+		// 後始末が済んだ closed lineage は Run の履歴であって現在の Run ではない。
+		// observer は state=all で列挙するため closed な kudo PR は永続的に観測され続け、
+		// ここで PhaseSuperseded に固定すると人間が`ai-ready`を付け直しても claim が
+		// 二度と dispatch されない。claimable 条件が拒むのは merged な kudo PR と
+		// active Run であり、closed lineage ではない
+		// （docs/spec/05_design/04_github-routing.md の Candidate selection、
+		// docs/spec/05_design/02_workflow.md の Escalation and resumption）。
+		if isCandidate(observation.Issue, config) {
+			return deriveCandidate(observation.Issue, config), nil
+		}
 		return Derivation{Phase: PhaseSuperseded, Next: ReconcileAction{Kind: ReconcileNone}}, nil
 	}
 	// merge も supersede もしていない Run の途中で Issue が閉じられるのは外部干渉で
@@ -404,11 +414,17 @@ func activeBranch(branch *BranchObservation, config DeriveConfig) (*BranchObserv
 	return branch, nil
 }
 
-func deriveCandidate(issue IssueObservation, config DeriveConfig) Derivation {
-	candidate := issue.State == IssueStateOpen &&
+// isCandidate は routing の候補条件（open / target assignee / ready label）だけを返す。
+// dependency の readiness は含まない。候補条件は「Kudo が扱う Issue か」であり、
+// dependency は「今 claim してよいか」だからである。
+func isCandidate(issue IssueObservation, config DeriveConfig) bool {
+	return issue.State == IssueStateOpen &&
 		containsIdentity(issue.Assignees, config.Assignee) &&
 		containsIdentity(issue.Labels, config.ReadyLabel)
-	if !candidate {
+}
+
+func deriveCandidate(issue IssueObservation, config DeriveConfig) Derivation {
+	if !isCandidate(issue, config) {
 		return Derivation{Phase: PhaseNone, Next: ReconcileAction{Kind: ReconcileSkipNotCandidate}}
 	}
 	for _, dependency := range issue.Dependencies {
@@ -460,8 +476,11 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 		// 承認済み test を系譜に持たない final evidence は、test gate を通さずに
 		// 実装が進んだ記録である。final review へ回すと gate を一つ飛ばして
 		// merge まで到達しうるため、記録側の protocol 違反として止める。
-		approved, approvedErr := verdictInLineage(checks, config, CheckRunTestValidity,
-			contract.VerdictApprove, pullRequest.HeadLineage)
+		//
+		// 存在判定ではなく最新記録で見る。approve があったことだけを根拠にすると、
+		// その後の request_changes や test-revision-report で一度閉じた gate を、
+		// 古い approve で開き直せる（testGateApproved の doc comment を参照）。
+		approved, approvedErr := testGateApproved(observation, config, pullRequest)
 		if approvedErr != nil {
 			return Derivation{}, approvedErr
 		}
@@ -540,6 +559,10 @@ func deriveRun(observation Observation, config DeriveConfig, pullRequest PullReq
 }
 
 // checkFinalApprovalPrerequisites は final approve が立つための証跡が揃っているかを確かめる。
+//
+// test gate は存在判定ではなく最新記録で見る。final approve は「承認済み test の上に
+// 立った実装」への approve であり、その後 test が差し戻されていれば前提が崩れている
+// （docs/spec/05_design/02_workflow.md の GREEN and refactor）。
 func checkFinalApprovalPrerequisites(observation Observation, config DeriveConfig,
 	pullRequest PullRequestObservation) error {
 	head := pullRequest.Head
@@ -547,8 +570,7 @@ func checkFinalApprovalPrerequisites(observation Observation, config DeriveConfi
 		!hasEvidence(observation.CheckRuns, config, CheckRunEvidenceChecks, head) {
 		return errInvalidRecord
 	}
-	approved, err := verdictInLineage(observation.CheckRuns, config, CheckRunTestValidity,
-		contract.VerdictApprove, pullRequest.HeadLineage)
+	approved, err := testGateApproved(observation, config, pullRequest)
 	if err != nil {
 		return err
 	}

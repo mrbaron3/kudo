@@ -65,7 +65,9 @@ func (s *fakeLiveState) snapshot() (int, []workflow.ReconcileRequest) {
 func newIngressServer(t *testing.T, state *fakeLiveState, maxInFlight int) *httptest.Server {
 	t.Helper()
 
-	verifier, err := github.NewWebhookVerifier(github.WebhookConfig{Secret: secret})
+	verifier, err := github.NewWebhookVerifier(github.WebhookConfig{
+		Secret: secret, Repositories: []string{"mrbaron3/kudo"},
+	})
 	if err != nil {
 		t.Fatalf("NewWebhookVerifier() error = %v", err)
 	}

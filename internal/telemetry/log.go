@@ -82,6 +82,22 @@ const (
 	FieldIssueNumber     = "number"
 )
 
+// Operation の correlation field。03_runtime-platform.md の Observability and operations は
+// 「すべての log に Run（PR 番号）、Operation、attempt、IssueRef を可能な範囲で含める」と
+// 定める。Run は Operation が Pull Request を確定して初めて決まるため、別 field にしている。
+const (
+	FieldOperation     = "operation"
+	FieldOperationID   = "id"
+	FieldOperationRun  = "run_id"
+	FieldOperationKind = "kind"
+	FieldAttempt       = "attempt"
+	// FieldCausation は起動元（webhook delivery / poll cycle）と Operation を結ぶ key で
+	// ある。これが無いと、delivery から claim までを一本の系列として辿れない。
+	FieldCausation = "causation_id"
+	// FieldRun は Run の記録面である Pull Request 番号である。
+	FieldRun = "run"
+)
+
 // Trigger の correlation field。reconcile の起動経路を record 間で突き合わせる。
 const (
 	FieldTrigger       = "trigger"
@@ -124,4 +140,30 @@ func Trigger(trigger workflow.Trigger) slog.Attr {
 		attrs = append(attrs, slog.String(FieldTriggerAction, trigger.Action))
 	}
 	return slog.Group(FieldTrigger, attrs...)
+}
+
+// Operation は Operation envelope と attempt を group attr として返す。
+//
+// 運ぶのは identity と closed vocabulary だけである。envelope には Issue 本文も
+// credential も含まれないが、digest や ref を載せないのは、相関に不要な値を
+// telemetry へ広げないためである。
+func Operation(operation contract.WorkerOperation, attemptID string) slog.Attr {
+	attrs := []any{
+		slog.String(FieldOperationID, operation.OperationID),
+		slog.String(FieldOperationRun, operation.RunID),
+		slog.String(FieldOperationKind, string(operation.Kind)),
+	}
+	if attemptID != "" {
+		attrs = append(attrs, slog.String(FieldAttempt, attemptID))
+	}
+	if operation.CausationID != "" {
+		attrs = append(attrs, slog.String(FieldCausation, operation.CausationID))
+	}
+	return slog.Group(FieldOperation, attrs...)
+}
+
+// Run は Run の記録面である Pull Request 番号を返す。
+// 番号が確定していない区間では呼び出し側が field を省く。
+func Run(pullRequest int) slog.Attr {
+	return slog.Int(FieldRun, pullRequest)
 }

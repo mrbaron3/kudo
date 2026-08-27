@@ -38,10 +38,33 @@ func issuesPayload(action string, number int) []byte {
 		action, number))
 }
 
+func testRepositories() []string { return []string{"mrbaron3/kudo"} }
+
+func issuesPayloadFor(owner, repository, action string, number int) []byte {
+	return []byte(fmt.Sprintf(
+		`{"action":%q,"issue":{"number":%d,"title":"t","body":"b"},`+
+			`"repository":{"name":%q,"full_name":"%s/%s","owner":{"login":%q}}}`,
+		action, number, repository, owner, repository, owner))
+}
+
+func verifierWithRepositories(t *testing.T, repositories []string) *WebhookVerifier {
+	t.Helper()
+
+	verifier, err := NewWebhookVerifier(WebhookConfig{
+		Secret: testWebhookSecret, Repositories: repositories,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookVerifier() error = %v", err)
+	}
+	return verifier
+}
+
 func testVerifier(t *testing.T) *WebhookVerifier {
 	t.Helper()
 
-	verifier, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret})
+	verifier, err := NewWebhookVerifier(WebhookConfig{
+		Secret: testWebhookSecret, Repositories: []string{"mrbaron3/kudo"},
+	})
 	if err != nil {
 		t.Fatalf("NewWebhookVerifier() error = %v", err)
 	}
@@ -60,7 +83,7 @@ func TestNewWebhookVerifierRequiresSecret(t *testing.T) {
 	if _, err := NewWebhookVerifier(WebhookConfig{}); err == nil {
 		t.Fatal("NewWebhookVerifier(empty secret) = nil error, want error")
 	}
-	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", MaxPayloadBytes: -1}); err == nil {
+	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", Repositories: testRepositories(), MaxPayloadBytes: -1}); err == nil {
 		t.Fatal("NewWebhookVerifier(negative limit) = nil error, want error")
 	}
 }
@@ -275,7 +298,7 @@ func TestAcceptRejectsMalformedIssuesPayload(t *testing.T) {
 func TestAcceptEnforcesPayloadLimitBeforeParsing(t *testing.T) {
 	t.Parallel()
 
-	verifier, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret, MaxPayloadBytes: 64})
+	verifier, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret, Repositories: testRepositories(), MaxPayloadBytes: 64})
 	if err != nil {
 		t.Fatalf("NewWebhookVerifier() error = %v", err)
 	}
@@ -285,7 +308,7 @@ func TestAcceptEnforcesPayloadLimitBeforeParsing(t *testing.T) {
 	}
 
 	atLimit := []byte(`{"action":"opened","issue":{"number":18},"repository":{"name":"kudo","owner":{"login":"mrbaron3"}}}`)
-	limited, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret, MaxPayloadBytes: int64(len(atLimit))})
+	limited, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret, Repositories: testRepositories(), MaxPayloadBytes: int64(len(atLimit))})
 	if err != nil {
 		t.Fatalf("NewWebhookVerifier() error = %v", err)
 	}
@@ -299,7 +322,7 @@ func TestAcceptEnforcesPayloadLimitBeforeParsing(t *testing.T) {
 func TestAcceptStopsReadingBeyondPayloadLimit(t *testing.T) {
 	t.Parallel()
 
-	verifier, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret, MaxPayloadBytes: 16})
+	verifier, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret, Repositories: testRepositories(), MaxPayloadBytes: 16})
 	if err != nil {
 		t.Fatalf("NewWebhookVerifier() error = %v", err)
 	}
@@ -410,13 +433,13 @@ func TestAcceptCanonicalizesRepositoryIdentity(t *testing.T) {
 func TestNewWebhookVerifierBoundsThePayloadLimit(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", MaxPayloadBytes: MaxWebhookPayloadBytes + 1}); err == nil {
+	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", Repositories: testRepositories(), MaxPayloadBytes: MaxWebhookPayloadBytes + 1}); err == nil {
 		t.Error("NewWebhookVerifier(above ceiling) = nil error, want error")
 	}
-	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", MaxPayloadBytes: math.MaxInt64}); err == nil {
+	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", Repositories: testRepositories(), MaxPayloadBytes: math.MaxInt64}); err == nil {
 		t.Error("NewWebhookVerifier(MaxInt64) = nil error, want error")
 	}
-	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", MaxPayloadBytes: MaxWebhookPayloadBytes}); err != nil {
+	if _, err := NewWebhookVerifier(WebhookConfig{Secret: "s", Repositories: testRepositories(), MaxPayloadBytes: MaxWebhookPayloadBytes}); err != nil {
 		t.Errorf("NewWebhookVerifier(ceiling) error = %v, want nil", err)
 	}
 }
@@ -503,7 +526,7 @@ func TestRejectionMessagesNeverCarryPayloadOrSignature(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			verifier, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret, MaxPayloadBytes: 128})
+			verifier, err := NewWebhookVerifier(WebhookConfig{Secret: testWebhookSecret, Repositories: testRepositories(), MaxPayloadBytes: 128})
 			if err != nil {
 				t.Fatalf("NewWebhookVerifier() error = %v", err)
 			}
@@ -521,6 +544,64 @@ func TestRejectionMessagesNeverCarryPayloadOrSignature(t *testing.T) {
 				if forbidden != "" && strings.Contains(message, forbidden) {
 					t.Errorf("rejection message %q contains %q", message, forbidden)
 				}
+			}
+		})
+	}
+}
+
+// GitHub App の webhook secret は installation 全体で共有される。対象外 repository へ
+// App が install されていると、その delivery も署名検証を通る。allowlist が無いと
+// 無関係な Issue の更新が reconcile の同時実行枠を消費し、対象 repository の delivery が
+// capacity 超過で落ちる（落ちた分は polling が回収するが、低遅延経路は飽和する）。
+// 04_github-routing.md の Candidate selection は「configured repository 内の Issue」を
+// 候補条件に含めている。
+func TestAcceptTreatsDeliveriesOutsideTheConfiguredRepositoriesAsNoOp(t *testing.T) {
+	t.Parallel()
+
+	verifier := verifierWithRepositories(t, []string{"mrbaron3/kudo"})
+	for name, testCase := range map[string]struct {
+		owner, repository string
+		wantSupported     bool
+	}{
+		"対象 repository":        {"mrbaron3", "kudo", true},
+		"表記だけが違う対象 repository": {"MrBaron3", "Kudo", true},
+		"対象外 repository":       {"other", "widgets", false},
+		"owner だけ一致":           {"mrbaron3", "widgets", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			body := issuesPayloadFor(testCase.owner, testCase.repository, "opened", 19)
+			delivery, err := acceptBody(t, verifier, IssuesEvent, "delivery-allowlist", body)
+			if err != nil {
+				t.Fatalf("Accept() error = %v", err)
+			}
+			if delivery.Supported != testCase.wantSupported {
+				t.Fatalf("Supported = %v, want %v", delivery.Supported, testCase.wantSupported)
+			}
+			if _, ok := delivery.ReconcileRequest(); ok != testCase.wantSupported {
+				t.Fatalf("ReconcileRequest() ok = %v, want %v", ok, testCase.wantSupported)
+			}
+		})
+	}
+}
+
+// allowlist は必須である。空を「全 repository を許可」へ倒すと、設定漏れが
+// 対象外 repository の delivery を実行対象にする。
+func TestNewWebhookVerifierRequiresARepositoryAllowlist(t *testing.T) {
+	t.Parallel()
+
+	for name, repositories := range map[string][]string{
+		"未設定":      nil,
+		"空要素を含む":   {"mrbaron3/kudo", ""},
+		"owner のみ": {"mrbaron3"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewWebhookVerifier(WebhookConfig{
+				Secret: "secret", Repositories: repositories,
+			})
+			if err == nil {
+				t.Fatalf("NewWebhookVerifier() = nil error, want error")
 			}
 		})
 	}

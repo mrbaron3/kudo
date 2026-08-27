@@ -964,3 +964,105 @@ func TestDeriveMatchesLabelAndAssigneeIdentityCaseInsensitively(t *testing.T) {
 		t.Fatalf("Derive() phase = %s, want %s", derivation.Phase, PhaseCandidate)
 	}
 }
+
+// final gate も test gate を「存在」ではなく「系譜上でもっとも新しい記録」で見る。
+// approve があったことだけを根拠にすると、その後の request_changes や
+// test-revision-report で一度閉じた test gate を、古い approve で開き直せる。
+// 02_workflow.md の GREEN and refactor は「新しい test_validity approval を得るまで
+// implementation へ戻らない」と定めており、その先の final review と final approve も
+// 同じ前提の上にしか立たない。
+func TestDeriveRejectsFinalGateBuiltOnASupersededTestApproval(t *testing.T) {
+	t.Parallel()
+
+	// 系譜は新しい順: greenHead（final evidence）→ redHead（test 差し戻し）→
+	// bootstrapCommit（古い test approve）。
+	base := func() Observation {
+		observation := runObservation(PullRequestStateDraft, greenHead, redHead, bootstrapCommit)
+		observation.CheckRuns = []CheckRunObservation{
+			verdictCheck(contract.ReviewTestValidity, contract.VerdictApprove, bootstrapCommit),
+			verdictCheck(contract.ReviewTestValidity, contract.VerdictRequestChanges, redHead),
+			evidenceCheck(CheckRunEvidenceGreen, greenHead),
+			evidenceCheck(CheckRunEvidenceChecks, greenHead),
+		}
+		return observation
+	}
+
+	tests := map[string]func() Observation{
+		"final review 要求経路": base,
+		"final approve 経路": func() Observation {
+			observation := base()
+			observation.CheckRuns = append(observation.CheckRuns,
+				verdictCheck(contract.ReviewFinalImplementation, contract.VerdictApprove, greenHead))
+			return observation
+		},
+		"差し戻しが test-revision-report の場合": func() Observation {
+			observation := base()
+			observation.CheckRuns = append(observation.CheckRuns[:1:1], observation.CheckRuns[2:]...)
+			observation.Comments = []CommentObservation{testRevisionReport(redHead)}
+			return observation
+		},
+	}
+	for name, build := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := Derive(build(), derivedConfig())
+			if got.Phase != PhaseNeedsHuman {
+				t.Fatalf("phase = %q, want %q（次 action = %+v）", got.Phase, PhaseNeedsHuman, got.Next)
+			}
+		})
+	}
+}
+
+// closed な kudo Pull Request は Run の履歴であって現在の Run ではない。observer は
+// state=all で列挙するため closed lineage は永続的に観測され続ける。後始末（PR close と
+// branch 削除）が終わった観測を PhaseSuperseded に固定すると、人間が ai-ready を付け
+// 直しても claim が二度と dispatch されない。derived_transition.go 自身が
+// PhaseSuperseded から PhaseCandidate / PhaseClaimed / PhaseAuthoringTests への遷移を
+// 宣言しており、その宣言が到達可能でなければならない（02_workflow.md の
+// Escalation and resumption）。
+func TestDeriveReclaimsAfterSupersedeCleanupCompleted(t *testing.T) {
+	t.Parallel()
+
+	supersededLineage := func(labels ...string) Observation {
+		observation := openIssue(labels...)
+		observation.PullRequests = []PullRequestObservation{{
+			Number: runPullRequestNumber, State: PullRequestStateClosed,
+			Head: redHead, HeadLineage: []string{redHead, bootstrapCommit},
+		}}
+		return observation
+	}
+
+	t.Run("ai-ready の再付与で新しい Run へ進む", func(t *testing.T) {
+		t.Parallel()
+		got := Derive(supersededLineage(LabelReady), derivedConfig())
+		if got.Phase != PhaseCandidate ||
+			got.Next.Kind != ReconcileDispatchOperation ||
+			got.Next.Operation != contract.OperationClaim {
+			t.Fatalf("Derive() = %s / %+v, want %s / claim の dispatch",
+				got.Phase, got.Next, PhaseCandidate)
+		}
+		if err := ValidateDerivedTransition(PhaseSuperseded, got.Phase); err != nil {
+			t.Fatalf("PhaseSuperseded -> %s が宣言済み遷移でない: %v", got.Phase, err)
+		}
+	})
+
+	t.Run("候補条件を満たさない間は superseded のまま no-op", func(t *testing.T) {
+		t.Parallel()
+		got := Derive(supersededLineage(), derivedConfig())
+		if got.Phase != PhaseSuperseded || got.Next.Kind != ReconcileNone {
+			t.Fatalf("Derive() = %s / %+v, want %s / no-op", got.Phase, got.Next, PhaseSuperseded)
+		}
+	})
+
+	t.Run("後始末が終わっていない（branch が残る）観測は外部干渉", func(t *testing.T) {
+		t.Parallel()
+		observation := supersededLineage(LabelReady)
+		observation.Branch = &BranchObservation{
+			Name: IssueBranchName(derivedIssue), Head: redHead,
+		}
+		got := Derive(observation, derivedConfig())
+		if got.Phase != PhaseNeedsHuman {
+			t.Fatalf("Derive() phase = %s, want %s", got.Phase, PhaseNeedsHuman)
+		}
+	})
+}

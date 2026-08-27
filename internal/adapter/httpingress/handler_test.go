@@ -75,7 +75,9 @@ func (b *syncBuffer) Bytes() []byte {
 func newVerifierForTest(t *testing.T) *github.WebhookVerifier {
 	t.Helper()
 
-	verifier, err := github.NewWebhookVerifier(github.WebhookConfig{Secret: testSecret, MaxPayloadBytes: 4096})
+	verifier, err := github.NewWebhookVerifier(github.WebhookConfig{
+		Secret: testSecret, Repositories: []string{"mrbaron3/kudo"}, MaxPayloadBytes: 4096,
+	})
 	if err != nil {
 		t.Fatalf("NewWebhookVerifier() error = %v", err)
 	}

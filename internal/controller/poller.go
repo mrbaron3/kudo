@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mrbaron3/kudo/internal/contract"
 	"github.com/mrbaron3/kudo/internal/telemetry"
@@ -612,8 +613,11 @@ func clampDelay(config PollConfig, delay time.Duration) time.Duration {
 // 監視の受け皿は`last_success_at`と`backlog`である。
 //
 // hint の供給元が Retry-After header と「rate limit reset と自分の clock の差」である以上、
-// clock skew は後者を実際の待ち時間と無関係に膨らませ得る。異常値の排除は hint を作る
-// adapter 境界の責務であり、契約側の下限をここで上書きしない。
+// clock skew や中間 proxy は hint を実際の待ち時間と無関係に膨らませ得る。gateway が
+// 弾くのは Duration として表現できない値だけで、表現できる範囲の異常値は現状どこも
+// 検査していない。この残余 risk（回復経路が指示ぶん停止する）は受け入れており、
+// 監視の受け皿は`last_success_at`と`backlog`である。上限を置くなら hint を作る adapter
+// 境界の設計であり、契約側の下限をここで上書きしない。
 func applyRetryHint(config PollConfig, delay, hint time.Duration) time.Duration {
 	if hint > delay {
 		return hint
@@ -628,9 +632,13 @@ func applyRetryHint(config PollConfig, delay, hint time.Duration) time.Duration 
 // 回復経路が止まっているか」を 1 つの集計で出せなくなる。
 func canonicalRepository(value string) (string, error) {
 	owner, name, found := strings.Cut(strings.TrimSpace(value), "/")
-	if !found || strings.TrimSpace(owner) == "" || strings.TrimSpace(name) == "" ||
-		strings.Contains(name, "/") {
-		return "", fmt.Errorf("poll source の repository は owner/name 形式でなければならない: %q", value)
+	owner, name = strings.TrimSpace(owner), strings.TrimSpace(name)
+	// 制御文字を弾くのは、repository 表記が log の相関 key であり、改行を含む値が
+	// record の形を壊すためである。GitHub の owner / name にも現れない。
+	if !found || owner == "" || name == "" || strings.Contains(name, "/") ||
+		strings.ContainsFunc(owner, unicode.IsControl) ||
+		strings.ContainsFunc(name, unicode.IsControl) {
+		return "", fmt.Errorf("repository は owner/name 形式でなければならない: %q", value)
 	}
 	return strings.ToLower(owner) + "/" + strings.ToLower(name), nil
 }

@@ -1,8 +1,11 @@
 package issueworker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -508,4 +511,98 @@ func claimTaskBody(readiness, dependencies string, authority []string) string {
 		"## Deliverables\n\n- 成果物\n\n## Acceptance Criteria\n\n### AC-1\n\n- Given: 前提\n- When: 操作\n- Then: 結果\n\n" +
 		"## Verification and Evidence\n\n- test\n\n## Constraints and Invariants\n\n- 制約\n\n" +
 		"## Decision Authority\n\n- 判断\n\n## Stop and Escalation Conditions\n\n- 停止\n"
+}
+
+// 03_runtime-platform.md の Observability and operations は「すべての log に
+// Run（PR 番号）、Operation、attempt、IssueRef を可能な範囲で含める」と定め、Epic #3 の
+// Exit criterion は webhook・reconciliation・claim を delivery から相関できることを要求する。
+// 相関 key が欠けると、delivery から claim までを一本の系列として辿れない。
+func TestClaimOperationRecordsCorrelationFieldsOnEveryExitPath(t *testing.T) {
+	t.Parallel()
+
+	claimed := newFakeGitHub(claimTaskBody("ready", "[]", nil))
+
+	rejected := newFakeGitHub(claimTaskBody("ready", "[]", []string{"missing.md"}))
+	rejected.contentErr = livecontext.ErrSourceNotFound
+
+	transport := newFakeGitHub(claimTaskBody("ready", "[]", nil))
+	transport.observeErr = errors.New("timeout")
+
+	tests := map[string]struct {
+		gateway    *fakeGitHub
+		wantStatus Status
+		wantRun    bool
+		wantReason string
+		wantError  bool
+	}{
+		"claimed":          {claimed, StatusClaimed, true, "", false},
+		"claim_rejected":   {rejected, StatusClaimRejected, false, string(RejectionAuthorityInvalid), false},
+		"failed_transport": {transport, StatusFailedTransport, false, "", true},
+	}
+	for name, testCase := range tests {
+		t.Run(name, func(t *testing.T) {
+			var buffer bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			handler := newTestHandler(t, testCase.gateway).WithLogger(logger)
+
+			result := handler.Handle(t.Context(), claimOperation(t), "attempt-correlation")
+			if result.Status != testCase.wantStatus {
+				t.Fatalf("status = %q, want %q", result.Status, testCase.wantStatus)
+			}
+
+			record := findClaimRecord(t, buffer.Bytes())
+			if record["outcome"] != string(testCase.wantStatus) {
+				t.Errorf("outcome = %v, want %q", record["outcome"], testCase.wantStatus)
+			}
+			issue, _ := record["issue"].(map[string]any)
+			if issue["repository"] != "acme/widgets" || issue["number"] != float64(17) {
+				t.Errorf("issue = %v, want acme/widgets#17", record["issue"])
+			}
+			operation, _ := record["operation"].(map[string]any)
+			for field, want := range map[string]string{
+				"id":           "claim-17",
+				"run_id":       "claim-17",
+				"kind":         string(contract.OperationClaim),
+				"attempt":      "attempt-correlation",
+				"causation_id": "reconcile-17",
+			} {
+				if operation[field] != want {
+					t.Errorf("operation.%s = %v, want %q", field, operation[field], want)
+				}
+			}
+			if _, hasRun := record["run"]; hasRun != testCase.wantRun {
+				t.Errorf("run field present = %v, want %v", hasRun, testCase.wantRun)
+			}
+			if testCase.wantReason != "" && record["reason"] != testCase.wantReason {
+				t.Errorf("reason = %v, want %q", record["reason"], testCase.wantReason)
+			}
+			if _, hasErrorType := record["error_type"]; hasErrorType != testCase.wantError {
+				t.Errorf("error_type present = %v, want %v", hasErrorType, testCase.wantError)
+			}
+			// error message、Issue 本文、GitHub の response 本文は telemetry へ載せない。
+			for _, forbidden := range []string{"timeout", "kudo.issue/v1alpha1", "claim task"} {
+				if strings.Contains(buffer.String(), forbidden) {
+					t.Errorf("record が %q を含む: %s", forbidden, buffer.String())
+				}
+			}
+		})
+	}
+}
+
+func findClaimRecord(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("record を decode できない: %v", err)
+		}
+		if record["event"] == EventClaimOperation {
+			return record
+		}
+	}
+	t.Fatalf("claim.operation の record が無い: %s", raw)
+	return nil
 }

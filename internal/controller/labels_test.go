@@ -730,3 +730,67 @@ func TestDeriveLabelEventTreatsPreMergeReadyLabelAsResidue(t *testing.T) {
 		})
 	}
 }
+
+// LabelSet も同じ理由で comma を拒む。回復経路の query は Kudo 所有 label を
+// comma 区切りで渡すため、値に comma を含む設定は列挙側が必ず拒否する。
+func TestLabelSetRejectsCommaInLabelName(t *testing.T) {
+	t.Parallel()
+
+	labels := DefaultLabelSet()
+	labels.Ready = "ready,bot"
+	if err := labels.Validate(); err == nil {
+		t.Fatalf("Validate() = nil, want error")
+	}
+}
+
+// 途中失敗でも、そこまでに起きた mutation は LabelRecord に残さなければならない。
+// 捨てると呼び出し側の記録が「何も変えていない」と読め、失敗した reconcile の後に
+// GitHub 上で何が変わっているかを record から追えなくなる。
+func TestRecordReportsMutationsThatHappenedBeforeAFailure(t *testing.T) {
+	t.Parallel()
+
+	surface := newFakeLabelSurface("ai-ready", "ai-in-progress")
+	transient := errors.New("GitHub timeout")
+	surface.failOn["remove_label:19:ai-in-progress"] = transient
+	recorder := newTestLabelRecorder(t, surface)
+
+	record, err := recorder.Record(t.Context(), testIssueRef(), LabelEventMergeCompleted)
+	if !errors.Is(err, transient) {
+		t.Fatalf("Record() error = %v, want %v", err, transient)
+	}
+	if record.Added != "ai-merged" {
+		t.Errorf("Added = %q, want %q", record.Added, "ai-merged")
+	}
+	if !slices.Contains(record.Removed, "ai-ready") {
+		t.Errorf("Removed = %v, want it to contain ai-ready", record.Removed)
+	}
+	if !record.Changed() {
+		t.Errorf("Changed() = false, want true")
+	}
+}
+
+// deployment 全体の設定不備は Issue 固有の瑕疵ではない。escalation として label へ
+// 記録すると、1 cycle で repository 中の候補 Issue から人間所有の ai-ready が全部外れ、
+// 設定を直しても人間が Issue ごとに付け直すまで一件も再開しない。
+// 04_github-routing.md は「dependency 待ち、capacity 待ち、一時 transport failure では
+// ai-ready を消費しない」と定めており、Issue 側に瑕疵の無い停止で人間の trigger を
+// 消費しない原則を示している。
+func TestDeriveLabelEventDoesNotRecordDeploymentConfigurationFailures(t *testing.T) {
+	t.Parallel()
+
+	configurationRequired := workflow.Derivation{
+		Phase: workflow.PhaseNew,
+		Next: workflow.ReconcileAction{
+			Kind:   workflow.ReconcileEscalateHuman,
+			Reason: workflow.EscalationExternalConfigurationRequired,
+		},
+	}
+	issue := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateOpen,
+		Labels: []string{"ai-ready", "ai-in-progress"},
+	}
+	got, ok := DeriveLabelEvent(configurationRequired, issue, testLabelPolicy())
+	if ok {
+		t.Fatalf("DeriveLabelEvent() = %q, %v, want no label event", got, ok)
+	}
+}
