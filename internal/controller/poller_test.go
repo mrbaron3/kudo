@@ -82,6 +82,8 @@ type recordingTrigger struct {
 	block   chan struct{}
 	blocked chan struct{}
 	stopped bool
+	// failWith は分類できない失敗を模す。
+	failWith error
 }
 
 func newRecordingTrigger() *recordingTrigger {
@@ -101,6 +103,9 @@ func (r *recordingTrigger) TriggerReconcile(_ context.Context, request workflow.
 	defer r.mu.Unlock()
 	if r.stopped {
 		return ErrDispatcherStopped
+	}
+	if r.failWith != nil {
+		return r.failWith
 	}
 	if remaining := r.refuse[request.Issue.Number]; remaining > 0 {
 		r.refuse[request.Issue.Number] = remaining - 1
@@ -217,7 +222,7 @@ func TestPollCycleCorrelatesEveryIssueWithOneTriggerIdentity(t *testing.T) {
 
 // 同時実行上限で落ちた IssueRef を成功として捨てない。捨てると、候補順が同じ poller では
 // 末尾が毎 cycle 飢餓する（ErrDispatcherAtCapacity の doc comment が定める制約）。
-func TestPollCycleResubmitsIssuesRefusedByCapacityInstteadOfDroppingThem(t *testing.T) {
+func TestPollCycleResubmitsIssuesRefusedByCapacityInsteadOfDroppingThem(t *testing.T) {
 	t.Parallel()
 
 	discovery := &fakeDiscovery{candidates: issueRefs(19, 24, 31)}
@@ -351,8 +356,8 @@ func TestScheduledPollDoesNotOverlapCycles(t *testing.T) {
 	close(gate)
 
 	clock.awaitWaits(t, 1)
-	if got := trigger.count(); got != 1 {
-		t.Fatalf("cycle 完了後の投入 = %d, want 1", got)
+	if got := trigger.count(); got < 1 {
+		t.Fatalf("cycle 完了後の投入 = %d, want 1 以上", got)
 	}
 	cancel()
 	<-done
@@ -693,6 +698,80 @@ func TestPollCycleSubmitsEveryIssueEvenAfterRotating(t *testing.T) {
 	}
 }
 
+// hint に上限が無いと、clock skew や異常な Retry-After だけで回復経路が任意長停止する。
+func TestRetryHintIsCappedSoPollingCannotStopIndefinitely(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultPollConfig()
+	got := applyRetryHint(config, config.BackoffInitial, 8*time.Hour)
+	if got != MaxRetryHint {
+		t.Fatalf("delay = %v, want %v", got, MaxRetryHint)
+	}
+}
+
+// cycle 間隔は「開始間隔が interval」である。経過分を引かないと、持ち時間を使い切った
+// cycle の直後だけ間隔が 2 倍になり、最も回収を急ぐべき状態で回収が遅くなる。
+func TestScheduledPollSubtractsTheCycleDurationFromTheNextWait(t *testing.T) {
+	t.Parallel()
+
+	discovery := &fakeDiscovery{candidates: issueRefs(19)}
+	trigger := newRecordingTrigger()
+	trigger.refuse[19] = 1_000_000
+	clock := newFakeClock()
+	clock.autoAdvance(t.Context(), DefaultPollConfig().CapacityRetryInterval)
+	poller := newTestPoller(t, testPollerConfig(discovery, trigger, clock))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- poller.Run(ctx) }()
+
+	// 持ち時間（interval）を使い切った cycle の直後の待機は 0 でなければならない。
+	waitFor(t, func() bool {
+		for _, delay := range clock.requestedDelays() {
+			if delay == 0 {
+				return true
+			}
+		}
+		return false
+	})
+	cancel()
+	<-done
+}
+
+// shutdown 中は新しい reconcile を起動しない。TriggerReconcile は呼び出し元の context を
+// 意図的に無視するため、投入の直前に自分で確認する必要がある。
+func TestPollCycleStopsSubmittingOnceTheContextIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	discovery := &fakeDiscovery{candidates: issueRefs(19, 24, 31)}
+	trigger := newRecordingTrigger()
+	poller := newTestPoller(t, testPollerConfig(discovery, trigger, newFakeClock()))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	report := poller.runCycle(ctx, workflow.TriggerScheduledPoll)
+	if trigger.count() != 0 || report.Submitted != 0 || report.Backlog != 3 {
+		t.Fatalf("report = %#v, 投入 = %d", report, trigger.count())
+	}
+}
+
+// 分類できない投入失敗を成功として扱わない。倒すと、回復経路が死んでいるのに
+// last_success_at が進み続ける。
+func TestUnclassifiedSubmitFailureCountsAsACycleFailure(t *testing.T) {
+	t.Parallel()
+
+	discovery := &fakeDiscovery{candidates: issueRefs(19)}
+	trigger := newRecordingTrigger()
+	trigger.failWith = errors.New("reconcile trigger の実装が壊れている")
+	poller := newTestPoller(t, testPollerConfig(discovery, trigger, newFakeClock()))
+
+	report := poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
+	if !report.failed() || !poller.lastSuccess.IsZero() {
+		t.Fatalf("report = %#v, lastSuccess = %v", report, poller.lastSuccess)
+	}
+}
+
 func TestNewPollerRejectsIncompleteWiring(t *testing.T) {
 	t.Parallel()
 
@@ -757,4 +836,15 @@ func findLast(records []map[string]any, event string) map[string]any {
 		}
 	}
 	return found
+}
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("条件が成立しなかった")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }

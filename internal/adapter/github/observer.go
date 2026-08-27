@@ -94,8 +94,11 @@ type apiPullRequest struct {
 	Body   json.RawMessage `json:"body"`
 	User   apiUser         `json:"user"`
 	Head   struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`

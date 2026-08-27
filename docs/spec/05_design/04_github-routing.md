@@ -149,6 +149,18 @@ run / comment / PR の観測から同じ phase を再導出して label を戻�
 | merge 完了 | `ai-ready`, `ai-in-progress`, `ai-needs-human` | `ai-merged` |
 | already-merged 再依頼検出 | `ai-ready` | `ai-merged`（再記録） |
 
+導出 event の再観測（同じ行を、その一度きりの副作用が済んだ後に観測した場合）は次の 2 点
+だけが異なる。
+
+| 再観測 | 差分 | 理由 |
+| --- | --- | --- |
+| needs human の再観測 | `ai-ready`を除去対象から外す | `ai-ready`の再付与だけが resume / supersede を起動する。停止中の再観測で消すと、人間が契約を直して付け直した trigger を resume 判定の前に消費する |
+| merge 完了の再観測 | Issue を close しない | close は完了を初めて記録したときの一度きりの副作用である。その後に Issue が open であることは人間の操作の結果であり、押し戻す対象ではない |
+
+「完了を既に記録したか」は`ai-merged`の現在値だけで判定しない。Kudo 所有でも人間が外せる
+label だからである。label 付与の timeline を併せて観測し、現在値が消えていても再依頼として
+扱う。
+
 `ai-merged`を持つ IssueRef は claimable 条件（merged な kudo PR の不存在）で claim へ進まないため、
 claim 完了の除去対象に`ai-merged`は現れない。label を手で外しても merged な kudo PR という観測が
 正本であり、再依頼は`skipped_already_merged`として処理される。

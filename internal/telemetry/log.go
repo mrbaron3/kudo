@@ -67,6 +67,12 @@ const (
 	FieldCapacityWaits = "capacity_waits"
 	// FieldFailures は列挙に失敗した repository の件数である。
 	FieldFailures = "failures"
+	// FieldDelayMillis は次の cycle までの待機である。回復経路が止まっている時間は
+	// この値でしか観測できない。
+	FieldDelayMillis = "delay_ms"
+	// FieldRetryable は失敗が一時障害として分類されているかである。恒久的な設定不備と
+	// 一時障害は backoff の挙動が同じなので、この分類だけが運用上の区別になる。
+	FieldRetryable = "retryable"
 )
 
 // Issue の correlation field。repository は GitHub の`owner/name`表記へ canonicalize する。

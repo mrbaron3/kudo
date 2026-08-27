@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"github.com/mrbaron3/kudo/internal/contract"
 	"github.com/mrbaron3/kudo/internal/telemetry"
 	"github.com/mrbaron3/kudo/internal/workflow"
 )
@@ -38,7 +39,10 @@ const (
 	OutcomeTriggerStopped Outcome = "trigger_stopped"
 	// OutcomeTriggerRejected は identity 不足の trigger である。adapter が identity を
 	// 検証済みで渡す限り現れず、現れた場合は producer 側の契約違反を意味する。
-	OutcomeTriggerRejected   Outcome = "trigger_rejected"
+	OutcomeTriggerRejected Outcome = "trigger_rejected"
+	// OutcomeTriggerCoalesced は実行中の Issue への trigger を再実行へ畳んだことを表す。
+	// 件数が多い状態は、同じ Issue に対する trigger が実行より速く届いていることを示す。
+	OutcomeTriggerCoalesced  Outcome = "trigger_coalesced"
 	OutcomeReconcileFailed   Outcome = "reconcile_failed"
 	OutcomeReconcilePanicked Outcome = "reconcile_panicked"
 )
@@ -72,6 +76,13 @@ type TriggerDispatcherConfig struct {
 // webhook は低遅延経路であり、応答は reconcile の完了を待てない。一方で無制限に
 // goroutine を作ると、delivery 量がそのまま GitHub API と provider の負荷になる。
 // 同時実行の上限は Controller の責務なので、その調停をここへ集約する。
+//
+// 同じ IssueRef の reconcile は同時に走らせない。ReconcileIssue は observe → derive →
+// record の列であり、記録は「現在値を確認してから書く」冪等 mutation である。同じ Issue
+// を並行に通すと、両方が「記録が無い」を観測してから両方が書く窓が開き、marker で
+// 一意にしている記録が重複し得る。重複した trigger は観測の再実行になるだけでよいので、
+// 実行中の Issue へ届いた trigger は破棄せず、完了後の 1 回の再実行へ畳む
+// （docs/spec/05_design/04_github-routing.md の Unified reconciliation）。
 type TriggerDispatcher struct {
 	reconcile ReconcileIssue
 	logger    *slog.Logger
@@ -82,11 +93,15 @@ type TriggerDispatcher struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// mu は stopped の観測と wg.Add を同じ critical section に収め、Shutdown の
-	// wg.Wait と新規 Add が交差しないようにする。
+	// mu は stopped の観測と wg.Add、および in-flight の登録を同じ critical section に
+	// 収め、Shutdown の wg.Wait と新規 Add が交差しないようにする。
 	mu      sync.Mutex
 	stopped bool
 	wg      sync.WaitGroup
+	// inFlight は実行中の IssueRef と、その完了後に再実行する trigger を保持する。
+	// 再実行は最後に届いた trigger 1 件に畳む。観測はやり直せば同じ結果になるため、
+	// 中間の trigger を個別に実行する意味が無いからである。
+	inFlight map[contract.IssueRef]*workflow.ReconcileRequest
 }
 
 // NewTriggerDispatcher は reconcile を束縛した dispatcher を返す。
@@ -108,6 +123,7 @@ func NewTriggerDispatcher(reconcile ReconcileIssue, config TriggerDispatcherConf
 		slots:     make(chan struct{}, config.MaxInFlight),
 		ctx:       ctx,
 		cancel:    cancel,
+		inFlight:  make(map[contract.IssueRef]*workflow.ReconcileRequest),
 	}, nil
 }
 
@@ -132,6 +148,22 @@ func (d *TriggerDispatcher) TriggerReconcile(ctx context.Context, request workfl
 		d.logRefusal(ctx, OutcomeTriggerStopped, "shutdown 後の reconcile trigger を拒否した", request)
 		return ErrDispatcherStopped
 	}
+	if _, running := d.inFlight[request.Issue]; running {
+		// 実行中の Issue への trigger は、完了後の 1 回の再実行へ畳む。slot は取らない。
+		// 成功として返すのは、この trigger の目的（live state をもう一度観測する）が
+		// 果たされるためである。落としたことにすると poller が同じ cycle 内で
+		// 待ち続け、自分が起動した reconcile の完了を待つことになる。
+		pending := request
+		d.inFlight[request.Issue] = &pending
+		d.mu.Unlock()
+		d.logger.DebugContext(ctx, "実行中の Issue への reconcile trigger を再実行へ畳んだ",
+			slog.String(telemetry.FieldEvent, EventReconcileTrigger),
+			slog.String(telemetry.FieldOutcome, string(OutcomeTriggerCoalesced)),
+			telemetry.Issue(request.Issue),
+			telemetry.Trigger(request.Trigger),
+		)
+		return nil
+	}
 	select {
 	case d.slots <- struct{}{}:
 	default:
@@ -139,6 +171,7 @@ func (d *TriggerDispatcher) TriggerReconcile(ctx context.Context, request workfl
 		d.logRefusal(ctx, OutcomeTriggerDropped, "reconcile trigger を同時実行上限で落とした", request)
 		return ErrDispatcherAtCapacity
 	}
+	d.inFlight[request.Issue] = nil
 	d.wg.Add(1)
 	d.mu.Unlock()
 
@@ -163,9 +196,30 @@ func (d *TriggerDispatcher) logRefusal(ctx context.Context, outcome Outcome, mes
 	)
 }
 
+// run は 1 件の reconcile を実行し、実行中に畳まれた trigger があればそのまま続けて
+// 再実行する。slot は畳まれた分を通しても 1 つのままなので、同時実行上限は保たれる。
+//
+// shutdown 中でも畳まれた分は実行する。畳んだ時点で呼び出し元へ「受け付けた」と
+// 返しているためであり、新規 trigger は既に拒否されているので loop は必ず終わる。
 func (d *TriggerDispatcher) run(request workflow.ReconcileRequest) {
 	defer d.wg.Done()
 	defer func() { <-d.slots }()
+	for {
+		d.runOnce(request)
+		d.mu.Lock()
+		pending := d.inFlight[request.Issue]
+		if pending == nil {
+			delete(d.inFlight, request.Issue)
+			d.mu.Unlock()
+			return
+		}
+		d.inFlight[request.Issue] = nil
+		d.mu.Unlock()
+		request = *pending
+	}
+}
+
+func (d *TriggerDispatcher) runOnce(request workflow.ReconcileRequest) {
 	defer func() {
 		// 一つの Issue の導出 bug で低遅延経路 process 全体を落とさない。
 		// 落とした delivery と同じく、この Run は polling の再観測が回収する。

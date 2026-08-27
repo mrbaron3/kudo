@@ -75,6 +75,32 @@ func LoadPollConfig(lookup Lookup) (PollConfig, error) {
 	return config, nil
 }
 
+// LoadLabelSet は記録側の label 名を environment から読む。
+//
+// LoadPollConfig と同じ KUDO_READY_LABEL を読むのは、候補を見つける側（poller）と
+// 人間の trigger を消費する側（recorder）が別の label を使う状態を作らないためである。
+// 値を composition root で書き写すと、書き忘れが「候補は毎 cycle 発見されるが
+// `ai-ready`は永久に消費されない」という無言の停止になる。
+//
+// Kudo 所有の 3 label（in-progress / needs-human / merged）は上書き対象ではない。
+// 人間が付ける trigger と違い、これらは Kudo の記録であり、deployment ごとに変える
+// 理由が無い（docs/spec/05_design/04_github-routing.md の Labels）。
+func LoadLabelSet(lookup Lookup) (LabelSet, error) {
+	if lookup == nil {
+		return LabelSet{}, fmt.Errorf("environment lookup は必須")
+	}
+	labels := DefaultLabelSet()
+	ready, err := lookupString(lookup, EnvReadyLabel, labels.Ready)
+	if err != nil {
+		return LabelSet{}, err
+	}
+	labels.Ready = ready
+	if err := labels.Validate(); err != nil {
+		return LabelSet{}, fmt.Errorf("label 設定が不正: %w", err)
+	}
+	return labels, nil
+}
+
 // LoadTriggerDispatcherConfig は reconcile の同時実行上限を environment から読む。
 func LoadTriggerDispatcherConfig(lookup Lookup) (TriggerDispatcherConfig, error) {
 	if lookup == nil {

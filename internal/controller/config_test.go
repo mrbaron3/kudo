@@ -126,3 +126,41 @@ func TestLoadTriggerDispatcherConfigBoundsConcurrency(t *testing.T) {
 		})
 	}
 }
+
+// 候補を見つける側と人間の trigger を消費する側が別の label を使う状態を作らない。
+func TestLoadLabelSetSharesTheReadyLabelWithPolling(t *testing.T) {
+	t.Parallel()
+
+	lookup := envLookup(map[string]string{EnvReadyLabel: "ready-for-ai"})
+	labels, err := LoadLabelSet(lookup)
+	if err != nil {
+		t.Fatalf("LoadLabelSet() error = %v", err)
+	}
+	poll, err := LoadPollConfig(lookup)
+	if err != nil {
+		t.Fatalf("LoadPollConfig() error = %v", err)
+	}
+	if labels.Ready != poll.Filter.ReadyLabel {
+		t.Fatalf("ready label = %q / %q, want 同じ値", labels.Ready, poll.Filter.ReadyLabel)
+	}
+	if labels.InProgress != DefaultLabelSet().InProgress {
+		t.Fatalf("Kudo 所有 label を上書きした: %#v", labels)
+	}
+}
+
+func TestLoadLabelSetRejectsAnAmbiguousReadyLabel(t *testing.T) {
+	t.Parallel()
+
+	for name, value := range map[string]string{
+		"空文字":         "",
+		"空白だけ":        " ",
+		"Kudo 所有と同じ値": "ai-merged",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := LoadLabelSet(envLookup(map[string]string{EnvReadyLabel: value})); err == nil {
+				t.Fatalf("不正な ready label %q を受理した", value)
+			}
+		})
+	}
+}

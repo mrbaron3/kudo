@@ -492,6 +492,17 @@ func TestDeriveLabelEventMapsDerivationsToRecordedEvents(t *testing.T) {
 	reopenedQuiet := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-merged"},
 	}
+	// 人間が ai-merged を外して reopen し、ai-ready を付け直した再依頼。現在値からは
+	// 完了記録が消えているが、付与履歴が残る。
+	mergedLabelRemoved := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-ready"},
+		LabelEvents: []workflow.LabelEventObservation{{Label: "ai-merged", Added: true}},
+	}
+	// reopen せずに ai-ready だけを付け直した再依頼。GitHub は closed な Issue にも
+	// label を付けられる。
+	closedRerequest := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateClosed, Labels: []string{"ai-merged", "ai-ready"},
+	}
 	openRun := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-in-progress"},
 	}
@@ -508,11 +519,13 @@ func TestDeriveLabelEventMapsDerivationsToRecordedEvents(t *testing.T) {
 		"完了記録済みの再観測":                 {merged, closedRecorded, LabelEventMergeRecorded, true},
 		"reopen 後の ai-ready 再付与":     {merged, reopenedRequest, LabelEventAlreadyMergedRequest, true},
 		"再依頼を処理した後の reopen 済み Issue": {merged, reopenedQuiet, LabelEventMergeRecorded, true},
-		"escalation": {needsHuman, openRun, LabelEventRunNeedsHuman, true},
-		"停止中の再観測":    {awaitHuman, openRun, LabelEventNeedsHumanRecorded, true},
-		"claim 前の候補": {candidate, openWithReady, "", false},
-		"候補外":        {notCandidate, closedRecorded, "", false},
-		"superseded": {superseded, openRun, "", false},
+		"ai-merged を外した再依頼":          {merged, mergedLabelRemoved, LabelEventAlreadyMergedRequest, true},
+		"closed のままの再依頼":             {merged, closedRerequest, LabelEventAlreadyMergedRequest, true},
+		"escalation":                 {needsHuman, openRun, LabelEventRunNeedsHuman, true},
+		"停止中の再観測":                    {awaitHuman, openRun, LabelEventNeedsHumanRecorded, true},
+		"claim 前の候補":                 {candidate, openWithReady, "", false},
+		"候補外":                        {notCandidate, closedRecorded, "", false},
+		"superseded":                 {superseded, openRun, "", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -557,6 +570,40 @@ func TestDeriveLabelEventIsAFixedPointAfterRecordingAlreadyMergedRequest(t *test
 	if surface.callCount("ensure_comment") != 1 {
 		t.Fatalf("案内 comment の収束 = %d 回, want 1（2 回目以降は再依頼ではない）",
 			surface.callCount("ensure_comment"))
+	}
+}
+
+// 記録を完成させる副作用は、再発見の手掛かりになる label を消費する前に済ませる。
+// 逆順にすると、案内 comment が失敗した時点で ai-ready の無い Issue が残り、polling の
+// どの列挙にも現れなくなる。
+func TestRecordWritesTheGuidanceCommentBeforeConsumingTheReadyLabel(t *testing.T) {
+	t.Parallel()
+
+	surface := newFakeLabelSurface("ai-merged", "ai-ready")
+	if _, err := newTestLabelRecorder(t, surface).Record(t.Context(), testIssueRef(), LabelEventAlreadyMergedRequest); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	comment := slices.Index(surface.calls, "ensure_comment:19:"+AlreadyMergedCommentKind)
+	remove := slices.Index(surface.calls, "remove_label:19:ai-ready")
+	if comment < 0 || remove < 0 || comment > remove {
+		t.Fatalf("calls = %v", surface.calls)
+	}
+}
+
+// 案内 comment が失敗した cycle では ai-ready を消費しない。消費すると、再依頼が
+// あったことが GitHub 上のどこにも残らないまま、次の reconcile も気付けない。
+func TestRecordKeepsTheReadyLabelWhenTheGuidanceCommentFails(t *testing.T) {
+	t.Parallel()
+
+	surface := newFakeLabelSurface("ai-merged", "ai-ready")
+	transient := errors.New("GitHub timeout")
+	surface.failOn["ensure_comment:19:"+AlreadyMergedCommentKind] = transient
+	if _, err := newTestLabelRecorder(t, surface).Record(t.Context(), testIssueRef(),
+		LabelEventAlreadyMergedRequest); !errors.Is(err, transient) {
+		t.Fatalf("Record() error = %v, want %v", err, transient)
+	}
+	if !slices.Contains(surface.snapshot(), "ai-ready") {
+		t.Fatalf("labels = %v, want ai-ready を保持", surface.snapshot())
 	}
 }
 

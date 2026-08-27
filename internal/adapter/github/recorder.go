@@ -279,9 +279,11 @@ func (g *Gateway) ConvergeLabels(ctx context.Context, issueNumber int64, add str
 
 // deleteLabel は観測済みの label name を外す。
 //
-// 404 を失敗にしないのは、同じ収束を並行 reconcile が先に済ませた状態が transport
-// failure として記録されると retry が終わらないためである。観測した name をそのまま
-// 使っているため、404 は「既に外れていた」以外の意味を持たない。
+// 404 を即座に成功へ写さないのは、この endpoint が「label が付いていない」と
+// 「repository / Issue が見えない」を同じ status で返すためである。並行 reconcile が
+// 先に外した場合は収束済みとして成功にしてよいが、権限喪失や repository transfer を
+// 収束として記録すると、label が残っているのに「外した」と報告し続ける。
+// branch 不在の確認（confirmBranchAbsent）と同じく、もう一度観測してから判断する。
 func (g *Gateway) deleteLabel(ctx context.Context, issueNumber int64, label string) (bool, error) {
 	response, err := g.request(ctx, http.MethodDelete,
 		g.endpoint(g.issuePath(issueNumber)+"/labels/"+url.PathEscape(label), nil), nil,
@@ -289,7 +291,24 @@ func (g *Gateway) deleteLabel(ctx context.Context, issueNumber int64, label stri
 	if err != nil {
 		return false, err
 	}
-	return response.Status == http.StatusOK, nil
+	if response.Status == http.StatusOK {
+		return true, nil
+	}
+	labels, err := g.listLabels(ctx, issueNumber)
+	if err != nil {
+		return false, err
+	}
+	for _, existing := range labels {
+		if strings.EqualFold(existing.Name, label) {
+			return false, &TransportFailure{
+				Class:      FailureNotFound,
+				Operation:  "DELETE label",
+				StatusCode: http.StatusNotFound,
+				Message:    "label 削除が 404 を返したが、再観測では label が残っている",
+			}
+		}
+	}
+	return false, nil
 }
 
 // EnsureIssueClosed は open な Issue だけを close する。

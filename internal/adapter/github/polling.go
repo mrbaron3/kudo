@@ -106,6 +106,14 @@ func (g *Gateway) ListOpenRunIssueRefs(ctx context.Context) ([]contract.IssueRef
 			return err
 		}
 		for _, value := range page {
+			// head repository を確認するのは、pulls endpoint が fork 由来の PR も返す
+			// ためである。branch 名だけで判定すると、外部の fork に同名 branch を
+			// 作った PR が任意の Issue の reconcile を起動できる。claim の排他は
+			// configured repository 上の ref create で成立しており、その repository の
+			// branch でない head は kudo PR ではない。
+			if !g.sameRepository(value.Head.Repo.FullName) {
+				continue
+			}
 			number, ok := workflow.IssueNumberFromBranch(value.Head.Ref)
 			if !ok {
 				continue
@@ -115,7 +123,7 @@ func (g *Gateway) ListOpenRunIssueRefs(ctx context.Context) ([]contract.IssueRef
 			}
 			ref, valid := g.issueRef(number)
 			if !valid {
-				continue
+				return invalidResponse("GET pulls", "Issue number が identity の範囲を超えた", nil)
 			}
 			seen[number] = struct{}{}
 			result = append(result, ref)
@@ -128,18 +136,23 @@ func (g *Gateway) ListOpenRunIssueRefs(ctx context.Context) ([]contract.IssueRef
 	return result, nil
 }
 
-// ListLabeledIssueRefs は指定 label を持つ open な Issue を列挙する。
+// ListLabeledIssueRefs は指定 label を持つ Issue を state を問わず列挙する。
 //
 // assignee で絞らないのは、対象が Kudo 自身が付けた status label だからである。
 // candidate query（人間所有の`ai-ready`）と違い、この label は Kudo の記録であり、
 // assignee が手で変えられていても記録の収束は続けなければならない。
+//
+// open に限らないのは、merge completion の投影が close の後で失敗した Issue を
+// 取りこぼさないためである。その Issue は closed・merged PR・進行中 label という
+// 組合せで残り、candidate query にも open PR の列挙にも現れない。
+//
 // Pull Request は除外する（issues list endpoint は PR も返す）。
 func (g *Gateway) ListLabeledIssueRefs(ctx context.Context, label string) ([]contract.IssueRef, error) {
 	if strings.TrimSpace(label) == "" {
 		return nil, fmt.Errorf("列挙する label は必須")
 	}
 	query := url.Values{
-		"state":     {"open"},
+		"state":     {"all"},
 		"labels":    {label},
 		"sort":      {"created"},
 		"direction": {"asc"},
@@ -171,6 +184,12 @@ func (g *Gateway) ListLabeledIssueRefs(ctx context.Context, label string) ([]con
 		return nil, err
 	}
 	return result, nil
+}
+
+// sameRepository は API が返した`owner/name`が gateway の repository かを返す。
+// full_name が欠けている response では、判定できない head を除外側へ倒す。
+func (g *Gateway) sameRepository(fullName string) bool {
+	return strings.EqualFold(fullName, g.repository.Owner+"/"+g.repository.Name)
 }
 
 // issueRef は gateway が束縛している repository の canonical identity で IssueRef を作る。

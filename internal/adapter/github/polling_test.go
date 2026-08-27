@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -40,15 +41,19 @@ func TestListOpenRunIssueRefsPaginatesAndKeepsOnlyClaimBranches(t *testing.T) {
 		}
 		if r.URL.Query().Get("page") == "2" {
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"number": 52, "state": "open", "head": map[string]any{"ref": "kudo/issue-19", "sha": strings.Repeat("d", 40)}},
-				{"number": 53, "state": "open", "head": map[string]any{"ref": "kudo/issue-041", "sha": strings.Repeat("e", 40)}},
+				{"number": 52, "state": "open", "head": map[string]any{
+					"ref": "kudo/issue-19", "sha": strings.Repeat("d", 40), "repo": ownedRepository()}},
+				{"number": 53, "state": "open", "head": map[string]any{
+					"ref": "kudo/issue-041", "sha": strings.Repeat("e", 40), "repo": ownedRepository()}},
 			})
 			return
 		}
 		w.Header().Set("Link", nextPageLink(server.URL, r.URL, 2))
 		_ = json.NewEncoder(w).Encode([]map[string]any{
-			{"number": 50, "state": "open", "head": map[string]any{"ref": "kudo/issue-7", "sha": strings.Repeat("a", 40)}},
-			{"number": 51, "state": "open", "head": map[string]any{"ref": "feature/manual", "sha": strings.Repeat("b", 40)}},
+			{"number": 50, "state": "open", "head": map[string]any{
+				"ref": "kudo/issue-7", "sha": strings.Repeat("a", 40), "repo": ownedRepository()}},
+			{"number": 51, "state": "open", "head": map[string]any{
+				"ref": "feature/manual", "sha": strings.Repeat("b", 40), "repo": ownedRepository()}},
 		})
 	}))
 	t.Cleanup(server.Close)
@@ -76,8 +81,8 @@ func TestListOpenRunIssueRefsDeduplicatesRepeatedIssues(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode([]map[string]any{
-			{"number": 50, "state": "open", "head": map[string]any{"ref": "kudo/issue-19"}},
-			{"number": 51, "state": "open", "head": map[string]any{"ref": "kudo/issue-19"}},
+			{"number": 50, "state": "open", "head": map[string]any{"ref": "kudo/issue-19", "repo": ownedRepository()}},
+			{"number": 51, "state": "open", "head": map[string]any{"ref": "kudo/issue-19", "repo": ownedRepository()}},
 		})
 	}))
 	t.Cleanup(server.Close)
@@ -201,11 +206,18 @@ func TestConvergeLabelsDeletesTheObservedLabelName(t *testing.T) {
 func TestConvergeLabelsTreatsConcurrentRemovalAsConverged(t *testing.T) {
 	t.Parallel()
 
+	var deleted atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
+			if deleted.Load() {
+				fmt.Fprint(w, `[{"name":"ai-merged"}]`)
+				return
+			}
 			fmt.Fprint(w, `[{"name":"ai-ready"},{"name":"ai-merged"}]`)
 		case http.MethodDelete:
+			// 並行 reconcile が先に外した状態を模す。再観測では label が消えている。
+			deleted.Store(true)
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Label does not exist"}`)
 		default:
@@ -224,6 +236,61 @@ func TestConvergeLabelsTreatsConcurrentRemovalAsConverged(t *testing.T) {
 	}
 }
 
+// label 削除の 404 は「付いていない」と「repository / Issue が見えない」を区別しない。
+// 再観測で label が残っていれば、収束ではなく transport failure である。
+func TestConvergeLabelsReportsUnresolved404AsTransportFailure(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			fmt.Fprint(w, `[{"name":"ai-ready"},{"name":"ai-merged"}]`)
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+		default:
+			t.Errorf("method = %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	_, _, err := testGateway(server.Client(), server.URL).ConvergeLabels(t.Context(), 19,
+		"ai-merged", []string{"ai-ready"})
+	var failure *TransportFailure
+	if !errors.As(err, &failure) || failure.Class != FailureNotFound {
+		t.Fatalf("error = %v, want 分類済みの not_found", err)
+	}
+}
+
+// fork に同名 branch を作った PR は kudo PR ではない。claim の排他は configured
+// repository 上の ref create で成立しており、外部 branch はその identity を満たさない。
+func TestListOpenRunIssueRefsExcludesForkHeadBranches(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"number": 60, "state": "open", "head": map[string]any{
+				"ref": "kudo/issue-19", "repo": map[string]any{"full_name": "outsider/widgets"}}},
+			{"number": 61, "state": "open", "head": map[string]any{
+				"ref": "kudo/issue-24", "repo": ownedRepository()}},
+			{"number": 62, "state": "open", "head": map[string]any{"ref": "kudo/issue-31"}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	refs, err := testGateway(server.Client(), server.URL).ListOpenRunIssueRefs(t.Context())
+	if err != nil {
+		t.Fatalf("ListOpenRunIssueRefs() error = %v", err)
+	}
+	if len(refs) != 1 || refs[0].Number != 24 {
+		t.Fatalf("refs = %#v, want configured repository の head だけ", refs)
+	}
+}
+
+func ownedRepository() map[string]any {
+	return map[string]any{"full_name": "acme/widgets"}
+}
+
 // 追加と削除に同じ label を渡す呼び出しは収束先が定義できない。
 func TestConvergeLabelsRejectsContradictoryRequests(t *testing.T) {
 	t.Parallel()
@@ -239,19 +306,21 @@ func TestConvergeLabelsRejectsContradictoryRequests(t *testing.T) {
 	}
 }
 
-func TestListLabeledIssueRefsExcludesPullRequestsAndClosedIssues(t *testing.T) {
+// close 済みの Issue も列挙する。merge completion の投影が close の後で失敗した Issue は、
+// closed・merged PR・進行中 label という組合せでしか観測できない。
+func TestListLabeledIssueRefsCoversClosedIssuesAndExcludesPullRequests(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
-		if query.Get("state") != "open" || query.Get("labels") != "ai-in-progress" {
+		if query.Get("state") != "all" || query.Get("labels") != "ai-in-progress" {
 			t.Errorf("query = %q", r.URL.RawQuery)
 		}
 		if query.Has("assignee") {
 			t.Errorf("Kudo 所有 label の列挙で assignee を絞った: %q", r.URL.RawQuery)
 		}
 		_ = json.NewEncoder(w).Encode([]map[string]any{
-			{"number": 19, "state": "open", "body": "", "repository_url": "https://api.github.com/repos/acme/widgets"},
+			{"number": 19, "state": "closed", "body": "", "repository_url": "https://api.github.com/repos/acme/widgets"},
 			{"number": 52, "state": "open", "body": "", "repository_url": "https://api.github.com/repos/acme/widgets",
 				"pull_request": map[string]any{"url": "https://example.test/pull/52"}},
 		})

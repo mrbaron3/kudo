@@ -32,6 +32,15 @@ const (
 	// DefaultCapacityRetryInterval は同時実行上限で落ちた IssueRef を再投入するまでの待機である。
 	DefaultCapacityRetryInterval = 5 * time.Second
 	MinCapacityRetryInterval     = time.Second
+
+	// MaxRetryHint は GitHub が示した再試行間隔として受け入れる上限である。
+	//
+	// 上限を置くのは、hint の供給元が Retry-After header か「rate limit reset と自分の
+	// clock の差」だからである。clock がずれていれば後者は実際の待ち時間と無関係に
+	// 膨らむ。polling は webhook 欠落の唯一の回復経路なので、その停止は他の経路で
+	// 補われない。上限を超える hint は、指示より早い再試行のペナルティより、回復経路を
+	// 失う方が重いという判断で切り詰める。
+	MaxRetryHint = time.Hour
 )
 
 // log の event 語彙。
@@ -51,6 +60,7 @@ const (
 	OutcomeSourceListed    Outcome = "poll_source_listed"
 	OutcomeSourceFailed    Outcome = "poll_source_failed"
 	OutcomePollInterrupted Outcome = "poll_interrupted"
+	OutcomePollScheduled   Outcome = "poll_scheduled"
 )
 
 // Clock は scheduler と backoff が使う時刻境界である。
@@ -275,13 +285,22 @@ func (p *Poller) Run(ctx context.Context) error {
 		if report.Terminal != nil {
 			return report.Terminal
 		}
-		delay := p.poll.Interval
+		var delay time.Duration
 		if report.failed() {
 			failures++
 			delay = applyRetryHint(p.poll, backoffDelay(p.poll, failures, p.jitter), report.RetryHint)
 		} else {
 			failures = 0
+			// cadence は「cycle の開始間隔が interval」である。経過分を引かないと、
+			// backlog を抱えて持ち時間を使い切った cycle の直後だけ間隔が 2 倍になり、
+			// 最も回収を急ぐべき状態で回収が遅くなる。
+			delay = max(p.poll.Interval-report.Duration, 0)
 		}
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "次の poll cycle を待つ",
+			slog.String(telemetry.FieldEvent, EventPollCycle),
+			slog.String(telemetry.FieldOutcome, string(OutcomePollScheduled)),
+			slog.Int64(telemetry.FieldDelayMillis, delay.Milliseconds()),
+		)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -350,12 +369,29 @@ func (p *Poller) submitAll(ctx context.Context, pending []contract.IssueRef,
 	start := p.rotation % len(pending)
 	attempted := 0
 	for offset := range pending {
+		// 投入の直前に cancel を確認する。TriggerReconcile は呼び出し元の context を
+		// 意図的に無視する（webhook の応答で reconcile を打ち切らないため）ので、
+		// shutdown 中でも新しい reconcile を起動できてしまう。
+		if err := ctx.Err(); err != nil {
+			report.Backlog = len(pending) - offset
+			if report.FirstErr == nil {
+				report.FirstErr = err
+			}
+			break
+		}
 		ref := pending[(start+offset)%len(pending)]
 		submitted, err := p.submit(ctx, ref, trigger, deadline, report)
 		if err != nil {
 			report.Backlog = len(pending) - offset
 			if errors.Is(err, ErrDispatcherStopped) {
 				report.Terminal = err
+			}
+			// 中断（持ち時間切れ・cancel）は列挙の失敗ではない。それ以外の error は
+			// 分類できない失敗であり、既定を「成功扱い」に倒さない。倒すと、
+			// 回復経路が死んでいるのに last_success_at が進み続ける。
+			if !errors.Is(err, ErrPollCycleDeadline) && !errors.Is(err, context.Canceled) &&
+				!errors.Is(err, context.DeadlineExceeded) {
+				report.Failures++
 			}
 			if report.FirstErr == nil {
 				report.FirstErr = err
@@ -474,8 +510,11 @@ func (p *Poller) logSource(ctx context.Context, source PollSource, trigger workf
 	}
 	if err != nil {
 		// error message を記録しないのは、Discovery が注入された collaborator であり、
-		// message が GitHub の response 本文を含み得るためである。分類は型で残す。
-		attrs = append(attrs, telemetry.ErrorType(err))
+		// message が GitHub の response 本文を含み得るためである。分類は型と、
+		// error 自身が持つ機械可読な retryability で残す。恒久的な設定不備（credential /
+		// permission）と一時障害は運用上の対応が違うが、backoff の挙動は同じなので、
+		// この field だけが両者を区別する材料になる。
+		attrs = append(attrs, telemetry.ErrorType(err), slog.Bool(telemetry.FieldRetryable, retryable(err)))
 	}
 	p.logger.LogAttrs(ctx, level, "poll cycle の列挙を記録した", attrs...)
 }
@@ -544,9 +583,13 @@ func clampDelay(config PollConfig, delay time.Duration) time.Duration {
 
 // applyRetryHint は GitHub が示した再試行時刻を backoff の下限として適用する。
 //
-// hint が backoff の上限を超えていても縮めない。示された時刻より早く再試行すると
-// 同じ失敗を確実に繰り返し、secondary rate limit では追加のペナルティを受ける。
+// hint が backoff の上限（BackoffMax）を超えていても縮めない。示された時刻より早く
+// 再試行すると同じ失敗を確実に繰り返し、secondary rate limit では追加のペナルティを
+// 受ける。ただし MaxRetryHint では切り詰める。回復経路そのものを失わないためである。
 func applyRetryHint(config PollConfig, delay, hint time.Duration) time.Duration {
+	if hint > MaxRetryHint {
+		hint = MaxRetryHint
+	}
 	if hint > delay {
 		return hint
 	}
@@ -565,6 +608,17 @@ func canonicalRepository(value string) (string, error) {
 		return "", fmt.Errorf("poll source の repository は owner/name 形式でなければならない: %q", value)
 	}
 	return strings.ToLower(owner) + "/" + strings.ToLower(name), nil
+}
+
+// retryable は error が一時障害として分類されているかを返す。分類を持たない error は
+// 一時障害として扱う。既定を「恒久」に倒すと、分類を持たない新しい failure が
+// 回復し得る障害として記録されなくなる。
+func retryable(err error) bool {
+	var classified interface{ Retryable() bool }
+	if errors.As(err, &classified) {
+		return classified.Retryable()
+	}
+	return true
 }
 
 // retryHinter は transport failure が持つ再試行 hint の境界である。
