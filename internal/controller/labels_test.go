@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mrbaron3/kudo/internal/contract"
 	"github.com/mrbaron3/kudo/internal/workflow"
@@ -663,4 +664,69 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+// PhaseClaimed は「branch はあるが Pull Request がまだ無い」＝ claim 続行中または中断の
+// 観測である（02_workflow.md の Derived phases）。04_github-routing.md の Result 表は
+// `claimed` を「branch と draft PR を確定した」と定義しており、Transition rules の
+// 「claim 完了」行はその状態にだけ対応する。記録面が成立する前に ai-ready を消費すると、
+// claim が transport failure を繰り返す間も人間の trigger が戻らない（同書は
+// 「一時 transport failure では ai-ready を消費しない」と定める）。
+func TestDeriveLabelEventDoesNotRecordClaimCompletionBeforeTheRecordSurfaceExists(t *testing.T) {
+	t.Parallel()
+
+	claimInProgress := workflow.Derivation{
+		Phase: workflow.PhaseClaimed,
+		Next: workflow.ReconcileAction{
+			Kind:      workflow.ReconcileDispatchOperation,
+			Operation: contract.OperationClaim,
+		},
+	}
+	issue := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-ready"},
+	}
+	got, ok := DeriveLabelEvent(claimInProgress, issue, testLabelPolicy())
+	if ok {
+		t.Fatalf("DeriveLabelEvent() = %q, %v, want no label event", got, ok)
+	}
+}
+
+// merge 完了の記録は ai-merged の付与に成功してから ai-ready の削除に失敗し得る。
+// 残った ai-ready を「人間の再依頼」と読むと、再依頼が無いのに「新しい実行を開始しません」
+// という案内 comment が Issue へ永続的に残る。付与時刻が完了記録より後の ai-ready だけを
+// 再依頼とする。同時刻は再依頼にしない（誤った永続記録より、案内の欠落を選ぶ）。
+func TestDeriveLabelEventTreatsPreMergeReadyLabelAsResidue(t *testing.T) {
+	t.Parallel()
+
+	merged := workflow.Derivation{
+		Phase: workflow.PhaseMerged,
+		Next:  workflow.ReconcileAction{Kind: workflow.ReconcileRecordCompletion},
+	}
+	completion := time.Date(2026, 8, 27, 9, 0, 0, 0, time.UTC)
+	issueWith := func(readyAddedAt time.Time) workflow.IssueObservation {
+		return workflow.IssueObservation{
+			Number: 19, State: workflow.IssueStateOpen,
+			Labels: []string{"ai-merged", "ai-ready"},
+			LabelEvents: []workflow.LabelEventObservation{
+				{Label: "ai-ready", Added: true, ActorID: humanActorID, OccurredAt: readyAddedAt},
+				{Label: "ai-merged", Added: true, ActorID: coordinatorActorID, OccurredAt: completion},
+			},
+		}
+	}
+	for name, testCase := range map[string]struct {
+		readyAddedAt time.Time
+		want         LabelEvent
+	}{
+		"完了記録より前に付いた残骸": {completion.Add(-time.Minute), LabelEventMergeRecorded},
+		"完了記録と同時刻":      {completion, LabelEventMergeRecorded},
+		"完了記録より後の再依頼":   {completion.Add(time.Minute), LabelEventAlreadyMergedRequest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := DeriveLabelEvent(merged, issueWith(testCase.readyAddedAt), testLabelPolicy())
+			if !ok || got != testCase.want {
+				t.Fatalf("DeriveLabelEvent() = %q, %v, want %q, true", got, ok, testCase.want)
+			}
+		})
+	}
 }

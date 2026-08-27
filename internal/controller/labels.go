@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mrbaron3/kudo/internal/contract"
 	"github.com/mrbaron3/kudo/internal/telemetry"
@@ -411,10 +412,11 @@ func DeriveLabelEvent(derivation workflow.Derivation, issue workflow.IssueObserv
 	policy LabelPolicy) (LabelEvent, bool) {
 	switch derivation.Next.Kind {
 	case workflow.ReconcileRecordCompletion:
-		if !completionRecorded(issue, policy) {
+		recordedAt, recorded := completionRecordedAt(issue, policy)
+		if !recorded {
 			return LabelEventMergeCompleted, true
 		}
-		if hasLabel(issue.Labels, policy.Labels.Ready) {
+		if hasLabel(issue.Labels, policy.Labels.Ready) && !readyLabelIsMergeResidue(issue, policy, recordedAt) {
 			return LabelEventAlreadyMergedRequest, true
 		}
 		return LabelEventMergeRecorded, true
@@ -429,7 +431,7 @@ func DeriveLabelEvent(derivation workflow.Derivation, issue workflow.IssueObserv
 	return "", false
 }
 
-// completionRecorded は Kudo が merge completion を既に記録したかを返す。
+// completionRecordedAt は Kudo が merge completion を初めて記録した時刻を返す。
 //
 // 判断の材料は「Kudo 名義の`ai-merged`付与が一度でもあったか」だけである。現在値を
 // 見ないのは、`ai-merged`が Kudo 所有でも人間に外せる label だからである
@@ -440,14 +442,58 @@ func DeriveLabelEvent(derivation workflow.Derivation, issue workflow.IssueObserv
 // 「Kudo の完了記録」として読まないためである。読んでしまうと、正規の merge で
 // Task Issue が close されないまま open で残る。記録の作成者を identity で確かめる
 // のは、comment や PR body と同じ理由である（AGENTS.md の Architecture boundaries）。
-func completionRecorded(issue workflow.IssueObservation, policy LabelPolicy) bool {
+//
+// 返す時刻は「完了を初めて記録した」付与である。以後の再記録ではなく初回を基準にするのは、
+// 再依頼の判定が「完了記録より後に人間が`ai-ready`を付けたか」だからである。最後の再記録を
+// 基準にすると、その直前に付いた正当な再依頼が残骸へ誤分類される。
+func completionRecordedAt(issue workflow.IssueObservation, policy LabelPolicy) (time.Time, bool) {
+	var first time.Time
+	found := false
 	for _, event := range issue.LabelEvents {
-		if event.Added && event.ActorID == policy.Recorder.CommentAuthorID &&
-			strings.EqualFold(event.Label, policy.Labels.Merged) {
-			return true
+		if !event.Added || event.ActorID != policy.Recorder.CommentAuthorID ||
+			!strings.EqualFold(event.Label, policy.Labels.Merged) {
+			continue
+		}
+		if !found || event.OccurredAt.Before(first) {
+			first = event.OccurredAt
+			found = true
 		}
 	}
-	return false
+	return first, found
+}
+
+// readyLabelIsMergeResidue は、現在残っている`ai-ready`が完了記録より前から付いていた
+// 残骸だと観測から確定できるかを返す。
+//
+// 完了の記録は`ai-merged`の付与に成功してから`ai-ready`の削除に失敗し得る。残った
+// `ai-ready`を人間の再依頼として読むと、再依頼が無いのに「新しい実行を開始しません」と
+// いう案内 comment が Issue へ永続的に残る（comment は record kind 単位の収束なので
+// 後から消えない）。label set 自体はどちらの分岐でも`ai-merged`単独へ収束するため、
+// 食い違うのは記録の内容だけである。
+//
+// 残骸だと**確定できる**場合にだけ true を返す。付与 event が観測できない場合は
+// 従来どおり再依頼として扱う。案内の欠落は次の再付与で回復するが、誤った案内は残る。
+// 同時刻を残骸に含めるのも同じ向きの判断である（GitHub の timestamp は秒解像度であり、
+// merge 記録と同じ秒に付いた`ai-ready`はどちらとも決められない）。
+func readyLabelIsMergeResidue(issue workflow.IssueObservation, policy LabelPolicy,
+	recordedAt time.Time) bool {
+	latest, found := latestLabelAdd(issue.LabelEvents, policy.Labels.Ready)
+	return found && !latest.After(recordedAt)
+}
+
+func latestLabelAdd(events []workflow.LabelEventObservation, label string) (time.Time, bool) {
+	var latest time.Time
+	found := false
+	for _, event := range events {
+		if !event.Added || !strings.EqualFold(event.Label, label) {
+			continue
+		}
+		if !found || event.OccurredAt.After(latest) {
+			latest = event.OccurredAt
+			found = true
+		}
+	}
+	return latest, found
 }
 
 func hasLabel(labels []string, target string) bool {
@@ -462,6 +508,17 @@ func hasLabel(labels []string, target string) bool {
 // に対して意味を持たず、claim 前の候補まで「進行中」に含めてしまうためである。
 // claim 前に`ai-in-progress`を記録すると、claim が成立しなかった Issue が実行中として
 // 表示され、`ai-ready`も外れて人間の trigger が失われる。
+//
+// PhaseClaimed を除くのは同じ理由である。導出 model の`claimed`は「branch はあるが
+// Pull Request がまだ無い」＝ claim 続行中または中断であり、durable model の同名 phase
+// （claim が確定した段階）とは意味が違う。docs/spec/05_design/04_github-routing.md の
+// Result 表は`claimed`を「branch と draft PR を確定した」と定義し、Transition rules の
+// 「claim 完了」行はその状態にだけ対応する。記録面が成立する前に`ai-ready`を消費すると、
+// claim が transport failure を繰り返す間も人間の trigger が戻らない（同書は
+// 「一時 transport failure では`ai-ready`を消費しない」と定める）。branch だけが残る
+// Issue は`ai-ready`を保ったまま候補 query で再発見され、claim が完了した時点で
+// Transition rules どおりに trigger が消費される。
 func activeRunPhase(phase workflow.Phase) bool {
-	return slices.Contains(workflow.Phases(), phase) && phase.Active()
+	return phase != workflow.PhaseClaimed &&
+		slices.Contains(workflow.Phases(), phase) && phase.Active()
 }

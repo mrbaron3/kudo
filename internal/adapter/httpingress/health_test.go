@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -217,5 +218,72 @@ func TestReadyzContainsAPanickingReadinessCheck(t *testing.T) {
 	})
 	if stack, _ := record[telemetry.FieldStack].(string); !strings.Contains(stack, "httpingress") {
 		t.Errorf("record %v does not carry the panic stack", record)
+	}
+}
+
+// probe は繰り返し届く。ctx を無視する検査が一つ居るだけで request ごとに goroutine を
+// 起こす形だと、outstanding な検査が probe 間隔ぶんだけ増え続ける。単一 flight にすると、
+// 何度 probe されても検査は高々 1 本であり、待機側はそれぞれ自分の期限で 503 へ倒れる。
+func TestReadyzKeepsAtMostOneOutstandingReadinessCheck(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	var started atomic.Int64
+	handler, err := NewHandler(Config{
+		Verifier:         newVerifierForTest(t),
+		Trigger:          &recordingTrigger{},
+		ReadinessTimeout: 20 * time.Millisecond,
+		Readiness: func(context.Context) error {
+			started.Add(1)
+			<-release
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	const probes = 8
+	for range probes {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, ReadyPath, nil))
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+		}
+	}
+	if got := started.Load(); got != 1 {
+		t.Fatalf("outstanding readiness checks = %d, want 1", got)
+	}
+}
+
+// 単一 flight は「検査が戻らない」ときだけの縮退であり、健全な検査では probe ごとに
+// 現在値を読み直す。戻った flight を掴んだままにすると、一度 not ready になった process が
+// 復旧しても ready へ戻らない。
+func TestReadyzReevaluatesAfterTheOutstandingCheckReturns(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	handler, err := NewHandler(Config{
+		Verifier: newVerifierForTest(t),
+		Trigger:  &recordingTrigger{},
+		Readiness: func(context.Context) error {
+			if calls.Add(1) == 1 {
+				return &NotReadyError{Reason: "credential_unavailable"}
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	for _, want := range []int{http.StatusServiceUnavailable, http.StatusOK} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, ReadyPath, nil))
+		if recorder.Code != want {
+			t.Fatalf("status = %d, want %d", recorder.Code, want)
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("readiness calls = %d, want 2", got)
 	}
 }

@@ -709,14 +709,27 @@ func TestPollCycleSubmitsEveryIssueEvenAfterRotating(t *testing.T) {
 	}
 }
 
-// hint に上限が無いと、clock skew や異常な Retry-After だけで回復経路が任意長停止する。
-func TestRetryHintIsCappedSoPollingCannotStopIndefinitely(t *testing.T) {
+// 04_github-routing.md は「GitHub が`Retry-After`または rate limit reset で示した時刻は
+// backoff の下限として尊重する」と定める。上限で切り詰めると指示より早く再試行し、
+// secondary rate limit では追加のペナルティを受ける。backoff の上限（BackoffMax）を
+// 超える hint も縮めない。
+func TestRetryHintIsHonoredAsTheBackoffLowerBound(t *testing.T) {
 	t.Parallel()
 
 	config := DefaultPollConfig()
-	got := applyRetryHint(config, config.BackoffInitial, 8*time.Hour)
-	if got != MaxRetryHint {
-		t.Fatalf("delay = %v, want %v", got, MaxRetryHint)
+	for name, testCase := range map[string]struct {
+		hint time.Duration
+		want time.Duration
+	}{
+		"BackoffMax を超える hint": {8 * time.Hour, 8 * time.Hour},
+		"backoff より短い hint":    {time.Second, config.BackoffInitial},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := applyRetryHint(config, config.BackoffInitial, testCase.hint); got != testCase.want {
+				t.Fatalf("delay = %v, want %v", got, testCase.want)
+			}
+		})
 	}
 }
 

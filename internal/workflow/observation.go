@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -247,4 +248,18 @@ type CommentObservation struct {
 	AuthorID    int64
 	CreatedAt   time.Time
 	Marker      *CommentMarkerObservation
+}
+
+// containsIdentity は GitHub の case-insensitive な identity 規則で一致を判定する。
+//
+// label name と login は GitHub 上で大文字小文字を区別しない identity であり、API は
+// repository へ保存された表記をそのまま返す。設定値と表記だけが違う観測を別 identity と
+// して扱うと、Kudo 自身が付けた`ai-needs-human`を停止の根拠として読めず、escalation が
+// 黙って解除される（docs/spec/05_design/04_github-routing.md の Labels / Human escalation）。
+// 記録側（Controller の label 収束と gateway の DELETE）は既にこの規則で照合しているため、
+// 導出側だけが完全一致だと経路ごとに identity の定義が食い違う。
+func containsIdentity(values []string, target string) bool {
+	return slices.ContainsFunc(values, func(value string) bool {
+		return strings.EqualFold(value, target)
+	})
 }

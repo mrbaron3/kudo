@@ -213,3 +213,23 @@ func TestDeriveReviewRoundsRejectsIncompleteConfiguration(t *testing.T) {
 		t.Fatal("actor identity が欠けた設定で counter を返した")
 	}
 }
+
+// 無人区間の起点も同じ identity 規則で照合する。表記だけが違う`ai-ready`付与を
+// 見落とすと起点が消え、生涯の finding が現在区間へ混ざって round 上限へ早く到達する。
+func TestDeriveReviewRoundsMatchesReadyLabelIdentityCaseInsensitively(t *testing.T) {
+	observation := countedRun()
+	observation.Issue.LabelEvents = []LabelEventObservation{
+		{Label: "AI-Ready", Added: true, OccurredAt: at(30)},
+	}
+	observation.Comments = []CommentObservation{
+		findingComment(1, derivedReviewerCommentAuthor, contract.ReviewTestValidity, 10),
+		findingComment(2, derivedReviewerCommentAuthor, contract.ReviewTestValidity, 40),
+	}
+	rounds := requireRounds(t, observation, derivedConfig())
+	if rounds.Lifetime.TestValidity != 2 {
+		t.Errorf("lifetime = %d, want 2", rounds.Lifetime.TestValidity)
+	}
+	if rounds.CurrentStretch.TestValidity != 1 {
+		t.Errorf("current stretch = %d, want 1", rounds.CurrentStretch.TestValidity)
+	}
+}

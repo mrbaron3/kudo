@@ -32,15 +32,6 @@ const (
 	// DefaultCapacityRetryInterval は同時実行上限で落ちた IssueRef を再投入するまでの待機である。
 	DefaultCapacityRetryInterval = 5 * time.Second
 	MinCapacityRetryInterval     = time.Second
-
-	// MaxRetryHint は GitHub が示した再試行間隔として受け入れる上限である。
-	//
-	// 上限を置くのは、hint の供給元が Retry-After header か「rate limit reset と自分の
-	// clock の差」だからである。clock がずれていれば後者は実際の待ち時間と無関係に
-	// 膨らむ。polling は webhook 欠落の唯一の回復経路なので、その停止は他の経路で
-	// 補われない。上限を超える hint は、指示より早い再試行のペナルティより、回復経路を
-	// 失う方が重いという判断で切り詰める。
-	MaxRetryHint = time.Hour
 )
 
 // log の event 語彙。
@@ -614,13 +605,16 @@ func clampDelay(config PollConfig, delay time.Duration) time.Duration {
 
 // applyRetryHint は GitHub が示した再試行時刻を backoff の下限として適用する。
 //
-// hint が backoff の上限（BackoffMax）を超えていても縮めない。示された時刻より早く
-// 再試行すると同じ失敗を確実に繰り返し、secondary rate limit では追加のペナルティを
-// 受ける。ただし MaxRetryHint では切り詰める。回復経路そのものを失わないためである。
+// hint を上限で切り詰めない。示された時刻より早く再試行すると同じ失敗を確実に繰り返し、
+// secondary rate limit では追加のペナルティを受ける。backoff の上限（BackoffMax）を
+// 超える hint も同じ理由で縮めない（docs/spec/05_design/04_github-routing.md の
+// Polling fallback）。結果として GitHub が長い待機を指示した間は polling が止まるため、
+// 監視の受け皿は`last_success_at`と`backlog`である。
+//
+// hint の供給元が Retry-After header と「rate limit reset と自分の clock の差」である以上、
+// clock skew は後者を実際の待ち時間と無関係に膨らませ得る。異常値の排除は hint を作る
+// adapter 境界の責務であり、契約側の下限をここで上書きしない。
 func applyRetryHint(config PollConfig, delay, hint time.Duration) time.Duration {
-	if hint > MaxRetryHint {
-		hint = MaxRetryHint
-	}
 	if hint > delay {
 		return hint
 	}

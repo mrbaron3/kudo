@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mrbaron3/kudo/internal/contract"
@@ -74,7 +75,7 @@ func latestReadyLabelAdd(events []LabelEventObservation, readyLabel string) (tim
 	var latest time.Time
 	found := false
 	for _, event := range events {
-		if !event.Added || event.Label != readyLabel {
+		if !event.Added || !strings.EqualFold(event.Label, readyLabel) {
 			continue
 		}
 		if !found || event.OccurredAt.After(latest) {

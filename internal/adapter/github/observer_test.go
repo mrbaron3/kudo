@@ -277,3 +277,29 @@ func pageLink(base string, path string, page int) string {
 	values := url.Values{"page": {fmt.Sprint(page)}, "per_page": {"100"}}
 	return fmt.Sprintf(`<%s%s?%s>; rel="next"`, base, path, values.Encode())
 }
+
+// state は「live state が open」という候補条件の判断材料である。欠落や語彙外を
+// そのまま通すと「open ではない」＝候補外という正常な no-op に潰れ、transport failure
+// としても escalation としても記録されないまま、再発見のたびに無言で捨てられる。
+func TestGetIssueRejectsMissingOrUnknownState(t *testing.T) {
+	t.Parallel()
+
+	for name, body := range map[string]string{
+		"state 欠落":  `{"id":160,"number":16,"title":"missing state","body":"body"}`,
+		"語彙外 state": `{"id":160,"number":16,"state":"archived","title":"unknown state","body":"body"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, body)
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := testGateway(server.Client(), server.URL).getIssue(t.Context(), 16)
+			var failure *TransportFailure
+			if !errors.As(err, &failure) || failure.Class != FailureInvalidResponse {
+				t.Fatalf("error = %v, want invalid response", err)
+			}
+		})
+	}
+}

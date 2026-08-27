@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/mrbaron3/kudo/internal/adapter/github"
@@ -120,6 +121,22 @@ type ingress struct {
 	readiness        ReadinessCheck
 	readinessTimeout time.Duration
 	logger           *slog.Logger
+
+	// mu と inFlight は readiness 検査の単一 flight を保つ。probe は繰り返し届くため、
+	// request ごとに goroutine を起こすと、ctx を無視する検査が一つ居るだけで
+	// outstanding な goroutine と検査内部の resource が probe 間隔ぶんだけ増え続ける。
+	mu       sync.Mutex
+	inFlight *readinessFlight
+}
+
+// readinessFlight は進行中の readiness 検査 1 回分である。
+//
+// 結果を共有するのは、readiness が request ではなく process の性質だからである。
+// 待機中の probe を「別の検査」にすると、健全だが遅い検査を持つ deployment で
+// probe 間隔ぶんの並行検査が走る。
+type readinessFlight struct {
+	done chan struct{}
+	err  error
 }
 
 // NewHandler は webhook と health route を持つ handler を返す。
@@ -256,12 +273,13 @@ func (i *ingress) handleReadyz(writer http.ResponseWriter, request *http.Request
 
 	// 検査を別 goroutine で回して ctx.Done() と select するのは、context の cancel が
 	// 合図であって強制ではないためである。ctx を無視する I/O を持つ検査が居ると、
-	// 同期呼び出しでは handler が期限を超えて残り、probe の反復ごとに goroutine が積む。
-	result := make(chan error, 1)
-	go i.checkReadiness(ctx, result)
+	// 同期呼び出しでは handler が期限を超えて残る。goroutine を request ごとに起こさず
+	// 単一 flight にするのは、その検査が戻らない間も probe が届き続けるためである。
+	flight := i.readinessFlight(ctx)
 
 	select {
-	case err := <-result:
+	case <-flight.done:
+		err := flight.err
 		if err == nil {
 			break
 		}
@@ -297,28 +315,57 @@ func (i *ingress) handleReadyz(writer http.ResponseWriter, request *http.Request
 	writeStatus(writer, http.StatusOK)
 }
 
-// checkReadiness は検査を実行し、結果を buffered channel へ渡す。handler が先に
-// 応答して受け取らなくても送信は blocking しない。
+// readinessFlight は進行中の検査へ相乗りするか、無ければ 1 本だけ起こす。
+//
+// 起こした goroutine は ctx を無視する検査が戻るまで残るが、その間に届いた probe は
+// 新しい goroutine を作らず同じ flight を待つ。outstanding な検査は常に高々 1 本である。
+//
+// 検査へ渡す context は request の cancel から切り離し、同じ猶予の deadline を自分で持つ。
+// request を引き継ぐと、相乗りした probe のうち最初の一つが切断しただけで検査が cancel
+// され、残りの probe が結果を得られない。deadline を落とさないのは、ctx を尊重する検査が
+// 自分で諦められる契約を保つためである。
+func (i *ingress) readinessFlight(ctx context.Context) *readinessFlight {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.inFlight != nil {
+		return i.inFlight
+	}
+	flight := &readinessFlight{done: make(chan struct{})}
+	i.inFlight = flight
+	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), i.readinessTimeout)
+	go func() {
+		defer cancel()
+		i.checkReadiness(checkCtx, flight)
+	}()
+	return flight
+}
+
+// checkReadiness は検査を 1 回実行し、結果を flight へ確定させる。
 //
 // panic を recover するのは、goroutine へ移したことで net/http の per-connection
 // recover が届かなくなるためである。readiness 実装の bug で process ごと落とすと、
 // liveness endpoint も webhook も同時に失われる。
-func (i *ingress) checkReadiness(ctx context.Context, result chan<- error) {
+func (i *ingress) checkReadiness(ctx context.Context, flight *readinessFlight) {
 	defer func() {
 		recovered := recover()
-		if recovered == nil {
-			return
+		if recovered != nil {
+			i.logger.LogAttrs(ctx, slog.LevelError, "readiness 検査が panic した",
+				slog.String(telemetry.FieldEvent, EventReadiness),
+				slog.String(telemetry.FieldOutcome, string(OutcomeNotReady)),
+				slog.String(telemetry.FieldReason, string(ReasonReadinessPanicked)),
+				telemetry.ErrorType(recovered),
+				slog.String(telemetry.FieldStack, string(debug.Stack())),
+			)
+			flight.err = errReadinessPanicked
 		}
-		i.logger.LogAttrs(ctx, slog.LevelError, "readiness 検査が panic した",
-			slog.String(telemetry.FieldEvent, EventReadiness),
-			slog.String(telemetry.FieldOutcome, string(OutcomeNotReady)),
-			slog.String(telemetry.FieldReason, string(ReasonReadinessPanicked)),
-			telemetry.ErrorType(recovered),
-			slog.String(telemetry.FieldStack, string(debug.Stack())),
-		)
-		result <- errReadinessPanicked
+		i.mu.Lock()
+		if i.inFlight == flight {
+			i.inFlight = nil
+		}
+		i.mu.Unlock()
+		close(flight.done)
 	}()
-	result <- i.readiness(ctx)
+	flight.err = i.readiness(ctx)
 }
 
 func writeStatus(writer http.ResponseWriter, status int) {

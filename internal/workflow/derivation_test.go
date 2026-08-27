@@ -921,3 +921,46 @@ func TestIssueBranchNameMatchesTheClaimTarget(t *testing.T) {
 		t.Fatalf("branch name = %q", got)
 	}
 }
+
+// GitHub の label / login は case-insensitive な identity であり、API は repository へ
+// 保存された表記を返す。導出だけが完全一致だと、Kudo 自身が付けた`ai-needs-human`を
+// 停止として読めず、次の reconcile が停止前の phase を再導出して無人 loop を再開させる
+// （記録側は case-insensitive に削除できるため、自分の escalation label まで外れる）。
+// 同じ理由で、表記だけが違う`ai-ready`と assignee も候補条件を満たさなければならない。
+func TestDeriveMatchesLabelAndAssigneeIdentityCaseInsensitively(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		observation Observation
+		want        Phase
+		wantNext    ReconcileActionKind
+	}{
+		"停止 label の表記違い": {
+			observation: openIssue("AI-Needs-Human"),
+			want:        PhaseNeedsHuman,
+			wantNext:    ReconcileAwaitHuman,
+		},
+		"ready label の表記違い": {
+			observation: openIssue("AI-Ready"),
+			want:        PhaseCandidate,
+			wantNext:    ReconcileDispatchOperation,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			derivation := Derive(test.observation, derivedConfig())
+			if derivation.Phase != test.want || derivation.Next.Kind != test.wantNext {
+				t.Fatalf("Derive() = %s / %s, want %s / %s",
+					derivation.Phase, derivation.Next.Kind, test.want, test.wantNext)
+			}
+		})
+	}
+
+	assignee := openIssue(LabelReady)
+	assignee.Issue.Assignees = []string{"MrBaron3"}
+	derivation := Derive(assignee, derivedConfig())
+	if derivation.Phase != PhaseCandidate {
+		t.Fatalf("Derive() phase = %s, want %s", derivation.Phase, PhaseCandidate)
+	}
+}

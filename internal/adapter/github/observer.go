@@ -544,6 +544,14 @@ func (g *Gateway) convertIssueMetadata(value apiIssue) (IssueMetadata, error) {
 	if value.Number <= 0 {
 		return IssueMetadata{}, invalidResponse("decode Issue", "Issue number が不正", nil)
 	}
+	// state は candidate 条件（live state が open）の判断材料であり、欠落や語彙外を
+	// そのまま通すと「open ではない」＝候補外という正常な no-op へ潰れる。候補外は
+	// transport failure でも backoff でもないため、observation の欠落が signal を
+	// 一切残さないまま webhook と polling の再発見を無言で消費し続ける。必須入力の
+	// 欠落は推測せず拒否する（AGENTS.md の Contract discipline）。
+	if !validIssueState(value.State) {
+		return IssueMetadata{}, invalidResponse("decode Issue", "Issue state が欠落しているか語彙外", nil)
+	}
 	repository := g.repository
 	if value.RepositoryURL != "" {
 		parsed, err := repositoryFromAPIURL(value.RepositoryURL)
@@ -576,6 +584,12 @@ func (g *Gateway) convertIssueMetadata(value apiIssue) (IssueMetadata, error) {
 		UpdatedAt:     value.UpdatedAt,
 		ClosedAt:      value.ClosedAt,
 	}, nil
+}
+
+// validIssueState は GitHub の Issue state 語彙を固定する。
+// 表記差は case-insensitive な identity として受理し、値の欠落とは区別する。
+func validIssueState(value string) bool {
+	return strings.EqualFold(value, "open") || strings.EqualFold(value, "closed")
 }
 
 func hasPullRequest(value json.RawMessage) bool {

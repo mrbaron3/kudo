@@ -241,7 +241,7 @@ func derive(observation Observation, config DeriveConfig) (Derivation, error) {
 	if observation.Issue.Number != config.Issue {
 		return Derivation{}, errInvalidRecord
 	}
-	if slices.Contains(observation.Issue.Labels, config.NeedsHumanLabel) {
+	if containsIdentity(observation.Issue.Labels, config.NeedsHumanLabel) {
 		return Derivation{Phase: PhaseNeedsHuman, Next: ReconcileAction{Kind: ReconcileAwaitHuman}}, nil
 	}
 
@@ -406,8 +406,8 @@ func activeBranch(branch *BranchObservation, config DeriveConfig) (*BranchObserv
 
 func deriveCandidate(issue IssueObservation, config DeriveConfig) Derivation {
 	candidate := issue.State == IssueStateOpen &&
-		slices.Contains(issue.Assignees, config.Assignee) &&
-		slices.Contains(issue.Labels, config.ReadyLabel)
+		containsIdentity(issue.Assignees, config.Assignee) &&
+		containsIdentity(issue.Labels, config.ReadyLabel)
 	if !candidate {
 		return Derivation{Phase: PhaseNone, Next: ReconcileAction{Kind: ReconcileSkipNotCandidate}}
 	}
