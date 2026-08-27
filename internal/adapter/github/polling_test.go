@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -117,16 +118,57 @@ func TestListCandidateIssueRefsReturnsIdentityWithoutBody(t *testing.T) {
 	}
 }
 
-func TestRemoveLabelSkipsDeleteWhenLabelIsAbsent(t *testing.T) {
+// 収束済みの label set では、読み取り 1 回だけで mutation を出さない。
+func TestConvergeLabelsReadsOnceAndSkipsSettledMutations(t *testing.T) {
 	t.Parallel()
 
-	var deletes atomic.Int32
+	var gets, mutations atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations.Add(1)
+			t.Errorf("収束済みで mutation を発行した: %s %s", r.Method, r.URL.Path)
+			return
+		}
+		gets.Add(1)
+		fmt.Fprint(w, `[{"name":"ai-merged"}]`)
+	}))
+	t.Cleanup(server.Close)
+
+	added, removed, err := testGateway(server.Client(), server.URL).ConvergeLabels(t.Context(), 19,
+		"ai-merged", []string{"ai-ready", "ai-in-progress", "ai-needs-human"})
+	if err != nil {
+		t.Fatalf("ConvergeLabels() error = %v", err)
+	}
+	if added || len(removed) != 0 || mutations.Load() != 0 {
+		t.Fatalf("added = %v, removed = %v, mutation = %d", added, removed, mutations.Load())
+	}
+	if gets.Load() != 1 {
+		t.Fatalf("label 一覧の読み取り = %d 回, want 1", gets.Load())
+	}
+}
+
+// GitHub の label identity は case-insensitive だが、DELETE の path は表記が一致しないと
+// 対象を解決できない。設定値で消しにいくと、外れていないのに収束済みとして報告される。
+func TestConvergeLabelsDeletesTheObservedLabelName(t *testing.T) {
+	t.Parallel()
+
+	var deleted []string
+	var added []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			fmt.Fprint(w, `[{"name":"ai-merged"}]`)
+			fmt.Fprint(w, `[{"name":"AI-Ready"},{"name":"ai-in-progress"}]`)
+		case http.MethodPost:
+			var posted struct {
+				Labels []string `json:"labels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Error(err)
+			}
+			added = append(added, posted.Labels...)
+			fmt.Fprint(w, `[]`)
 		case http.MethodDelete:
-			deletes.Add(1)
+			deleted = append(deleted, r.URL.Path)
 			fmt.Fprint(w, `[]`)
 		default:
 			t.Errorf("method = %s", r.Method)
@@ -134,62 +176,95 @@ func TestRemoveLabelSkipsDeleteWhenLabelIsAbsent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	changed, err := testGateway(server.Client(), server.URL).RemoveLabel(t.Context(), 19, "ai-ready")
+	changed, removed, err := testGateway(server.Client(), server.URL).ConvergeLabels(t.Context(), 19,
+		"ai-merged", []string{"ai-ready", "ai-in-progress"})
 	if err != nil {
-		t.Fatalf("RemoveLabel() error = %v", err)
+		t.Fatalf("ConvergeLabels() error = %v", err)
 	}
-	if changed || deletes.Load() != 0 {
-		t.Fatalf("changed = %v, DELETE count = %d", changed, deletes.Load())
+	if !changed || len(added) != 1 || added[0] != "ai-merged" {
+		t.Fatalf("changed = %v, added = %v", changed, added)
+	}
+	want := []string{
+		"/repos/acme/widgets/issues/19/labels/AI-Ready",
+		"/repos/acme/widgets/issues/19/labels/ai-in-progress",
+	}
+	if !slices.Equal(deleted, want) {
+		t.Fatalf("deleted = %v, want %v", deleted, want)
+	}
+	if !slices.Equal(removed, []string{"AI-Ready", "ai-in-progress"}) {
+		t.Fatalf("removed = %v", removed)
 	}
 }
 
-func TestRemoveLabelDeletesOnlyTheNamedLabel(t *testing.T) {
+// 同じ label の削除が競合しても、次の reconcile は「既に無い」へ収束しなければならない。
+// 404 を失敗にすると、収束済みの状態が transport failure として記録される。
+func TestConvergeLabelsTreatsConcurrentRemovalAsConverged(t *testing.T) {
 	t.Parallel()
 
-	var deleted atomic.Value
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			fmt.Fprint(w, `[{"name":"AI-Ready"},{"name":"ai-in-progress"}]`)
+			fmt.Fprint(w, `[{"name":"ai-ready"},{"name":"ai-merged"}]`)
 		case http.MethodDelete:
-			deleted.Store(r.URL.Path)
-			fmt.Fprint(w, `[{"name":"ai-in-progress"}]`)
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Label does not exist"}`)
 		default:
 			t.Errorf("method = %s", r.Method)
 		}
 	}))
 	t.Cleanup(server.Close)
 
-	changed, err := testGateway(server.Client(), server.URL).RemoveLabel(t.Context(), 19, "ai-ready")
+	added, removed, err := testGateway(server.Client(), server.URL).ConvergeLabels(t.Context(), 19,
+		"ai-merged", []string{"ai-ready"})
 	if err != nil {
-		t.Fatalf("RemoveLabel() error = %v", err)
+		t.Fatalf("ConvergeLabels() error = %v", err)
 	}
-	if !changed || deleted.Load() != "/repos/acme/widgets/issues/19/labels/ai-ready" {
-		t.Fatalf("changed = %v, deleted path = %v", changed, deleted.Load())
+	if added || len(removed) != 0 {
+		t.Fatalf("added = %v, removed = %v, want 変化なし", added, removed)
 	}
 }
 
-// 同じ label の削除が競合しても、次の reconcile は「既に無い」へ収束しなければならない。
-// 404 を失敗にすると、収束済みの状態が transport failure として記録される。
-func TestRemoveLabelTreatsConcurrentRemovalAsConverged(t *testing.T) {
+// 追加と削除に同じ label を渡す呼び出しは収束先が定義できない。
+func TestConvergeLabelsRejectsContradictoryRequests(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			fmt.Fprint(w, `[{"name":"ai-ready"}]`)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprint(w, `{"message":"Label does not exist"}`)
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		t.Errorf("検証前に request を送った: %s %s", r.Method, r.URL.Path)
 	}))
 	t.Cleanup(server.Close)
 
-	changed, err := testGateway(server.Client(), server.URL).RemoveLabel(t.Context(), 19, "ai-ready")
-	if err != nil {
-		t.Fatalf("RemoveLabel() error = %v", err)
+	if _, _, err := testGateway(server.Client(), server.URL).ConvergeLabels(t.Context(), 19,
+		"ai-merged", []string{"AI-Merged"}); err == nil {
+		t.Fatal("同じ label の追加と削除を受理した")
 	}
-	if changed {
-		t.Fatalf("changed = %v, want false", changed)
+}
+
+func TestListLabeledIssueRefsExcludesPullRequestsAndClosedIssues(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if query.Get("state") != "open" || query.Get("labels") != "ai-in-progress" {
+			t.Errorf("query = %q", r.URL.RawQuery)
+		}
+		if query.Has("assignee") {
+			t.Errorf("Kudo 所有 label の列挙で assignee を絞った: %q", r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"number": 19, "state": "open", "body": "", "repository_url": "https://api.github.com/repos/acme/widgets"},
+			{"number": 52, "state": "open", "body": "", "repository_url": "https://api.github.com/repos/acme/widgets",
+				"pull_request": map[string]any{"url": "https://example.test/pull/52"}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	refs, err := testGateway(server.Client(), server.URL).ListLabeledIssueRefs(t.Context(), "ai-in-progress")
+	if err != nil {
+		t.Fatalf("ListLabeledIssueRefs() error = %v", err)
+	}
+	want := contract.IssueRef{Owner: "acme", Repository: "widgets", Number: 19}
+	if len(refs) != 1 || refs[0] != want {
+		t.Fatalf("refs = %#v, want %#v のみ", refs, want)
 	}
 }
 

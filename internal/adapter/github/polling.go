@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mrbaron3/kudo/internal/contract"
@@ -117,6 +118,51 @@ func (g *Gateway) ListOpenRunIssueRefs(ctx context.Context) ([]contract.IssueRef
 				continue
 			}
 			seen[number] = struct{}{}
+			result = append(result, ref)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// ListLabeledIssueRefs は指定 label を持つ open な Issue を列挙する。
+//
+// assignee で絞らないのは、対象が Kudo 自身が付けた status label だからである。
+// candidate query（人間所有の`ai-ready`）と違い、この label は Kudo の記録であり、
+// assignee が手で変えられていても記録の収束は続けなければならない。
+// Pull Request は除外する（issues list endpoint は PR も返す）。
+func (g *Gateway) ListLabeledIssueRefs(ctx context.Context, label string) ([]contract.IssueRef, error) {
+	if strings.TrimSpace(label) == "" {
+		return nil, fmt.Errorf("列挙する label は必須")
+	}
+	query := url.Values{
+		"state":     {"open"},
+		"labels":    {label},
+		"sort":      {"created"},
+		"direction": {"asc"},
+	}
+	seen := make(map[int64]struct{})
+	var result []contract.IssueRef
+	err := g.paginate(ctx, g.repositoryPath("issues"), query, func(data []byte) error {
+		var page []apiIssue
+		if err := json.Unmarshal(data, &page); err != nil {
+			return err
+		}
+		for _, value := range page {
+			if hasPullRequest(value.PullRequest) || value.Number <= 0 {
+				continue
+			}
+			if _, exists := seen[value.Number]; exists {
+				continue
+			}
+			ref, valid := g.issueRef(value.Number)
+			if !valid {
+				return invalidResponse("GET issues", "Issue number が identity の範囲を超えた", nil)
+			}
+			seen[value.Number] = struct{}{}
 			result = append(result, ref)
 		}
 		return nil

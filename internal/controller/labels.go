@@ -15,8 +15,13 @@ import (
 
 // LabelEvent は Controller が GitHub label として記録する導出 event である。
 //
-// 値は docs/spec/05_design/04_github-routing.md の Transition rules の行に 1:1 で対応する。
-// closed vocabulary にしているのは、行が増えたときに既定分岐が誤った label 操作を
+// 先頭 4 値は docs/spec/05_design/04_github-routing.md の Transition rules の行に 1:1 で
+// 対応する。残る 2 値は「同じ行を、その一度きりの副作用が済んだ後に再観測した」ことを
+// 表す。label の add / remove 集合は対応する行と同じで、close と案内 comment だけを
+// 行わない。行を増やしているのではなく、行の再適用が人間の操作を押し戻さないように
+// 分けている。
+//
+// closed vocabulary にしているのは、値が増えたときに既定分岐が誤った label 操作を
 // しないようにするためである。label は workflow state の正本ではなく、check run /
 // comment / PR / branch の観測から導出した phase の記録である。
 type LabelEvent string
@@ -31,6 +36,20 @@ const (
 	// LabelEventAlreadyMergedRequest は merged な kudo PR を持つ Issue への`ai-ready`
 	// 再付与（reopen 後を含む）の記録である。新しい Run は始めない。
 	LabelEventAlreadyMergedRequest LabelEvent = "already_merged_request"
+
+	// LabelEventNeedsHumanRecorded は既に停止中の Run の再観測である。
+	//
+	// 停止（LabelEventRunNeedsHuman）と分けるのは、`ai-ready`が escalation 解除の
+	// 唯一の trigger だからである。停止中の再観測で`ai-ready`を消すと、人間が契約を
+	// 直して付け直した trigger を、resume 判定が走る前に Kudo 自身が消してしまう
+	// （docs/spec/05_design/04_github-routing.md の Labels / Human escalation）。
+	LabelEventNeedsHumanRecorded LabelEvent = "needs_human_recorded"
+	// LabelEventMergeRecorded は完了記録済みの merge の再観測である。
+	//
+	// close を伴わないのは、Task Issue の close が merge completion を初めて記録した
+	// 一度きりの副作用だからである。その後に Issue が open であることは人間の操作の
+	// 結果であり、Kudo が押し戻す対象ではない。
+	LabelEventMergeRecorded LabelEvent = "merge_recorded"
 )
 
 // AlreadyMergedCommentKind は already-merged 再依頼の案内 comment を識別する record kind である。
@@ -50,6 +69,9 @@ const (
 
 // ErrUnknownLabelEvent は語彙外の label event を表す。
 var ErrUnknownLabelEvent = errors.New("label event が語彙に無い")
+
+// ErrIssueOutsideRepository は recorder が束縛していない repository の Issue を表す。
+var ErrIssueOutsideRepository = errors.New("Issue が recorder の repository に属さない")
 
 // LabelSet は deployment が固定する 4 label の名前である。
 //
@@ -108,8 +130,12 @@ func (s LabelSet) Validate() error {
 // すべての操作は現在値を確認してから mutate し、戻り値は「この呼び出しが変えたか」を返す。
 // 既に収束している状態は成功であり、失敗ではない。
 type LabelSurface interface {
-	EnsureLabel(ctx context.Context, issue int64, label string) (bool, error)
-	RemoveLabel(ctx context.Context, issue int64, label string) (bool, error)
+	// ConvergeLabels は add を付け、remove を外した状態へ収束させる。
+	//
+	// 単一 label ごとの port にしないのは、1 回の記録が同じ label 一覧を 3〜4 回
+	// 読み直すためである。polling は rate limit 予算の制約下にある回復経路であり、
+	// 収束済みの Run を毎 cycle 記録するこの経路の読み取りは定常的な支出になる。
+	ConvergeLabels(ctx context.Context, issue int64, add string, remove []string) (added bool, removed []string, err error)
 	EnsureIssueClosed(ctx context.Context, issue int64) (bool, error)
 	// EnsureIssueComment は kind で識別される Coordinator 名義の comment を、本文が
 	// 違う場合だけ更新して収束させる。marker の形式は adapter の所有であり、
@@ -135,12 +161,13 @@ func (r LabelRecord) Changed() bool {
 	return r.Added != "" || len(r.Removed) > 0 || r.ClosedIssue || r.CommentChanged
 }
 
-// labelTransition は Transition rules の 1 行である。
+// labelTransition は Transition rules の 1 行と、その一度きりの副作用である。
 type labelTransition struct {
 	add    func(LabelSet) string
 	remove []func(LabelSet) string
-	// closeIssue は merge completion だけが持つ副作用である。already-merged 再依頼で
-	// close しないのは、reopen が人間の操作であり、Kudo が押し戻す対象ではないためである。
+	// closeIssue は merge completion を初めて記録するときだけ true になる。
+	// 完了記録済みの再観測（LabelEventMergeRecorded）では false であり、人間が
+	// reopen した Issue を Kudo が閉じ直さない。
 	closeIssue bool
 	// guidance は案内 comment を収束させるかを表す。
 	guidance bool
@@ -148,20 +175,30 @@ type labelTransition struct {
 
 var labelTransitions = map[LabelEvent]labelTransition{
 	LabelEventClaimCompleted: {
-		add:    func(s LabelSet) string { return s.InProgress },
+		add:    inProgress,
 		remove: []func(LabelSet) string{ready, needsHuman},
 	},
 	LabelEventRunNeedsHuman: {
-		add:    func(s LabelSet) string { return s.NeedsHuman },
+		add:    needsHuman,
 		remove: []func(LabelSet) string{ready, inProgress, merged},
 	},
+	// 停止中の再観測では`ai-ready`を外さない。人間が付け直した resume trigger を、
+	// resume / supersede の判定が走る前に消費しないためである。
+	LabelEventNeedsHumanRecorded: {
+		add:    needsHuman,
+		remove: []func(LabelSet) string{inProgress, merged},
+	},
 	LabelEventMergeCompleted: {
-		add:        func(s LabelSet) string { return s.Merged },
+		add:        merged,
 		remove:     []func(LabelSet) string{ready, inProgress, needsHuman},
 		closeIssue: true,
 	},
+	LabelEventMergeRecorded: {
+		add:    merged,
+		remove: []func(LabelSet) string{ready, inProgress, needsHuman},
+	},
 	LabelEventAlreadyMergedRequest: {
-		add:      func(s LabelSet) string { return s.Merged },
+		add:      merged,
 		remove:   []func(LabelSet) string{ready},
 		guidance: true,
 	},
@@ -178,16 +215,28 @@ func merged(s LabelSet) string     { return s.Merged }
 // 記録の失敗で導出 phase は巻き戻らない。失敗した記録は次の reconcile が同じ観測から
 // 同じ event を導出して retry する（docs/spec/05_design/04_github-routing.md の Labels）。
 type LabelRecorder struct {
-	surface LabelSurface
-	labels  LabelSet
-	logger  *slog.Logger
+	surface    LabelSurface
+	repository contract.IssueRef
+	labels     LabelSet
+	logger     *slog.Logger
 }
 
-// NewLabelRecorder は記録面と label 名を束縛した recorder を返す。
-// logger が nil のときは slog.Default を使う。
-func NewLabelRecorder(surface LabelSurface, labels LabelSet, logger *slog.Logger) (*LabelRecorder, error) {
+// NewLabelRecorder は記録面、対象 repository、label 名を束縛した recorder を返す。
+//
+// repository を束縛するのは、LabelSurface が Issue number しか受け取らないためである。
+// 複数 repository を扱う composition で recorder を取り違えると、別 repository の
+// 同じ番号の Issue を Coordinator 名義で mutate できてしまう。identity の照合を
+// 呼び出し側の注意深さに委ねない。
+//
+// owner / repository は GitHub の case-insensitive な identity に合わせて小文字で
+// 比較する。logger が nil のときは slog.Default を使う。
+func NewLabelRecorder(surface LabelSurface, repository contract.IssueRef, labels LabelSet,
+	logger *slog.Logger) (*LabelRecorder, error) {
 	if surface == nil {
 		return nil, errors.New("LabelSurface は必須")
+	}
+	if strings.TrimSpace(repository.Owner) == "" || strings.TrimSpace(repository.Repository) == "" {
+		return nil, errors.New("recorder の repository identity は必須")
 	}
 	if err := labels.Validate(); err != nil {
 		return nil, err
@@ -195,14 +244,24 @@ func NewLabelRecorder(surface LabelSurface, labels LabelSet, logger *slog.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &LabelRecorder{surface: surface, labels: labels, logger: logger}, nil
+	return &LabelRecorder{
+		surface:    surface,
+		repository: contract.IssueRef{Owner: strings.ToLower(repository.Owner), Repository: strings.ToLower(repository.Repository)},
+		labels:     labels,
+		logger:     logger,
+	}, nil
 }
 
 // Record は event に対応する label set へ収束させる。
 //
-// 追加を先に行い、置き換えられる label をその後で外す。逆順にすると、記録が中断した
-// 瞬間に「Kudo の status を持たない Issue」が観測でき、人間にも polling にも
+// 収束は「追加してから、置き換えられる label を外す」順で行う。逆順にすると、記録が
+// 中断した瞬間に「Kudo の status を持たない Issue」が観測でき、人間にも polling にも
 // 「Kudo が手を付けていない」と読める中間状態が生まれる。
+//
+// Issue の close はこの収束より前に行う。close が失敗した時点では`ai-merged`がまだ
+// 付いていないため、次の reconcile が同じ観測から merge completion を再導出して close を
+// retry できる。順序を逆にすると、close 失敗後の観測が「完了記録済み」に見え、close が
+// 二度と再試行されない。
 //
 // 途中で失敗した場合はそこで止めて error を返す。残りの mutation を続けないのは、
 // transport failure が続いていれば同じ失敗を繰り返すだけであり、次の reconcile が
@@ -216,36 +275,36 @@ func (r *LabelRecorder) Record(ctx context.Context, issue contract.IssueRef, eve
 		return LabelRecord{}, fmt.Errorf("%w: label 記録の Issue identity が欠落している",
 			workflow.ErrInvalidReconcileRequest)
 	}
+	if !strings.EqualFold(issue.Owner, r.repository.Owner) ||
+		!strings.EqualFold(issue.Repository, r.repository.Repository) {
+		return LabelRecord{}, fmt.Errorf("%w: %s は %s/%s の recorder では記録できない",
+			ErrIssueOutsideRepository, issue.String(), r.repository.Owner, r.repository.Repository)
+	}
 	number := int64(issue.Number)
 	record := LabelRecord{Event: event}
 
-	added, err := r.surface.EnsureLabel(ctx, number, transition.add(r.labels))
+	if transition.closeIssue {
+		closed, err := r.surface.EnsureIssueClosed(ctx, number)
+		if err != nil {
+			return record, err
+		}
+		record.ClosedIssue = closed
+	}
+	removals := make([]string, 0, len(transition.remove))
+	for _, resolve := range transition.remove {
+		removals = append(removals, resolve(r.labels))
+	}
+	added, removed, err := r.surface.ConvergeLabels(ctx, number, transition.add(r.labels), removals)
 	if err != nil {
 		return record, err
 	}
 	if added {
 		record.Added = transition.add(r.labels)
 	}
-	for _, resolve := range transition.remove {
-		label := resolve(r.labels)
-		removed, removeErr := r.surface.RemoveLabel(ctx, number, label)
-		if removeErr != nil {
-			return record, removeErr
-		}
-		if removed {
-			record.Removed = append(record.Removed, label)
-		}
-	}
-	if transition.closeIssue {
-		closed, closeErr := r.surface.EnsureIssueClosed(ctx, number)
-		if closeErr != nil {
-			return record, closeErr
-		}
-		record.ClosedIssue = closed
-	}
+	record.Removed = removed
 	if transition.guidance {
 		changed, commentErr := r.surface.EnsureIssueComment(ctx, number,
-			AlreadyMergedCommentKind, alreadyMergedGuidance(issue, r.labels))
+			AlreadyMergedCommentKind, alreadyMergedGuidance(r.labels))
 		if commentErr != nil {
 			return record, commentErr
 		}
@@ -273,8 +332,9 @@ func (r *LabelRecorder) logRecord(ctx context.Context, issue contract.IssueRef, 
 // alreadyMergedGuidance は再依頼を受け付けない理由と、人間が取れる選択肢を伝える。
 //
 // Issue 本文や token を含めないのは、この comment が public な記録面だからである。
-// 文面は record kind で識別されるため、変更しても既存 comment の更新になる。
-func alreadyMergedGuidance(issue contract.IssueRef, labels LabelSet) string {
+// Issue ごとに変わる値を入れていないのは意図であり、comment の identity は record kind
+// なので、文面を変えても既存 comment の更新になる。
+func alreadyMergedGuidance(labels LabelSet) string {
 	var builder strings.Builder
 	builder.WriteString("この Issue には merge 済みの kudo Pull Request が既に存在するため、")
 	builder.WriteString("`" + labels.Ready + "` の再付与では新しい実行を開始しません。\n\n")
@@ -291,24 +351,41 @@ func alreadyMergedGuidance(issue contract.IssueRef, labels LabelSet) string {
 // pure である。label は導出 phase の記録なので、この写像だけが「どの label を書くか」を
 // 決め、GitHub 呼び出し側に分岐を作らない。
 //
-// merge 完了と already-merged 再依頼を分けるのは、後者が「人間が reopen して
-// `ai-ready`を付け直した」観測だからである。前者は Issue を close するが、後者は
-// 人間の reopen を押し戻さず、案内 comment だけを収束させる。
+// merge 完了と already-merged 再依頼を、この写像自身が書き換える`ai-ready`で区別しない。
+// 区別に使うのは Kudo 自身の完了記録（`ai-merged`）の有無である。前者で分けると、
+// 記録した直後の観測で分岐が反転し、人間が reopen した Issue を次の reconcile が
+// close で押し戻す。`ai-ready`は「再依頼が来ているか」＝案内 comment を収束させるか
+// だけを決める。
+//
+// label 名の比較は case-insensitive である。GitHub 上の label identity が
+// case-insensitive であり、記録側（EnsureLabel / ConvergeLabels）が同じ規則で
+// 収束するのに、判定側だけが表記に敏感だと、同じ label が経路によって別物になる。
 func DeriveLabelEvent(derivation workflow.Derivation, issue workflow.IssueObservation,
 	labels LabelSet) (LabelEvent, bool) {
 	switch derivation.Next.Kind {
 	case workflow.ReconcileRecordCompletion:
-		if issue.State == workflow.IssueStateOpen && slices.Contains(issue.Labels, labels.Ready) {
+		if !hasLabel(issue.Labels, labels.Merged) {
+			return LabelEventMergeCompleted, true
+		}
+		if issue.State == workflow.IssueStateOpen && hasLabel(issue.Labels, labels.Ready) {
 			return LabelEventAlreadyMergedRequest, true
 		}
-		return LabelEventMergeCompleted, true
-	case workflow.ReconcileEscalateHuman, workflow.ReconcileAwaitHuman:
+		return LabelEventMergeRecorded, true
+	case workflow.ReconcileEscalateHuman:
 		return LabelEventRunNeedsHuman, true
+	case workflow.ReconcileAwaitHuman:
+		return LabelEventNeedsHumanRecorded, true
 	}
 	if activeRunPhase(derivation.Phase) {
 		return LabelEventClaimCompleted, true
 	}
 	return "", false
+}
+
+func hasLabel(labels []string, target string) bool {
+	return slices.ContainsFunc(labels, func(label string) bool {
+		return strings.EqualFold(label, target)
+	})
 }
 
 // activeRunPhase は claim 済みで自動 workflow が進行中の phase かを返す。

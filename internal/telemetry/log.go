@@ -60,6 +60,9 @@ const (
 	FieldCandidates = "candidates"
 	// FieldOpenRuns は open な kudo Pull Request から再発見した件数である。
 	FieldOpenRuns = "open_runs"
+	// FieldActiveRunLabel は進行中 Run の label を持つ open Issue の件数である。
+	// 記録が途中で失敗した投影はこの経路でしか再発見できない。
+	FieldActiveRunLabel = "active_run_label"
 	// FieldCapacityWaits は同時実行上限で再投入を待った回数である。
 	FieldCapacityWaits = "capacity_waits"
 	// FieldFailures は列挙に失敗した repository の件数である。

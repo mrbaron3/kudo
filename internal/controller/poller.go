@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"time"
 
@@ -73,6 +74,13 @@ type Discovery interface {
 	// ListOpenRunIssueRefs は open な kudo Pull Request を持つ Issue を列挙する。
 	// 途中 phase の Run は候補条件を満たさないため、この列挙だけが再開の入口になる。
 	ListOpenRunIssueRefs(ctx context.Context) ([]contract.IssueRef, error)
+	// ListLabeledIssueRefs は指定 label を持つ open な Issue を列挙する。
+	//
+	// candidate 条件と open PR のどちらにも現れない状態が存在するため必要である。
+	// 例えば merge 完了の投影が途中で失敗した Issue は、`ai-ready`が無いので候補ではなく、
+	// PR は merged なので open PR の列挙にも出ない。Kudo 所有の status label が付いたまま
+	// open であることが、その未完の投影を再発見できる唯一の観測になる。
+	ListLabeledIssueRefs(ctx context.Context, label string) ([]contract.IssueRef, error)
 }
 
 // ReconcileTrigger は poll 結果を ReconcileIssue へ投入する境界である。
@@ -100,6 +108,9 @@ type PollConfig struct {
 	BackoffMax            time.Duration
 	CapacityRetryInterval time.Duration
 	Filter                workflow.CandidateFilter
+	// ActiveRunLabel は Kudo が進行中の Run へ記録する label である。この label が
+	// 付いたまま open な Issue を列挙することで、記録が途中で失敗した投影を回収する。
+	ActiveRunLabel string
 }
 
 // DefaultPollConfig は spec が定める既定値を返す。
@@ -110,6 +121,7 @@ func DefaultPollConfig() PollConfig {
 		BackoffMax:            DefaultPollBackoffMax,
 		CapacityRetryInterval: DefaultCapacityRetryInterval,
 		Filter:                workflow.DefaultCandidateFilter(),
+		ActiveRunLabel:        string(workflow.StatusInProgress),
 	}
 }
 
@@ -132,6 +144,9 @@ func (c PollConfig) Validate() error {
 	if c.CapacityRetryInterval > c.Interval {
 		return fmt.Errorf("capacity 再投入間隔が poll interval を超えている: %s > %s",
 			c.CapacityRetryInterval, c.Interval)
+	}
+	if strings.TrimSpace(c.ActiveRunLabel) == "" {
+		return fmt.Errorf("進行中 Run の label が空である")
 	}
 	return c.Filter.Validate()
 }
@@ -165,15 +180,8 @@ type Poller struct {
 	// cycles と lastSuccess は Run の単一 goroutine だけが触る。Run を並行に呼ぶと
 	// cycle が重なり、poller の逐次性という前提自体が崩れる。
 	cycles      int
+	rotation    int
 	lastSuccess time.Time
-}
-
-// rotation は cycle ごとの投入開始位置を返す。
-func (p *Poller) rotation(size int) int {
-	if size <= 0 {
-		return 0
-	}
-	return (p.cycles - 1) % size
 }
 
 // NewPoller は collaborator と設定を検証した poller を返す。
@@ -181,13 +189,17 @@ func NewPoller(config PollerConfig) (*Poller, error) {
 	if len(config.Sources) == 0 {
 		return nil, errors.New("poll 対象の repository が無い")
 	}
+	sources := make([]PollSource, 0, len(config.Sources))
 	for _, source := range config.Sources {
-		if strings.TrimSpace(source.Repository) == "" {
-			return nil, errors.New("poll source の repository identity は必須")
+		repository, err := canonicalRepository(source.Repository)
+		if err != nil {
+			return nil, err
 		}
 		if source.Discovery == nil {
-			return nil, fmt.Errorf("poll source %q の Discovery は必須", source.Repository)
+			return nil, fmt.Errorf("poll source %q の Discovery は必須", repository)
 		}
+		source.Repository = repository
+		sources = append(sources, source)
 	}
 	if config.Trigger == nil {
 		return nil, errors.New("ReconcileTrigger は必須")
@@ -200,14 +212,14 @@ func NewPoller(config PollerConfig) (*Poller, error) {
 	}
 	jitter := config.Jitter
 	if jitter == nil {
-		jitter = fullJitter
+		jitter = equalJitter
 	}
 	logger := config.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Poller{
-		sources: append([]PollSource(nil), config.Sources...),
+		sources: sources,
 		trigger: config.Trigger,
 		clock:   config.Clock,
 		poll:    config.Poll,
@@ -228,13 +240,23 @@ type cycleReport struct {
 	// CapacityWaits は同時実行上限で待った回数である。
 	CapacityWaits int
 	// Failures は列挙に失敗した repository の数である。
-	Failures  int
-	Duration  time.Duration
-	FirstErr  error
+	Failures int
+	Duration time.Duration
+	// FirstErr は診断用に最初の失敗を保持する。待機の判断には使わない。
+	FirstErr error
+	// RetryHint は cycle 中の全失敗が示した再試行間隔の最大値である。最初の失敗だけを
+	// 見ると、hint を持たない失敗が先に起きたときに、後続 repository の Retry-After や
+	// rate limit reset を無視して指示より早く再試行してしまう。
+	RetryHint time.Duration
+	// Terminal は回復し得ない停止条件（dispatcher の shutdown）を表す。
+	Terminal  error
 	StartedAt time.Time
 }
 
-func (r cycleReport) failed() bool { return r.FirstErr != nil || r.Failures > 0 }
+// failed は「GitHub の列挙が失敗したか」だけを表す。同時実行上限による中断は失敗では
+// なく、cycle は列挙まで成功している。中断を失敗へ潰すと、GitHub 側が健全でも
+// last_success_at が凍り、poll の cadence が backoff へ置き換わる。
+func (r cycleReport) failed() bool { return r.Failures > 0 }
 
 // Run は startup reconciliation を一度行い、以後は interval ごとに poll する。
 //
@@ -248,11 +270,15 @@ func (p *Poller) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// dispatcher の shutdown は解除されない終端条件である。待って再試行しても
+		// 列挙の往復を消費するだけなので、poller 自身がここで止まる。
+		if report.Terminal != nil {
+			return report.Terminal
+		}
 		delay := p.poll.Interval
 		if report.failed() {
 			failures++
-			delay = applyRetryHint(p.poll, backoffDelay(p.poll, failures, p.jitter),
-				retryHint(report.FirstErr, p.clock.Now()))
+			delay = applyRetryHint(p.poll, backoffDelay(p.poll, failures, p.jitter), report.RetryHint)
 		} else {
 			failures = 0
 		}
@@ -283,6 +309,9 @@ func (p *Poller) runCycle(ctx context.Context, source workflow.TriggerSource) cy
 			if report.FirstErr == nil {
 				report.FirstErr = err
 			}
+			if hint := retryHint(err, p.clock.Now()); hint > report.RetryHint {
+				report.RetryHint = hint
+			}
 			continue
 		}
 		for _, ref := range refs {
@@ -294,25 +323,7 @@ func (p *Poller) runCycle(ctx context.Context, source workflow.TriggerSource) cy
 		}
 	}
 	report.Discovered = len(pending)
-
-	// 投入順を cycle ごとに回転させる。同時実行上限に張り付いた状態が続くと、毎 cycle
-	// 同じ順では先頭が slot を取り続け、末尾が観測されないまま残る。回転させれば、
-	// どの IssueRef もいずれ先頭に来る。
-	deadline := report.StartedAt.Add(p.poll.Interval)
-	for offset := range pending {
-		ref := pending[(p.rotation(len(pending))+offset)%len(pending)]
-		submitted, err := p.submit(ctx, ref, trigger, deadline, &report)
-		if err != nil {
-			report.Backlog = len(pending) - offset
-			if report.FirstErr == nil {
-				report.FirstErr = err
-			}
-			break
-		}
-		if submitted {
-			report.Submitted++
-		}
-	}
+	p.submitAll(ctx, pending, trigger, &report)
 
 	finished := p.clock.Now()
 	report.Duration = finished.Sub(report.StartedAt)
@@ -323,21 +334,76 @@ func (p *Poller) runCycle(ctx context.Context, source workflow.TriggerSource) cy
 	return report
 }
 
-// discover は一つの repository の候補 Issue と open Run を列挙する。
+// submitAll は発見した IssueRef を投入する。
+//
+// 投入順を cycle ごとに回転させ、投入し切れなかった位置から次の cycle を始める。
+// 同時実行上限に張り付いた状態が続くと、毎 cycle 同じ順では先頭が slot を取り続け、
+// 末尾が観測されないまま残る。進んだ件数だけ開始位置を進めれば、発見件数 N を
+// ceil(N / 1 cycle の投入数) cycle で一巡できる。1 件ずつしか進めないと、N が
+// 大きいほど末尾の待ち時間が線形に伸びる。
+func (p *Poller) submitAll(ctx context.Context, pending []contract.IssueRef,
+	trigger workflow.Trigger, report *cycleReport) {
+	if len(pending) == 0 {
+		return
+	}
+	deadline := report.StartedAt.Add(p.poll.Interval)
+	start := p.rotation % len(pending)
+	attempted := 0
+	for offset := range pending {
+		ref := pending[(start+offset)%len(pending)]
+		submitted, err := p.submit(ctx, ref, trigger, deadline, report)
+		if err != nil {
+			report.Backlog = len(pending) - offset
+			if errors.Is(err, ErrDispatcherStopped) {
+				report.Terminal = err
+			}
+			if report.FirstErr == nil {
+				report.FirstErr = err
+			}
+			break
+		}
+		attempted++
+		if submitted {
+			report.Submitted++
+		}
+	}
+	// 中断しても 1 件は進める。0 件のまま据え置くと、先頭が常に同じ IssueRef になり
+	// 回転そのものが止まる。
+	p.rotation += max(attempted, 1)
+}
+
+// discover は一つの repository の候補 Issue、open Run、記録途中の Issue を列挙する。
 func (p *Poller) discover(ctx context.Context, source PollSource,
 	trigger workflow.Trigger) ([]contract.IssueRef, error) {
 	candidates, err := source.Discovery.ListCandidateIssueRefs(ctx, p.poll.Filter)
 	if err != nil {
-		p.logSource(ctx, source, trigger, 0, 0, err)
+		p.logSource(ctx, source, trigger, sourceCounts{}, err)
 		return nil, err
 	}
+	counts := sourceCounts{Candidates: len(candidates)}
 	runs, err := source.Discovery.ListOpenRunIssueRefs(ctx)
 	if err != nil {
-		p.logSource(ctx, source, trigger, len(candidates), 0, err)
+		p.logSource(ctx, source, trigger, counts, err)
 		return nil, err
 	}
-	p.logSource(ctx, source, trigger, len(candidates), len(runs), nil)
-	return append(candidates, runs...), nil
+	counts.OpenRuns = len(runs)
+	// 記録が途中で失敗した投影は、候補でも open PR でもない状態で残る。Kudo 所有の
+	// status label が付いたまま open であることだけが、その Issue を再発見できる観測である。
+	recording, err := source.Discovery.ListLabeledIssueRefs(ctx, p.poll.ActiveRunLabel)
+	if err != nil {
+		p.logSource(ctx, source, trigger, counts, err)
+		return nil, err
+	}
+	counts.ActiveRunLabel = len(recording)
+	p.logSource(ctx, source, trigger, counts, nil)
+	return slices.Concat(candidates, runs, recording), nil
+}
+
+// sourceCounts は 1 repository の列挙結果の内訳である。
+type sourceCounts struct {
+	Candidates     int
+	OpenRuns       int
+	ActiveRunLabel int
 }
 
 // submit は 1 件の IssueRef を投入する。
@@ -387,7 +453,7 @@ func (p *Poller) submit(ctx context.Context, ref contract.IssueRef, trigger work
 }
 
 func (p *Poller) logSource(ctx context.Context, source PollSource, trigger workflow.Trigger,
-	candidates, runs int, err error) {
+	counts sourceCounts, err error) {
 	outcome, level := OutcomeSourceListed, slog.LevelDebug
 	if err != nil {
 		outcome, level = OutcomeSourceFailed, slog.LevelWarn
@@ -397,8 +463,9 @@ func (p *Poller) logSource(ctx context.Context, source PollSource, trigger workf
 		slog.String(telemetry.FieldOutcome, string(outcome)),
 		slog.String(telemetry.FieldRepository, source.Repository),
 		telemetry.Trigger(trigger),
-		slog.Int(telemetry.FieldCandidates, candidates),
-		slog.Int(telemetry.FieldOpenRuns, runs),
+		slog.Int(telemetry.FieldCandidates, counts.Candidates),
+		slog.Int(telemetry.FieldOpenRuns, counts.OpenRuns),
+		slog.Int(telemetry.FieldActiveRunLabel, counts.ActiveRunLabel),
 	}
 	if source.RateLimit != nil {
 		if remaining, observed := source.RateLimit(); observed {
@@ -417,11 +484,11 @@ func (p *Poller) logCycle(ctx context.Context, report cycleReport) {
 	outcome := OutcomePollCompleted
 	level := slog.LevelInfo
 	switch {
-	case report.Backlog > 0:
-		outcome = OutcomePollInterrupted
-		level = slog.LevelWarn
 	case report.failed():
 		outcome = OutcomePollFailed
+		level = slog.LevelWarn
+	case report.Backlog > 0:
+		outcome = OutcomePollInterrupted
 		level = slog.LevelWarn
 	}
 	attrs := []slog.Attr{
@@ -461,9 +528,13 @@ func backoffDelay(config PollConfig, failures int, jitter func(time.Duration) ti
 	return clampDelay(config, jitter(delay))
 }
 
+// clampDelay は待機を [BackoffMax の半分を下回らない下限, BackoffMax] ではなく、
+// [MinPollBackoff, BackoffMax] へ収める。下限を BackoffInitial にしないのは、
+// jitter の下半分をそこで潰すと初回 backoff が一点に張り付き、同時に失敗した instance が
+// 揃って再試行するためである（jitter が防ぐはずの状況そのものになる）。
 func clampDelay(config PollConfig, delay time.Duration) time.Duration {
-	if delay < config.BackoffInitial {
-		return config.BackoffInitial
+	if delay < MinPollBackoff {
+		return MinPollBackoff
 	}
 	if delay > config.BackoffMax {
 		return config.BackoffMax
@@ -482,6 +553,20 @@ func applyRetryHint(config PollConfig, delay, hint time.Duration) time.Duration 
 	return clampDelay(config, delay)
 }
 
+// canonicalRepository は poll source の repository 表記を`owner/name`の小文字へ揃える。
+//
+// telemetry.Issue が同じ規則で正規化しているため、揃えないと poll.source の repository と
+// reconcile 側 record の issue.repository が表記違いで別 key になり、「どの repository の
+// 回復経路が止まっているか」を 1 つの集計で出せなくなる。
+func canonicalRepository(value string) (string, error) {
+	owner, name, found := strings.Cut(strings.TrimSpace(value), "/")
+	if !found || strings.TrimSpace(owner) == "" || strings.TrimSpace(name) == "" ||
+		strings.Contains(name, "/") {
+		return "", fmt.Errorf("poll source の repository は owner/name 形式でなければならない: %q", value)
+	}
+	return strings.ToLower(owner) + "/" + strings.ToLower(name), nil
+}
+
 // retryHinter は transport failure が持つ再試行 hint の境界である。
 // adapter package を import せずに Retry-After と rate limit reset を読むために置く。
 type retryHinter interface {
@@ -498,11 +583,15 @@ func retryHint(err error, now time.Time) time.Duration {
 	return 0
 }
 
-// fullJitter は [初期値, delay] の範囲へ散らす。全 instance が同じ時刻に GitHub へ
-// 再試行しないようにするためであり、値そのものに意味は無い。
-func fullJitter(delay time.Duration) time.Duration {
+// equalJitter は [delay/2, delay] の範囲へ散らす。
+//
+// 全範囲（[0, delay]）にしないのは、失敗直後に極端に短い再試行が出ると rate limit を
+// さらに削るためである。上半分だけにしないのは、それでは散らばりが足りず、同時に
+// 失敗した instance が揃って再試行するためである。値そのものに意味は無い。
+func equalJitter(delay time.Duration) time.Duration {
 	if delay <= 0 {
 		return delay
 	}
-	return time.Duration(rand.Int64N(int64(delay)) + 1)
+	half := delay / 2
+	return half + time.Duration(rand.Int64N(int64(delay-half)+1))
 }

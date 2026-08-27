@@ -50,6 +50,7 @@ func TestLoadPollConfigOverridesEachKey(t *testing.T) {
 	}
 	want.Filter.Assignee = "octocat"
 	want.Filter.ReadyLabel = "ready-for-ai"
+	want.ActiveRunLabel = DefaultPollConfig().ActiveRunLabel
 	if config != want {
 		t.Fatalf("config = %#v, want %#v", config, want)
 	}

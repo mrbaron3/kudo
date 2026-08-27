@@ -21,8 +21,11 @@ type fakeDiscovery struct {
 	candidates []contract.IssueRef
 	runs       []contract.IssueRef
 	// candidateErr / runErr は 1 回の呼び出しごとに先頭から消費する。
+	labeled      []contract.IssueRef
 	candidateErr []error
 	runErr       []error
+	labeledErr   []error
+	labeledFor   string
 	calls        int
 }
 
@@ -46,6 +49,19 @@ func (d *fakeDiscovery) ListOpenRunIssueRefs(context.Context) ([]contract.IssueR
 		return nil, err
 	}
 	return slices.Clone(d.runs), nil
+}
+
+func (d *fakeDiscovery) ListLabeledIssueRefs(_ context.Context, label string) ([]contract.IssueRef, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if label == "" {
+		return nil, errors.New("列挙する label が空である")
+	}
+	d.labeledFor = label
+	if err := next(&d.labeledErr); err != nil {
+		return nil, err
+	}
+	return slices.Clone(d.labeled), nil
 }
 
 func next(queue *[]error) error {
@@ -387,10 +403,151 @@ func TestBackoffDelayIsBoundedByTheConfiguredMaximum(t *testing.T) {
 	config := DefaultPollConfig()
 	for failures := 1; failures <= 20; failures++ {
 		delay := backoffDelay(config, failures, func(d time.Duration) time.Duration { return d })
-		if delay < config.BackoffInitial || delay > config.BackoffMax {
-			t.Fatalf("failures = %d, delay = %v, want [%v, %v]", failures, delay, config.BackoffInitial, config.BackoffMax)
+		if delay < MinPollBackoff || delay > config.BackoffMax {
+			t.Fatalf("failures = %d, delay = %v, want [%v, %v]", failures, delay, MinPollBackoff, config.BackoffMax)
 		}
 	}
+}
+
+// 既定の jitter は初回 backoff にも効かなければならない。初回が一点に張り付くと、
+// 同時に失敗した instance が揃って再試行し、jitter が防ぐはずの状況そのものになる。
+func TestDefaultJitterSpreadsEvenTheFirstBackoff(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultPollConfig()
+	seen := make(map[time.Duration]struct{})
+	for range 200 {
+		delay := backoffDelay(config, 1, equalJitter)
+		if delay < config.BackoffInitial/2 || delay > config.BackoffInitial {
+			t.Fatalf("delay = %v, want [%v, %v]", delay, config.BackoffInitial/2, config.BackoffInitial)
+		}
+		seen[delay] = struct{}{}
+	}
+	if len(seen) < 2 {
+		t.Fatalf("初回 backoff が %d 通りしか出ない: %v", len(seen), seen)
+	}
+}
+
+// 同時実行上限による中断は列挙の失敗ではない。失敗へ潰すと、GitHub 側が健全でも
+// last_success_at が凍り、poll の cadence が backoff へ置き換わる。
+func TestCapacityInterruptionKeepsTheCycleIntervalAndLastSuccess(t *testing.T) {
+	t.Parallel()
+
+	discovery := &fakeDiscovery{candidates: issueRefs(19)}
+	trigger := newRecordingTrigger()
+	trigger.refuse[19] = 1_000_000
+	clock := newFakeClock()
+	clock.autoAdvance(t.Context(), DefaultPollConfig().CapacityRetryInterval)
+	buffer := newSyncBuffer()
+	config := testPollerConfig(discovery, trigger, clock)
+	config.Logger = slog.New(slog.NewJSONHandler(buffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	poller := newTestPoller(t, config)
+
+	report := poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
+	if report.failed() {
+		t.Fatalf("中断を列挙の失敗として扱った: %#v", report)
+	}
+	if poller.lastSuccess.IsZero() {
+		t.Fatal("中断した cycle が最終成功時刻を更新していない")
+	}
+	record := findLast(logRecords(t, buffer), EventPollCycle)
+	if record[telemetry.FieldOutcome] != string(OutcomePollInterrupted) {
+		t.Fatalf("outcome = %v, want %q", record[telemetry.FieldOutcome], OutcomePollInterrupted)
+	}
+}
+
+// 複数 repository が失敗したとき、最初の失敗ではなく最長の hint を待つ。
+// 指示された時刻より早く再試行すると同じ失敗を確実に繰り返す。
+func TestCycleWaitsForTheLongestRetryHintAcrossSources(t *testing.T) {
+	t.Parallel()
+
+	plain := &fakeDiscovery{candidateErr: []error{errors.New("GitHub 502")}}
+	limited := &fakeDiscovery{candidateErr: []error{&stubRetryHint{after: 20 * time.Minute}}}
+	trigger := newRecordingTrigger()
+	config := testPollerConfig(plain, trigger, newFakeClock())
+	config.Sources = append(config.Sources, PollSource{Repository: "mrbaron3/other", Discovery: limited})
+	poller := newTestPoller(t, config)
+
+	report := poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
+	if report.Failures != 2 || report.RetryHint != 20*time.Minute {
+		t.Fatalf("report = %#v, want failures 2 / hint 20m", report)
+	}
+	if got := applyRetryHint(poller.poll, backoffDelay(poller.poll, 1, poller.jitter), report.RetryHint); got != 20*time.Minute {
+		t.Fatalf("待機 = %v, want 20m", got)
+	}
+}
+
+// shutdown 済みの dispatcher は解除されない終端条件である。待って再試行しても
+// GitHub の列挙を消費するだけなので、poller 自身が止まる。
+func TestRunStopsWhenTheDispatcherIsPermanentlyStopped(t *testing.T) {
+	t.Parallel()
+
+	discovery := &fakeDiscovery{candidates: issueRefs(19)}
+	trigger := newRecordingTrigger()
+	trigger.stopped = true
+	clock := newFakeClock()
+	poller := newTestPoller(t, testPollerConfig(discovery, trigger, clock))
+
+	done := make(chan error, 1)
+	go func() { done <- poller.Run(t.Context()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrDispatcherStopped) {
+			t.Fatalf("Run() error = %v, want ErrDispatcherStopped", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("停止した dispatcher に対して Run が戻らない")
+	}
+	if clock.pendingWaits() != 0 {
+		t.Fatalf("終端条件で backoff を待った: %d", clock.pendingWaits())
+	}
+}
+
+// poll.source の repository は telemetry.Issue と同じ規則で正規化する。揃わないと、
+// 列挙の失敗と reconcile の結果が別 repository として集計される。
+func TestPollSourceRepositoryIsCanonicalizedForCorrelation(t *testing.T) {
+	t.Parallel()
+
+	discovery := &fakeDiscovery{candidates: issueRefs(19)}
+	trigger := newRecordingTrigger()
+	buffer := newSyncBuffer()
+	config := testPollerConfig(discovery, trigger, newFakeClock())
+	config.Sources[0].Repository = "MrBaron3/Kudo"
+	config.Logger = slog.New(slog.NewJSONHandler(buffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	poller := newTestPoller(t, config)
+
+	poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
+	record := findRecord(t, logRecords(t, buffer), EventPollSource)
+	if record[telemetry.FieldRepository] != "mrbaron3/kudo" {
+		t.Fatalf("repository = %v, want mrbaron3/kudo", record[telemetry.FieldRepository])
+	}
+}
+
+// 記録が途中で失敗した投影は、候補でも open PR でもない状態で残る。Kudo 所有の
+// status label が付いたまま open であることだけが、その Issue を再発見できる観測である。
+func TestPollCycleRediscoversIssuesLeftWithAnActiveRunLabel(t *testing.T) {
+	t.Parallel()
+
+	discovery := &fakeDiscovery{labeled: issueRefs(19)}
+	trigger := newRecordingTrigger()
+	poller := newTestPoller(t, testPollerConfig(discovery, trigger, newFakeClock()))
+
+	report := poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
+	if report.Submitted != 1 || trigger.count() != 1 || trigger.snapshot()[0].Issue.Number != 19 {
+		t.Fatalf("report = %#v, 投入 = %#v", report, trigger.snapshot())
+	}
+	if discovery.labeledFor != DefaultPollConfig().ActiveRunLabel {
+		t.Fatalf("列挙した label = %q, want %q", discovery.labeledFor, DefaultPollConfig().ActiveRunLabel)
+	}
+}
+
+// stubRetryHint は GitHub が示した再試行間隔を持つ transport failure を模す。
+type stubRetryHint struct{ after time.Duration }
+
+func (e *stubRetryHint) Error() string { return "rate limited" }
+
+func (e *stubRetryHint) RetryAfterHint(time.Time) (time.Duration, bool) {
+	return e.after, e.after > 0
 }
 
 // rate limit が示す再試行時刻は backoff の下限になる。示された時刻より早く再試行すると
@@ -413,7 +570,14 @@ func TestBackoffHonoursTheRetryHintAsALowerBound(t *testing.T) {
 func TestPollCycleLogCarriesCorrelationFieldsWithoutSecrets(t *testing.T) {
 	t.Parallel()
 
-	discovery := &fakeDiscovery{candidates: issueRefs(19), runs: issueRefs(24)}
+	// collaborator の error message に secret と Issue 本文を混ぜる。log へ message を
+	// 載せる regression が入れば、この sentinel が現れる。sentinel を渡さない assertion は
+	// 実装が何をしても成功するため、証拠にならない。
+	leaky := errors.New("GitHub GET /issues failed: token=actor-token body=契約本文")
+	discovery := &fakeDiscovery{
+		candidates: issueRefs(19), runs: issueRefs(24),
+		labeledErr: []error{leaky},
+	}
 	trigger := newRecordingTrigger()
 	buffer := newSyncBuffer()
 	config := testPollerConfig(discovery, trigger, newFakeClock())
@@ -423,6 +587,9 @@ func TestPollCycleLogCarriesCorrelationFieldsWithoutSecrets(t *testing.T) {
 
 	report := poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
 	poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
+	if report.Failures != 1 {
+		t.Fatalf("report = %#v, want 列挙の失敗を 1 件", report)
+	}
 
 	records := logRecords(t, buffer)
 	source := findRecord(t, records, EventPollSource)
@@ -431,6 +598,9 @@ func TestPollCycleLogCarriesCorrelationFieldsWithoutSecrets(t *testing.T) {
 	}
 	if source[telemetry.FieldRateLimitRemaining] != float64(4321) {
 		t.Fatalf("rate limit remaining = %v", source[telemetry.FieldRateLimitRemaining])
+	}
+	if source[telemetry.FieldErrorType] == nil {
+		t.Fatalf("失敗した列挙に error type が無い: %v", source)
 	}
 	cycle := findRecord(t, records, EventPollCycle)
 	triggerAttrs, ok := cycle[telemetry.FieldTrigger].(map[string]any)
@@ -471,29 +641,55 @@ func TestPollCycleStopsWaitingForCapacityAtTheCycleDeadline(t *testing.T) {
 	}
 }
 
-// 上限に張り付いた状態が続いても、投入順の回転で末尾の IssueRef が飢餓しない。
-func TestPollCycleRotatesSubmissionOrderAcrossCycles(t *testing.T) {
+// 上限に張り付いた状態が続いても、次の cycle は投入し切れなかった位置から始める。
+// 1 件ずつしか進めないと、発見件数が多いほど末尾の待ち時間が線形に伸びる。
+func TestPollCycleResumesFromTheUnsubmittedPositionNextCycle(t *testing.T) {
+	t.Parallel()
+
+	discovery := &fakeDiscovery{candidates: issueRefs(19, 24, 31, 42)}
+	trigger := newRecordingTrigger()
+	clock := newFakeClock()
+	clock.autoAdvance(t.Context(), DefaultPollConfig().CapacityRetryInterval)
+	poller := newTestPoller(t, testPollerConfig(discovery, trigger, clock))
+
+	// 1 cycle 目は先頭 2 件だけ投入でき、31 で持ち時間を使い切る。
+	trigger.refuse[31] = 1_000_000
+	first := poller.runCycle(t.Context(), workflow.TriggerStartup)
+	if first.Submitted != 2 || first.Backlog != 2 {
+		t.Fatalf("1 cycle 目 = %#v, want submitted 2 / backlog 2", first)
+	}
+	delete(trigger.refuse, 31)
+
+	before := trigger.count()
+	poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
+	var second []int
+	for _, request := range trigger.snapshot()[before:] {
+		second = append(second, request.Issue.Number)
+	}
+	if len(second) == 0 || second[0] != 31 {
+		t.Fatalf("2 cycle 目の投入順 = %v, want 31 から再開", second)
+	}
+}
+
+// 起点が進んでも、1 cycle で投入し切れる限りは毎 cycle 全件が届く。
+func TestPollCycleSubmitsEveryIssueEvenAfterRotating(t *testing.T) {
 	t.Parallel()
 
 	discovery := &fakeDiscovery{candidates: issueRefs(19, 24, 31)}
 	trigger := newRecordingTrigger()
 	poller := newTestPoller(t, testPollerConfig(discovery, trigger, newFakeClock()))
 
-	var first, second []int
-	poller.runCycle(t.Context(), workflow.TriggerStartup)
-	for _, request := range trigger.snapshot() {
-		first = append(first, request.Issue.Number)
-	}
-	poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
-	for _, request := range trigger.snapshot()[len(first):] {
-		second = append(second, request.Issue.Number)
-	}
-	if slices.Equal(first, second) {
-		t.Fatalf("cycle をまたいで投入順が同じ: %v", first)
-	}
-	slices.Sort(second)
-	if !slices.Equal(second, []int{19, 24, 31}) {
-		t.Fatalf("2 cycle 目の投入 = %v, want 全件", second)
+	for range 3 {
+		before := trigger.count()
+		poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
+		var submitted []int
+		for _, request := range trigger.snapshot()[before:] {
+			submitted = append(submitted, request.Issue.Number)
+		}
+		slices.Sort(submitted)
+		if !slices.Equal(submitted, []int{19, 24, 31}) {
+			t.Fatalf("投入 = %v, want 全件", submitted)
+		}
 	}
 }
 

@@ -106,8 +106,9 @@ func lookupDuration(lookup Lookup, key string, fallback time.Duration) (time.Dur
 	}
 	value, err := time.ParseDuration(trimmed)
 	if err != nil {
-		// 単位の無い値を秒として解釈しない。`900`が 900ns になる Go の既定は、
-		// 15 分のつもりの設定を事実上の busy poll にする。
+		// 単位の無い値は Go 自身が拒否する（例外は`0`だけ）。ここで error を作り直すのは、
+		// どの key が不正かを名指しするためである。ParseDuration の message は値しか
+		// 含まないので、複数 key を読む起動時検証では原因を特定できない。
 		return 0, fmt.Errorf("%s が duration ではない（単位が必要）: %q", key, raw)
 	}
 	if value <= 0 {

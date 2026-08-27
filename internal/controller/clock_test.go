@@ -97,6 +97,13 @@ func (c *fakeClock) awaitWaits(t *testing.T, n int) {
 	}
 }
 
+// pendingWaits は After の呼び出し回数を返す。
+func (c *fakeClock) pendingWaits() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.waits
+}
+
 // requestedDelays は After へ渡された待機時間を呼び出し順で返す。
 func (c *fakeClock) requestedDelays() []time.Duration {
 	c.mu.Lock()

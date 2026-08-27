@@ -31,12 +31,15 @@ func (g *Gateway) EnsureComment(ctx context.Context, targetNumber int64, record 
 	if err != nil {
 		return Comment{}, false, err
 	}
-	existing, found, err := g.findMarkedComment(ctx, targetNumber, record.Marker)
+	matches, err := g.findMarkedComments(ctx, targetNumber, record.Marker)
 	if err != nil {
 		return Comment{}, false, err
 	}
-	if found {
-		return existing, false, nil
+	if len(matches) > 1 {
+		return Comment{}, false, invalidResponse("search comments", "同じ marker の comment が複数ある", nil)
+	}
+	if len(matches) == 1 {
+		return matches[0], false, nil
 	}
 	created, err := g.createComment(ctx, targetNumber, rendered)
 	if err != nil {
@@ -45,12 +48,14 @@ func (g *Gateway) EnsureComment(ctx context.Context, targetNumber int64, record 
 	return created, true, nil
 }
 
-// findMarkedComment は recorder identity 名義で同じ marker を持つ comment を全 page から探す。
-// 同じ marker の comment が複数ある観測は、冪等性の前提が崩れているため成功にしない。
-func (g *Gateway) findMarkedComment(ctx context.Context, targetNumber int64, marker Marker) (Comment, bool, error) {
+// findMarkedComments は recorder identity 名義で同じ marker を持つ comment を全 page から
+// 集める。複数一致をここで失敗にしないのは、許容できるかが record の種類で違うためである。
+// content digest を marker に持つ記録では複数一致は protocol 違反だが、identity marker を
+// 持つ収束対象の comment では収束を続けられなければならない。
+func (g *Gateway) findMarkedComments(ctx context.Context, targetNumber int64, marker Marker) ([]Comment, error) {
 	comments, err := g.listComments(ctx, targetNumber)
 	if err != nil {
-		return Comment{}, false, err
+		return nil, err
 	}
 	var matches []Comment
 	for _, comment := range comments {
@@ -59,10 +64,10 @@ func (g *Gateway) findMarkedComment(ctx context.Context, targetNumber int64, mar
 		}
 		markers, parseErr := ParseMarkers(string(comment.Body))
 		if parseErr != nil {
-			return Comment{}, false, invalidResponse("search comments", "既存 comment の marker が不正", parseErr)
+			return nil, invalidResponse("search comments", "既存 comment の marker が不正", parseErr)
 		}
 		if len(markers) > 1 {
-			return Comment{}, false, invalidResponse("search comments", "既存 comment に marker が複数ある", nil)
+			return nil, invalidResponse("search comments", "既存 comment に marker が複数ある", nil)
 		}
 		for _, candidate := range markers {
 			if markersEqual(candidate, marker) {
@@ -71,13 +76,7 @@ func (g *Gateway) findMarkedComment(ctx context.Context, targetNumber int64, mar
 			}
 		}
 	}
-	if len(matches) > 1 {
-		return Comment{}, false, invalidResponse("search comments", "同じ marker の comment が複数ある", nil)
-	}
-	if len(matches) == 1 {
-		return matches[0], true, nil
-	}
-	return Comment{}, false, nil
+	return matches, nil
 }
 
 func (g *Gateway) createComment(ctx context.Context, targetNumber int64, body string) (Comment, error) {
@@ -213,29 +212,77 @@ func (g *Gateway) EnsureLabel(ctx context.Context, issueNumber int64, label stri
 	return true, nil
 }
 
-// RemoveLabel は current label set を確認し、label が付いている場合だけ外す。
+// ConvergeLabels は current label set を一度だけ読み、add が無ければ付け、
+// remove にある label が付いていれば外す。
 //
-// 戻り値は「この呼び出しが外したか」であり、既に無い場合は false と nil を返す。
-// 削除の 404 を失敗にしないのは、同じ収束を並行 reconcile が先に済ませた状態が
-// transport failure として記録されると、retry が終わらないためである。
-func (g *Gateway) RemoveLabel(ctx context.Context, issueNumber int64, label string) (bool, error) {
-	if issueNumber <= 0 || !validLabelName(label) {
-		return false, fmt.Errorf("Issue number または label name が不正")
+// 一覧の読み取りを 1 回にまとめているのは、label 単位の primitive を並べると
+// 同じ Issue の label を 3〜4 回読み直すためである。polling は rate limit 予算の
+// 制約下にある回復経路であり、収束済みの Run を毎 cycle 記録するこの経路の
+// 読み取りは定常的な支出になる。
+//
+// 削除は観測した label name をそのまま使う。GitHub の label identity は
+// case-insensitive だが、DELETE の path は表記が一致しないと対象を解決できず、
+// 設定値で消しにいくと `AI-Ready` が付いた Issue で 404 になり、外れていないのに
+// 収束済みとして報告される。
+//
+// 戻り値は「この呼び出しが変えたか」である。既に収束している状態は成功であり、
+// 失敗ではない。add と remove に同じ label を渡す呼び出しは、収束先が定義できないため
+// 拒否する。
+func (g *Gateway) ConvergeLabels(ctx context.Context, issueNumber int64, add string, remove []string) (bool, []string, error) {
+	if issueNumber <= 0 || !validLabelName(add) {
+		return false, nil, fmt.Errorf("Issue number または label name が不正")
+	}
+	for _, label := range remove {
+		if !validLabelName(label) {
+			return false, nil, fmt.Errorf("Issue number または label name が不正")
+		}
+		if strings.EqualFold(label, add) {
+			return false, nil, fmt.Errorf("label %q を同じ呼び出しで追加と削除の両方に指定できない", add)
+		}
 	}
 	labels, err := g.listLabels(ctx, issueNumber)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	present := false
+	present := make(map[string]string, len(labels))
 	for _, existing := range labels {
-		if strings.EqualFold(existing.Name, label) {
-			present = true
-			break
+		present[strings.ToLower(existing.Name)] = existing.Name
+	}
+
+	added := false
+	if _, exists := present[strings.ToLower(add)]; !exists {
+		if _, err := g.request(ctx, http.MethodPost, g.endpoint(g.issuePath(issueNumber)+"/labels", nil),
+			struct {
+				Labels []string `json:"labels"`
+			}{Labels: []string{add}}, http.StatusOK); err != nil {
+			return false, nil, err
+		}
+		added = true
+	}
+
+	var removed []string
+	for _, label := range remove {
+		observed, exists := present[strings.ToLower(label)]
+		if !exists {
+			continue
+		}
+		changed, err := g.deleteLabel(ctx, issueNumber, observed)
+		if err != nil {
+			return added, removed, err
+		}
+		if changed {
+			removed = append(removed, observed)
 		}
 	}
-	if !present {
-		return false, nil
-	}
+	return added, removed, nil
+}
+
+// deleteLabel は観測済みの label name を外す。
+//
+// 404 を失敗にしないのは、同じ収束を並行 reconcile が先に済ませた状態が transport
+// failure として記録されると retry が終わらないためである。観測した name をそのまま
+// 使っているため、404 は「既に外れていた」以外の意味を持たない。
+func (g *Gateway) deleteLabel(ctx context.Context, issueNumber int64, label string) (bool, error) {
 	response, err := g.request(ctx, http.MethodDelete,
 		g.endpoint(g.issuePath(issueNumber)+"/labels/"+url.PathEscape(label), nil), nil,
 		http.StatusOK, http.StatusNotFound)
@@ -272,6 +319,26 @@ func (g *Gateway) EnsureIssueClosed(ctx context.Context, issueNumber int64) (boo
 	return true, nil
 }
 
+// oldestComment は同じ marker を持つ comment 群から record の実体を選ぶ。
+//
+// 複数一致は、marker の確認と作成の間に並行 reconcile が割り込んだ痕跡である
+// （単一 process でも webhook と poll が同じ Issue を同時に投入し得る）。ここを失敗に
+// すると、以後その記録は更新も収束もできない。最古の 1 件を実体として扱えば収束は
+// 続く。重複の掃除は人間が行い、構造的な解決は reconcile core の Issue 単位
+// single-flight が担う。
+func oldestComment(matches []Comment) (Comment, bool) {
+	if len(matches) == 0 {
+		return Comment{}, false
+	}
+	oldest := matches[0]
+	for _, comment := range matches[1:] {
+		if comment.ID < oldest.ID {
+			oldest = comment
+		}
+	}
+	return oldest, true
+}
+
 // CommentChange は EnsureCommentContent が行った mutation の分類である。
 type CommentChange string
 
@@ -303,11 +370,11 @@ func (g *Gateway) EnsureCommentContent(ctx context.Context, targetNumber int64, 
 	if err != nil {
 		return Comment{}, CommentUnchanged, err
 	}
-	existing, found, err := g.findMarkedComment(ctx, targetNumber, record.Marker)
+	matches, err := g.findMarkedComments(ctx, targetNumber, record.Marker)
 	if err != nil {
 		return Comment{}, CommentUnchanged, err
 	}
-	if found {
+	if existing, found := oldestComment(matches); found {
 		if string(existing.Body) == rendered {
 			return existing, CommentUnchanged, nil
 		}

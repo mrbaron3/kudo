@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -40,31 +41,31 @@ func (f *fakeLabelSurface) record(call string) error {
 	return nil
 }
 
-func (f *fakeLabelSurface) EnsureLabel(_ context.Context, issue int64, label string) (bool, error) {
+func (f *fakeLabelSurface) ConvergeLabels(_ context.Context, issue int64, add string,
+	remove []string) (bool, []string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.record(fmt.Sprintf("ensure_label:%d:%s", issue, label)); err != nil {
-		return false, err
+	if err := f.record(fmt.Sprintf("converge_labels:%d:%s", issue, add)); err != nil {
+		return false, nil, err
 	}
-	if slices.Contains(f.labels, label) {
-		return false, nil
+	added := false
+	if !slices.Contains(f.labels, add) {
+		f.labels = append(f.labels, add)
+		added = true
 	}
-	f.labels = append(f.labels, label)
-	return true, nil
-}
-
-func (f *fakeLabelSurface) RemoveLabel(_ context.Context, issue int64, label string) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.record(fmt.Sprintf("remove_label:%d:%s", issue, label)); err != nil {
-		return false, err
+	var removed []string
+	for _, label := range remove {
+		if err := f.record(fmt.Sprintf("remove_label:%d:%s", issue, label)); err != nil {
+			return added, removed, err
+		}
+		index := slices.Index(f.labels, label)
+		if index < 0 {
+			continue
+		}
+		f.labels = slices.Delete(f.labels, index, index+1)
+		removed = append(removed, label)
 	}
-	index := slices.Index(f.labels, label)
-	if index < 0 {
-		return false, nil
-	}
-	f.labels = slices.Delete(f.labels, index, index+1)
-	return true, nil
+	return added, removed, nil
 }
 
 func (f *fakeLabelSurface) EnsureIssueClosed(_ context.Context, issue int64) (bool, error) {
@@ -94,10 +95,25 @@ func (f *fakeLabelSurface) EnsureIssueComment(_ context.Context, issue int64, ki
 	return true, nil
 }
 
+// removeByHuman は人間が GitHub UI で label を外した状態を作る。
+func (f *fakeLabelSurface) removeByHuman(label string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if index := slices.Index(f.labels, label); index >= 0 {
+		f.labels = slices.Delete(f.labels, index, index+1)
+	}
+}
+
 func (f *fakeLabelSurface) snapshot() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.labels)
+}
+
+func (f *fakeLabelSurface) closedIssue() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
 }
 
 func (f *fakeLabelSurface) callCount(prefix string) int {
@@ -118,7 +134,7 @@ func testIssueRef() contract.IssueRef {
 
 func newTestLabelRecorder(t *testing.T, surface LabelSurface) *LabelRecorder {
 	t.Helper()
-	recorder, err := NewLabelRecorder(surface, DefaultLabelSet(), nil)
+	recorder, err := NewLabelRecorder(surface, testIssueRef(), DefaultLabelSet(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("NewLabelRecorder() error = %v", err)
 	}
@@ -143,6 +159,16 @@ func TestRecordLabelEventConvergesToTheDeclaredLabelSet(t *testing.T) {
 			event:   LabelEventRunNeedsHuman,
 			initial: []string{"ai-ready", "ai-in-progress", "ai-merged"},
 			want:    []string{"ai-needs-human"},
+		},
+		"停止中の再観測": {
+			event:   LabelEventNeedsHumanRecorded,
+			initial: []string{"ai-ready", "ai-in-progress", "ai-merged"},
+			want:    []string{"ai-ready", "ai-needs-human"},
+		},
+		"merge 完了の再観測": {
+			event:   LabelEventMergeRecorded,
+			initial: []string{"ai-ready", "ai-in-progress", "ai-needs-human", "ai-merged"},
+			want:    []string{"ai-merged"},
 		},
 		"merge 完了": {
 			event:   LabelEventMergeCompleted,
@@ -179,9 +205,11 @@ func TestRecordLabelEventClosesOnlyOnMergeCompletion(t *testing.T) {
 
 	for event, wantClose := range map[LabelEvent]bool{
 		LabelEventMergeCompleted:       true,
+		LabelEventMergeRecorded:        false,
 		LabelEventAlreadyMergedRequest: false,
 		LabelEventClaimCompleted:       false,
 		LabelEventRunNeedsHuman:        false,
+		LabelEventNeedsHumanRecorded:   false,
 	} {
 		t.Run(string(event), func(t *testing.T) {
 			t.Parallel()
@@ -278,9 +306,7 @@ func TestRecordRestoresLabelRemovedByAHuman(t *testing.T) {
 	if _, err := recorder.Record(t.Context(), testIssueRef(), LabelEventRunNeedsHuman); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
-	if _, err := surface.RemoveLabel(t.Context(), 19, "ai-needs-human"); err != nil {
-		t.Fatalf("RemoveLabel() error = %v", err)
-	}
+	surface.removeByHuman("ai-needs-human")
 	record, err := recorder.Record(t.Context(), testIssueRef(), LabelEventRunNeedsHuman)
 	if err != nil {
 		t.Fatalf("再記録の Record() error = %v", err)
@@ -299,10 +325,89 @@ func TestRecordAddsTheDerivedLabelBeforeRemovingReplacedOnes(t *testing.T) {
 	if _, err := newTestLabelRecorder(t, surface).Record(t.Context(), testIssueRef(), LabelEventClaimCompleted); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
-	add := slices.Index(surface.calls, "ensure_label:19:ai-in-progress")
+	add := slices.Index(surface.calls, "converge_labels:19:ai-in-progress")
 	remove := slices.Index(surface.calls, "remove_label:19:ai-ready")
 	if add < 0 || remove < 0 || add > remove {
 		t.Fatalf("calls = %v", surface.calls)
+	}
+}
+
+// close は label 収束より前に行う。逆順にすると、close が失敗した時点の観測が
+// 「完了記録済み」に見え、次の reconcile が close を再試行しなくなる。
+func TestRecordClosesTheIssueBeforeRecordingTheMergedLabel(t *testing.T) {
+	t.Parallel()
+
+	surface := newFakeLabelSurface("ai-in-progress")
+	if _, err := newTestLabelRecorder(t, surface).Record(t.Context(), testIssueRef(), LabelEventMergeCompleted); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	closeIndex := slices.Index(surface.calls, "close_issue:19")
+	labelIndex := slices.Index(surface.calls, "converge_labels:19:ai-merged")
+	if closeIndex < 0 || labelIndex < 0 || closeIndex > labelIndex {
+		t.Fatalf("calls = %v", surface.calls)
+	}
+}
+
+// close が失敗した cycle では `ai-merged` を記録しない。記録してしまうと、次の
+// reconcile が完了記録済みと判定して close を二度と再試行しない。
+func TestRecordDoesNotRecordMergedLabelWhenCloseFails(t *testing.T) {
+	t.Parallel()
+
+	surface := newFakeLabelSurface("ai-in-progress")
+	transient := errors.New("GitHub timeout")
+	surface.failOn["close_issue:19"] = transient
+	if _, err := newTestLabelRecorder(t, surface).Record(t.Context(), testIssueRef(), LabelEventMergeCompleted); !errors.Is(err, transient) {
+		t.Fatalf("Record() error = %v, want %v", err, transient)
+	}
+	if slices.Contains(surface.snapshot(), "ai-merged") {
+		t.Fatalf("labels = %v, want ai-merged 無し", surface.snapshot())
+	}
+}
+
+// 停止中の再観測では `ai-ready` を消費しない。消費すると、人間が契約を直して付け直した
+// escalation 解除の唯一の trigger が resume 判定の前に消える。
+func TestRecordNeedsHumanReobservationKeepsTheHumanReadyTrigger(t *testing.T) {
+	t.Parallel()
+
+	surface := newFakeLabelSurface("ai-needs-human", "ai-ready")
+	record, err := newTestLabelRecorder(t, surface).Record(t.Context(), testIssueRef(), LabelEventNeedsHumanRecorded)
+	if err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if !slices.Contains(surface.snapshot(), "ai-ready") {
+		t.Fatalf("labels = %v, want ai-ready を保持", surface.snapshot())
+	}
+	if record.Changed() {
+		t.Fatalf("record = %#v, want 収束済み", record)
+	}
+}
+
+// 完了記録済みの merge を再観測しても Issue を閉じ直さない。close は完了を初めて
+// 記録したときの一度きりの副作用であり、その後の open は人間の操作である。
+func TestRecordMergeReobservationDoesNotCloseTheIssueAgain(t *testing.T) {
+	t.Parallel()
+
+	surface := newFakeLabelSurface("ai-merged")
+	record, err := newTestLabelRecorder(t, surface).Record(t.Context(), testIssueRef(), LabelEventMergeRecorded)
+	if err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if record.ClosedIssue || surface.callCount("close_issue") != 0 {
+		t.Fatalf("record = %#v, close 呼び出し = %d", record, surface.callCount("close_issue"))
+	}
+}
+
+// 別 repository の IssueRef を渡しても mutation を出さない。LabelSurface は Issue number
+// しか受け取らないため、取り違えると別 repository の同番号 Issue を変更してしまう。
+func TestRecordRejectsIssuesOutsideTheBoundRepository(t *testing.T) {
+	t.Parallel()
+
+	surface := newFakeLabelSurface("ai-ready")
+	recorder := newTestLabelRecorder(t, surface)
+	_, err := recorder.Record(t.Context(),
+		contract.IssueRef{Owner: "other", Repository: "project", Number: 19}, LabelEventClaimCompleted)
+	if !errors.Is(err, ErrIssueOutsideRepository) || len(surface.calls) != 0 {
+		t.Fatalf("error = %v, calls = %v", err, surface.calls)
 	}
 }
 
@@ -339,7 +444,7 @@ func TestNewLabelRecorderRejectsAmbiguousLabelSets(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := NewLabelRecorder(newFakeLabelSurface(), labels, nil); err == nil {
+			if _, err := NewLabelRecorder(newFakeLabelSurface(), testIssueRef(), labels, nil); err == nil {
 				t.Fatalf("不正な LabelSet %#v を受理した", labels)
 			}
 		})
@@ -375,11 +480,21 @@ func TestDeriveLabelEventMapsDerivationsToRecordedEvents(t *testing.T) {
 	}
 	superseded := workflow.Derivation{Phase: workflow.PhaseSuperseded}
 
-	closedIssue := workflow.IssueObservation{Number: 19, State: workflow.IssueStateClosed}
+	closedRecorded := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateClosed, Labels: []string{"ai-merged"},
+	}
 	openWithReady := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-ready"},
 	}
-	openRun := workflow.IssueObservation{Number: 19, State: workflow.IssueStateOpen}
+	reopenedRequest := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"AI-Merged", "AI-Ready"},
+	}
+	reopenedQuiet := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-merged"},
+	}
+	openRun := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-in-progress"},
+	}
 
 	for name, testCase := range map[string]struct {
 		derivation workflow.Derivation
@@ -387,15 +502,17 @@ func TestDeriveLabelEventMapsDerivationsToRecordedEvents(t *testing.T) {
 		want       LabelEvent
 		wantOK     bool
 	}{
-		"進行中の Run":                   {runPhase, openRun, LabelEventClaimCompleted, true},
-		"merge 完了":                   {merged, openRun, LabelEventMergeCompleted, true},
-		"close 済みの merge 完了":         {merged, closedIssue, LabelEventMergeCompleted, true},
-		"merged な Issue への ai-ready": {merged, openWithReady, LabelEventAlreadyMergedRequest, true},
-		"escalation":                 {needsHuman, openRun, LabelEventRunNeedsHuman, true},
-		"停止中の再観測":                    {awaitHuman, openRun, LabelEventRunNeedsHuman, true},
-		"claim 前の候補":                 {candidate, openWithReady, "", false},
-		"候補外":                        {notCandidate, closedIssue, "", false},
-		"superseded":                 {superseded, openRun, "", false},
+		"進行中の Run": {runPhase, openRun, LabelEventClaimCompleted, true},
+		"merge 完了": {merged, openRun, LabelEventMergeCompleted, true},
+		"進行中に ai-ready が付いたまま merge": {merged, openWithReady, LabelEventMergeCompleted, true},
+		"完了記録済みの再観測":                 {merged, closedRecorded, LabelEventMergeRecorded, true},
+		"reopen 後の ai-ready 再付与":     {merged, reopenedRequest, LabelEventAlreadyMergedRequest, true},
+		"再依頼を処理した後の reopen 済み Issue": {merged, reopenedQuiet, LabelEventMergeRecorded, true},
+		"escalation": {needsHuman, openRun, LabelEventRunNeedsHuman, true},
+		"停止中の再観測":    {awaitHuman, openRun, LabelEventNeedsHumanRecorded, true},
+		"claim 前の候補": {candidate, openWithReady, "", false},
+		"候補外":        {notCandidate, closedRecorded, "", false},
+		"superseded": {superseded, openRun, "", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -404,6 +521,42 @@ func TestDeriveLabelEventMapsDerivationsToRecordedEvents(t *testing.T) {
 				t.Fatalf("DeriveLabelEvent() = %q, %v, want %q, %v", got, ok, testCase.want, testCase.wantOK)
 			}
 		})
+	}
+}
+
+// DeriveLabelEvent は自分の Record 結果を反映した観測に対して不動点でなければならない。
+// そうでないと、AC-4 の到達状態が次の reconcile で壊れる。
+func TestDeriveLabelEventIsAFixedPointAfterRecordingAlreadyMergedRequest(t *testing.T) {
+	t.Parallel()
+
+	surface := newFakeLabelSurface("ai-merged", "ai-ready")
+	recorder := newTestLabelRecorder(t, surface)
+	derivation := workflow.Derivation{
+		Phase: workflow.PhaseMerged,
+		Next:  workflow.ReconcileAction{Kind: workflow.ReconcileRecordCompletion},
+	}
+	observation := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateOpen, Labels: surface.snapshot(),
+	}
+	for round := range 3 {
+		event, ok := DeriveLabelEvent(derivation, observation, DefaultLabelSet())
+		if !ok {
+			t.Fatalf("round %d: label event を導出できない", round)
+		}
+		if _, err := recorder.Record(t.Context(), testIssueRef(), event); err != nil {
+			t.Fatalf("round %d: Record() error = %v", round, err)
+		}
+		observation.Labels = surface.snapshot()
+		if surface.closedIssue() {
+			t.Fatalf("round %d: reopen された Issue を close した", round)
+		}
+	}
+	if got := surface.snapshot(); !slices.Equal(got, []string{"ai-merged"}) {
+		t.Fatalf("labels = %v, want [ai-merged]", got)
+	}
+	if surface.callCount("ensure_comment") != 1 {
+		t.Fatalf("案内 comment の収束 = %d 回, want 1（2 回目以降は再依頼ではない）",
+			surface.callCount("ensure_comment"))
 	}
 }
 

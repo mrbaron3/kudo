@@ -113,8 +113,13 @@ Polling は任意の追加機能ではなく、Webhook 欠落を回復する必�
   GitHub が`Retry-After`または rate limit reset で示した時刻は backoff の下限として尊重する。
 - poll cycle は逐次であり、前の cycle が終わるまで次を始めない。同時実行上限で受け付けられ
   なかった IssueRef は成功として捨てず、cycle の持ち時間内で再投入する。使い切った分は
-  backlog として記録し、次の cycle が同じ live state から再発見する。投入順は cycle ごとに
-  回転させ、上限に張り付いた状態でも末尾の IssueRef が飢餓しないようにする。
+  backlog として記録し、次の cycle が同じ live state から再発見する。次の cycle は投入し
+  切れなかった位置から始め、上限に張り付いた状態でも末尾の IssueRef が飢餓しないようにする。
+- 同時実行上限による中断は列挙の失敗ではない。backoff と「最後の成功時刻」は GitHub 側の
+  失敗にだけ反応させ、backlog を独立した signal として監視する。
+- 記録が途中で失敗した投影は、`ai-ready`を持たず kudo PR も open でないため、候補 query にも
+  open PR の列挙にも現れない。Kudo 所有の status label が付いたまま open な Issue を併せて
+  列挙し、この状態を再発見する。
 
 Polling の query result も authority ではない。claim 直前の live Issue read を省略しない。全候補を
 繰り返し発見しても、branch ref create の atomicity と marker により二重実行しない。
