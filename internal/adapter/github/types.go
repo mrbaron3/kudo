@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -54,6 +55,13 @@ type Gateway struct {
 	apiVersion string
 	repository Repository
 	recorder   *RecorderIdentity
+
+	// mu は rate limit 観測だけを守る。gateway は同時に複数の request を実行できる
+	// ため、最後の観測は共有 mutable state になる。credential と接続先は
+	// constructor で固定され変わらないので、この lock の対象ではない。
+	mu                sync.Mutex
+	rateLimit         RateLimitSnapshot
+	rateLimitObserved bool
 }
 
 // Actor は GitHub user または App user の観測 metadata である。

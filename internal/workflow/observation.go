@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mrbaron3/kudo/internal/contract"
@@ -35,6 +36,24 @@ const LabelReady = "ai-ready"
 // 規則がずれると排他が効かないため、名前の決定はここ一箇所に置く。
 func IssueBranchName(issue int64) string {
 	return "kudo/issue-" + strconv.FormatInt(issue, 10)
+}
+
+// IssueNumberFromBranch は claim branch 名から Issue number を復元する。
+//
+// polling は open な Pull Request の head branch からしか Run の Issue を知れないため、
+// IssueBranchName の逆写像をここへ置く。canonical な形（正の 10 進、leading zero なし）
+// だけを受理するのは、`kudo/issue-019`のような別名を同じ Issue の branch として扱うと、
+// claim の排他が名前の一意性で成立しなくなるためである。
+func IssueNumberFromBranch(branch string) (int64, bool) {
+	suffix, ok := strings.CutPrefix(branch, "kudo/issue-")
+	if !ok {
+		return 0, false
+	}
+	number, err := strconv.ParseInt(suffix, 10, 64)
+	if err != nil || number <= 0 || suffix != strconv.FormatInt(number, 10) {
+		return 0, false
+	}
+	return number, true
 }
 
 // ActorIdentity は一つの actor が GitHub 上で持つ immutable な numeric identity である。
