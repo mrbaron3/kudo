@@ -68,8 +68,15 @@ Trigger は observability に使う。candidate 判定や Issue Contract の入�
 
 `POST /webhooks/github`は GitHub `issues` event を受ける。adapter は raw body に対する signature を
 検証してから parse し、対象 IssueRef の reconcile を trigger して応答する。durable な受信記録は
-持たない。webhook は遅延、重複、順不同、欠落し得る通知であり、payload の Issue snapshot を source of
-truth にしない。欠落は polling が回収する。
+持たない。
+
+**前提**: GitHub App の webhook Content type を`application/json`に設定する。GitHub の既定は
+`application/x-www-form-urlencoded`であり、その形式では署名対象の raw body が`payload=<urlencoded JSON>`に
+なるため、signature が一致しても Issue identity を取り出せない。adapter は JSON 以外の delivery を
+受理せず、GitHub 側には delivery 失敗として記録される。
+
+webhook は遅延、重複、順不同、欠落し得る通知であり、payload の Issue snapshot を source of truth に
+しない。欠落は polling が回収する。
 
 少なくとも次の action を reconciliation trigger として受け付ける。
 
@@ -103,6 +110,17 @@ Polling は任意の追加機能ではなく、Webhook 欠落を回復する必�
   であり、webhook を失っていても polling がここから進行を再開する。
 - poll cycle 自体に claim、dependency、label mutation の business logic を置かない。
 - rate limit または一時 failure 時は jitter 付き backoff を使い、最後の成功時刻と backlog を監視する。
+  GitHub が`Retry-After`または rate limit reset で示した時刻は backoff の下限として尊重する。
+- poll cycle は逐次であり、前の cycle が終わるまで次を始めない。同時実行上限で受け付けられ
+  なかった IssueRef は成功として捨てず、cycle の持ち時間内で再投入する。使い切った分は
+  backlog として記録し、次の cycle が同じ live state から再発見する。次の cycle は投入し
+  切れなかった位置から始め、上限に張り付いた状態でも末尾の IssueRef が飢餓しないようにする。
+- 同時実行上限による中断は列挙の失敗ではない。backoff と「最後の成功時刻」は GitHub 側の
+  失敗にだけ反応させ、backlog を独立した signal として監視する。
+- 候補 query にも open PR の列挙にも現れない状態を、Kudo 所有 label の組合せで併せて列挙する。
+  記録が途中で失敗した投影（`ai-ready`を持たず、kudo PR は open でない）と、完了済み Issue への
+  再依頼（Issue が closed のままなら候補条件の`open`を満たさない）がこれに当たる。完了済み
+  Issue 全体のような増え続ける集合を毎 cycle 列挙しないよう、条件は組合せまで絞る。
 
 Polling の query result も authority ではない。claim 直前の live Issue read を省略しない。全候補を
 繰り返し発見しても、branch ref create の atomicity と marker により二重実行しない。
@@ -131,6 +149,20 @@ run / comment / PR の観測から同じ phase を再導出して label を戻�
 | Run needs human | `ai-ready`, `ai-in-progress`, `ai-merged` | `ai-needs-human` |
 | merge 完了 | `ai-ready`, `ai-in-progress`, `ai-needs-human` | `ai-merged` |
 | already-merged 再依頼検出 | `ai-ready` | `ai-merged`（再記録） |
+
+導出 event の再観測（同じ行を、その一度きりの副作用が済んだ後に観測した場合）は次の 2 点
+だけが異なる。
+
+| 再観測 | 差分 | 理由 |
+| --- | --- | --- |
+| needs human の再観測 | `ai-ready`を除去対象から外す | `ai-ready`の再付与だけが resume / supersede を起動する。停止中の再観測で消すと、人間が契約を直して付け直した trigger を resume 判定の前に消費する |
+| merge 完了の再観測 | Issue を close しない | close は完了を初めて記録したときの一度きりの副作用である。その後に Issue が open であることは人間の操作の結果であり、押し戻す対象ではない |
+
+「完了を既に記録したか」は`ai-merged`の現在値で判定しない。Kudo 所有でも人間が外せる
+label だからである。判定に使うのは **Controller 名義の`ai-merged`付与が label timeline に
+一度でもあるか** であり、現在値が消えていても再依頼として扱う。actor を照合するのは、
+人間が merge 前に手で`ai-merged`を付けた場合に、その付与を Kudo の完了記録として読まない
+ためである。
 
 `ai-merged`を持つ IssueRef は claimable 条件（merged な kudo PR の不存在）で claim へ進まないため、
 claim 完了の除去対象に`ai-merged`は現れない。label を手で外しても merged な kudo PR という観測が

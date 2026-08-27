@@ -6,12 +6,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mrbaron3/kudo/internal/contract"
 	"github.com/mrbaron3/kudo/internal/livecontext"
+	"github.com/mrbaron3/kudo/internal/telemetry"
+	"github.com/mrbaron3/kudo/internal/workflow"
 )
 
 type Status string
@@ -26,9 +29,11 @@ const (
 	StatusFailedTransport      Status = "failed_transport"
 )
 
+// routing 対象の既定値は workflow の宣言を唯一の正本にする。値を書き写すと、
+// polling と claim が別の assignee / label を候補条件に使う状態を作れてしまう。
 const (
-	DefaultTargetAssignee = "mrbaron3"
-	DefaultReadyLabel     = "ai-ready"
+	DefaultTargetAssignee = workflow.DefaultTargetAssignee
+	DefaultReadyLabel     = workflow.LabelReady
 )
 
 // ErrClaimConflict は観測済みのclaim residueを正規の同一Runへ結び付けられないことを表す。
@@ -137,8 +142,13 @@ type ClaimHandler struct {
 	compiler Compiler
 	config   ClaimConfig
 	clock    Clock
+	logger   *slog.Logger
 	resolver *livecontext.Resolver
 }
+
+// EventClaimOperation は claim Operation の終了 record の event 名である。
+// message ではなくこの code で分岐・集計する。
+const EventClaimOperation = "claim.operation"
 
 func NewClaimHandler(github GitHub, compiler Compiler, config ClaimConfig, clock Clock) (*ClaimHandler, error) {
 	if github == nil || compiler == nil || clock == nil {
@@ -164,11 +174,64 @@ func NewClaimHandler(github GitHub, compiler Compiler, config ClaimConfig, clock
 	}
 	return &ClaimHandler{
 		github: github, compiler: compiler, config: config, clock: clock,
+		logger:   slog.Default(),
 		resolver: livecontext.NewResolver(github),
 	}, nil
 }
 
+// WithLogger は record の出力先を差し替えた handler を返す。
+//
+// constructor 引数にしないのは、logger が collaborator ではなく出力先だからである。
+// nil は無視して既定（slog.Default）のままにする。observability の設定漏れで claim が
+// 起動しない、という関係にはしない。
+func (h *ClaimHandler) WithLogger(logger *slog.Logger) *ClaimHandler {
+	if logger == nil {
+		return h
+	}
+	clone := *h
+	clone.logger = logger
+	return &clone
+}
+
+// Handle は claim Operation を実行し、結果を必ず一件の record として残す。
+//
+// 記録するのは identity と機械可読な分類だけである。Issue 本文、error message、
+// GitHub の response 本文は載せない（docs/spec/05_design/01_architecture.md の
+// Telemetry）。分類は Status と Rejection code が担う。
+//
+// Run（Pull Request 番号）は claim が記録面を確定して初めて決まるため、確定した
+// 経路でだけ field に現れる。IssueRef / Operation / attempt / CausationID は全終了
+// 経路で載せる（docs/spec/05_design/03_runtime-platform.md の
+// Observability and operations）。
 func (h *ClaimHandler) Handle(ctx context.Context, operation contract.WorkerOperation, attemptID string) Result {
+	result := h.handle(ctx, operation, attemptID)
+	h.logResult(ctx, operation, attemptID, result)
+	return result
+}
+
+func (h *ClaimHandler) logResult(ctx context.Context, operation contract.WorkerOperation,
+	attemptID string, result Result) {
+	attrs := []slog.Attr{
+		slog.String(telemetry.FieldEvent, EventClaimOperation),
+		slog.String(telemetry.FieldOutcome, string(result.Status)),
+		telemetry.Issue(operation.Issue),
+		telemetry.Operation(operation, attemptID),
+	}
+	if result.PullRequest.Number > 0 {
+		attrs = append(attrs, telemetry.Run(result.PullRequest.Number))
+	}
+	if result.Rejection != nil {
+		attrs = append(attrs, slog.String(telemetry.FieldReason, string(result.Rejection.Code)))
+	}
+	level := slog.LevelInfo
+	if result.Err != nil {
+		level = slog.LevelWarn
+		attrs = append(attrs, telemetry.ErrorType(result.Err))
+	}
+	h.logger.LogAttrs(ctx, level, "claim Operation が終了した", attrs...)
+}
+
+func (h *ClaimHandler) handle(ctx context.Context, operation contract.WorkerOperation, attemptID string) Result {
 	if err := contract.ValidateWorkerOperation(operation); err != nil || operation.Kind != contract.OperationClaim {
 		if err == nil {
 			err = fmt.Errorf("Operation kind は %q でなければならない", contract.OperationClaim)

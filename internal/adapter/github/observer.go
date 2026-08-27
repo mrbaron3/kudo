@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mrbaron3/kudo/internal/workflow"
 )
 
 type apiUser struct {
@@ -92,8 +94,11 @@ type apiPullRequest struct {
 	Body   json.RawMessage `json:"body"`
 	User   apiUser         `json:"user"`
 	Head   struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -123,6 +128,14 @@ type apiCheckRun struct {
 	} `json:"output"`
 	StartedAt   *time.Time `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
+}
+
+type apiIssueEvent struct {
+	ID        int64     `json:"id"`
+	Event     string    `json:"event"`
+	Actor     apiUser   `json:"actor"`
+	Label     apiLabel  `json:"label"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type apiContent struct {
@@ -158,7 +171,11 @@ func (g *Gateway) ObserveIssue(ctx context.Context, number int64) (IssueSnapshot
 	if err != nil {
 		return IssueSnapshot{}, err
 	}
-	branchName := IssueBranchName(number)
+	labelEvents, err := g.ListIssueLabelEvents(ctx, number)
+	if err != nil {
+		return IssueSnapshot{}, err
+	}
+	branchName := workflow.IssueBranchName(number)
 	branch, err := g.getBranch(ctx, branchName)
 	if err != nil {
 		return IssueSnapshot{}, err
@@ -185,13 +202,10 @@ func (g *Gateway) ObserveIssue(ctx context.Context, number int64) (IssueSnapshot
 		Parent:        parent,
 		SubIssues:     subIssues,
 		IssueComments: issueComments,
+		LabelEvents:   labelEvents,
 		Branch:        branch,
 		PullRequests:  pulls,
 	}, nil
-}
-
-func IssueBranchName(number int64) string {
-	return "kudo/issue-" + strconv.FormatInt(number, 10)
 }
 
 // ListCandidateIssues は routing query の全 page を読み、Pull Request を除外する。
@@ -230,6 +244,50 @@ func (g *Gateway) ListCandidateIssues(ctx context.Context, filter CandidateFilte
 			}
 			seen[value.Number] = struct{}{}
 			result = append(result, observed)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// ListIssueLabelEvents は Issue の label 付与・除去を発生順で返す。
+//
+// 現在の label set では復元できない事実（直近の`ai-ready`付与、Kudo 自身が完了を
+// 記録したか）を導出へ渡すために必要である。label 以外の event は落とし、workflow が
+// GitHub の event 語彙全体に依存しないようにする。
+func (g *Gateway) ListIssueLabelEvents(ctx context.Context, issueNumber int64) ([]IssueLabelEvent, error) {
+	if issueNumber <= 0 {
+		return nil, fmt.Errorf("Issue number は正数でなければならない")
+	}
+	seen := make(map[int64]struct{})
+	var result []IssueLabelEvent
+	err := g.paginate(ctx, g.issuePath(issueNumber)+"/events", nil, func(data []byte) error {
+		var page []apiIssueEvent
+		if err := json.Unmarshal(data, &page); err != nil {
+			return err
+		}
+		for _, value := range page {
+			added := value.Event == "labeled"
+			if !added && value.Event != "unlabeled" {
+				continue
+			}
+			if value.Label.Name == "" {
+				return fmt.Errorf("label event に label name が無い")
+			}
+			if _, exists := seen[value.ID]; exists {
+				continue
+			}
+			seen[value.ID] = struct{}{}
+			result = append(result, IssueLabelEvent{
+				ID:         value.ID,
+				Label:      value.Label.Name,
+				Added:      added,
+				Actor:      Actor{ID: value.Actor.ID, Login: value.Actor.Login},
+				OccurredAt: value.CreatedAt,
+			})
 		}
 		return nil
 	})
@@ -486,6 +544,14 @@ func (g *Gateway) convertIssueMetadata(value apiIssue) (IssueMetadata, error) {
 	if value.Number <= 0 {
 		return IssueMetadata{}, invalidResponse("decode Issue", "Issue number が不正", nil)
 	}
+	// state は candidate 条件（live state が open）の判断材料であり、欠落や語彙外を
+	// そのまま通すと「open ではない」＝候補外という正常な no-op へ潰れる。候補外は
+	// transport failure でも backoff でもないため、observation の欠落が signal を
+	// 一切残さないまま webhook と polling の再発見を無言で消費し続ける。必須入力の
+	// 欠落は推測せず拒否する（AGENTS.md の Contract discipline）。
+	if !validIssueState(value.State) {
+		return IssueMetadata{}, invalidResponse("decode Issue", "Issue state が欠落しているか語彙外", nil)
+	}
 	repository := g.repository
 	if value.RepositoryURL != "" {
 		parsed, err := repositoryFromAPIURL(value.RepositoryURL)
@@ -518,6 +584,12 @@ func (g *Gateway) convertIssueMetadata(value apiIssue) (IssueMetadata, error) {
 		UpdatedAt:     value.UpdatedAt,
 		ClosedAt:      value.ClosedAt,
 	}, nil
+}
+
+// validIssueState は GitHub の Issue state 語彙を固定する。
+// 表記差は case-insensitive な identity として受理し、値の欠落とは区別する。
+func validIssueState(value string) bool {
+	return strings.EqualFold(value, "open") || strings.EqualFold(value, "closed")
 }
 
 func hasPullRequest(value json.RawMessage) bool {

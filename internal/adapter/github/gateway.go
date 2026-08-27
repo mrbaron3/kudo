@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -63,6 +64,26 @@ func (e *TransportFailure) Error() string {
 }
 
 func (e *TransportFailure) Unwrap() error { return e.Err }
+
+// RetryAfterHint は GitHub が示した最短再試行間隔を返す。
+//
+// Retry-After を優先するのは、secondary rate limit では reset 時刻ではなく
+// この header が唯一の指示だからである。primary rate limit では reset までの
+// 残りが下限になる。どちらも無い、または既に過ぎている場合は false を返し、
+// 呼び出し側の backoff 方針へ委ねる。now を引数に取るのは、gateway が clock を
+// 保持せず、待機を決める側の時刻で判断させるためである。
+func (e *TransportFailure) RetryAfterHint(now time.Time) (time.Duration, bool) {
+	if e.RetryAfter > 0 {
+		return e.RetryAfter, true
+	}
+	if e.RateLimitReset.IsZero() {
+		return 0, false
+	}
+	if remaining := e.RateLimitReset.Sub(now); remaining > 0 {
+		return remaining, true
+	}
+	return 0, false
+}
 
 func (e *TransportFailure) Retryable() bool {
 	switch e.Class {
@@ -192,6 +213,7 @@ func (g *Gateway) request(
 		}
 	}
 	defer response.Body.Close()
+	g.observeRateLimit(response.Header)
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
 		return responseData{}, &TransportFailure{
@@ -269,13 +291,29 @@ func classifyHTTPFailure(operation string, response *http.Response, body []byte)
 		RequestID:  response.Header.Get("X-GitHub-Request-Id"),
 		Message:    message,
 	}
+	// 秒から Duration への変換は int64 の nanosecond へ収まる範囲だけ行う。範囲外を
+	// そのまま掛けると wrap して負値になり、RetryAfterHint が hint 無しへ落ちる。
+	// 指示が消えると呼び出し側は通常 backoff で再試行し、GitHub が示した下限を黙って破る
+	// （docs/spec/05_design/04_github-routing.md の Polling fallback）。表現できない指示は
+	// 「header が壊れている」であり、待たない理由にはならないので上限へ丸める。
 	if seconds, err := strconv.ParseInt(response.Header.Get("Retry-After"), 10, 64); err == nil && seconds >= 0 {
-		failure.RetryAfter = time.Duration(seconds) * time.Second
+		failure.RetryAfter = secondsToDuration(seconds)
 	}
 	if reset, err := strconv.ParseInt(response.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil && reset > 0 {
 		failure.RateLimitReset = time.Unix(reset, 0).UTC()
 	}
 	return failure
+}
+
+// maxDurationSeconds は time.Duration が表現できる最大の秒数である。
+const maxDurationSeconds = int64(math.MaxInt64) / int64(time.Second)
+
+// secondsToDuration は非負秒を Duration へ変換し、表現できない値を上限で飽和させる。
+func secondsToDuration(seconds int64) time.Duration {
+	if seconds > maxDurationSeconds {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func isPermissionFailureMessage(message string) bool {

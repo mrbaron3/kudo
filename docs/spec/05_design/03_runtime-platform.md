@@ -125,10 +125,13 @@ validation する。少なくとも次を持つ。
 
 | Key | Meaning |
 | --- | --- |
-| `KUDO_REPOSITORIES` | 許可された`owner/repository`一覧 |
-| `KUDO_TARGET_ASSIGNEE` | 既定`mrbaron3` |
-| `KUDO_READY_LABEL` | 既定`ai-ready` |
-| `KUDO_POLL_INTERVAL` | 既定`15m`。正数かつ最低値を検証する |
+| `KUDO_REPOSITORIES` | 許可された`owner/repository`一覧（comma 区切り）。必須で、空を「全 repository を許可」へ倒さない。canonical 化（小文字）して重複を排除し、polling の列挙対象と webhook の受け付け対象が同じ集合になるようにする。webhook secret は GitHub App の installation 全体で共有されるため、この allowlist に無い repository の delivery は署名検証後に no-op として受理する |
+| `KUDO_TARGET_ASSIGNEE` | 既定`mrbaron3`。comma を含む値は列挙 query を壊すため拒否する |
+| `KUDO_READY_LABEL` | 既定`ai-ready`。comma を含む値は列挙 query を壊すため拒否する |
+| `KUDO_POLL_INTERVAL` | 既定`15m`、最低`1m`。単位付きの正の duration を要求する |
+| `KUDO_POLL_BACKOFF_INITIAL` | poll 失敗後の初回 backoff。既定`30s`、最低`1s` |
+| `KUDO_POLL_BACKOFF_MAX` | poll backoff の上限。既定`15m`。初回値を下回る設定は拒否する |
+| `KUDO_POLL_CAPACITY_RETRY_INTERVAL` | 同時実行上限で落ちた IssueRef を再投入するまでの待機。既定`5s`、最低`1s`、`KUDO_POLL_INTERVAL`以下 |
 | `KUDO_WORKSPACE_ROOT` | 既定`/var/lib/kudo/workspaces` |
 | `KUDO_PROVIDER_ALLOWLIST` | `codex`、`claude`の許可集合 |
 | `KUDO_GITHUB_<ACTOR>_APP_ID_FILE` | actor ごとの GitHub App ID を読む file。`<ACTOR>`は`COORDINATOR`、`IMPLEMENTER`、`REVIEWER` |
@@ -137,6 +140,7 @@ validation する。少なくとも次を持つ。
 | `KUDO_ISSUE_PROVIDER` | Issue Worker Operation に使う required provider。`codex`または`claude` |
 | `KUDO_REVIEW_PROVIDER` | Review Request に使う required provider。`codex`または`claude` |
 | `KUDO_MAX_CONCURRENCY` | 同時 Operation 上限（in-process semaphore） |
+| `KUDO_MAX_INFLIGHT_RECONCILE` | 同時に走らせる`ReconcileIssue`の上限。既定`4`、許容範囲`1`〜`1024`。`KUDO_MAX_CONCURRENCY`とは別軸で、観測と導出を含む reconcile の受付側 capacity である |
 | `KUDO_OPERATION_TIMEOUT` | Operation kind ごとの deadline policy 参照 |
 | `KUDO_ATTEMPT_RETRIES` | 一つの logical Operation で初回後に許す追加 attempt 数。既定`3`、許容範囲`1`〜`10` |
 | `KUDO_REVIEW_ROUNDS_TEST_VALIDITY` | `test_validity` gate の review round 上限。既定`3`、許容範囲`1`〜`10` |
@@ -179,7 +183,10 @@ Operation の開始を停止し、実行中 Operation を設定済み grace peri
 
 ## Observability and operations
 
-すべての log に Run（PR 番号）、Operation、attempt、IssueRef を可能な範囲で含める。health は
+すべての log に Run（PR 番号）、Operation、attempt、IssueRef を可能な範囲で含める。起動元
+（webhook delivery ID / poll cycle ID）と Operation を結ぶ causation ID も併せて記録し、delivery から
+claim までを一本の系列として辿れるようにする。Run は Operation が Pull Request を確定して初めて
+決まるため、確定前の record には現れない。health は
 process、readiness は設定と認証、workflow alert は導出 phase の滞留から判定する。
 
 最低限、次を監視対象とする。

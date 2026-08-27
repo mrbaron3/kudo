@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -30,9 +31,31 @@ func (g *Gateway) EnsureComment(ctx context.Context, targetNumber int64, record 
 	if err != nil {
 		return Comment{}, false, err
 	}
-	comments, err := g.listComments(ctx, targetNumber)
+	matches, err := g.findMarkedComments(ctx, targetNumber, record.Marker)
 	if err != nil {
 		return Comment{}, false, err
+	}
+	if len(matches) > 1 {
+		return Comment{}, false, invalidResponse("search comments", "同じ marker の comment が複数ある", nil)
+	}
+	if len(matches) == 1 {
+		return matches[0], false, nil
+	}
+	created, err := g.createComment(ctx, targetNumber, rendered)
+	if err != nil {
+		return Comment{}, false, err
+	}
+	return created, true, nil
+}
+
+// findMarkedComments は recorder identity 名義で同じ marker を持つ comment を全 page から
+// 集める。複数一致をここで失敗にしないのは、許容できるかが record の種類で違うためである。
+// content digest を marker に持つ記録では複数一致は protocol 違反だが、identity marker を
+// 持つ収束対象の comment では収束を続けられなければならない。
+func (g *Gateway) findMarkedComments(ctx context.Context, targetNumber int64, marker Marker) ([]Comment, error) {
+	comments, err := g.listComments(ctx, targetNumber)
+	if err != nil {
+		return nil, err
 	}
 	var matches []Comment
 	for _, comment := range comments {
@@ -41,48 +64,45 @@ func (g *Gateway) EnsureComment(ctx context.Context, targetNumber int64, record 
 		}
 		markers, parseErr := ParseMarkers(string(comment.Body))
 		if parseErr != nil {
-			return Comment{}, false, invalidResponse("search comments", "既存 comment の marker が不正", parseErr)
+			return nil, invalidResponse("search comments", "既存 comment の marker が不正", parseErr)
 		}
 		if len(markers) > 1 {
-			return Comment{}, false, invalidResponse("search comments", "既存 comment に marker が複数ある", nil)
+			return nil, invalidResponse("search comments", "既存 comment に marker が複数ある", nil)
 		}
-		for _, marker := range markers {
-			if markersEqual(marker, record.Marker) {
+		for _, candidate := range markers {
+			if markersEqual(candidate, marker) {
 				matches = append(matches, comment)
 				break
 			}
 		}
 	}
-	if len(matches) > 1 {
-		return Comment{}, false, invalidResponse("search comments", "同じ marker の comment が複数ある", nil)
-	}
-	if len(matches) == 1 {
-		return matches[0], false, nil
-	}
+	return matches, nil
+}
 
+func (g *Gateway) createComment(ctx context.Context, targetNumber int64, body string) (Comment, error) {
 	response, err := g.request(ctx, http.MethodPost, g.endpoint(g.issuePath(targetNumber)+"/comments", nil),
 		struct {
 			Body string `json:"body"`
-		}{Body: rendered}, http.StatusCreated)
+		}{Body: body}, http.StatusCreated)
 	if err != nil {
-		return Comment{}, false, err
+		return Comment{}, err
 	}
 	var created apiComment
 	if err := json.Unmarshal(response.Body, &created); err != nil {
-		return Comment{}, false, invalidResponse("POST comment", "created comment response を decode できない", err)
+		return Comment{}, invalidResponse("POST comment", "created comment response を decode できない", err)
 	}
 	comment, err := convertComment(created)
 	if err != nil {
-		return Comment{}, false, invalidResponse("POST comment", "created comment body が不正", err)
+		return Comment{}, invalidResponse("POST comment", "created comment body が不正", err)
 	}
 	if comment.Author.ID != g.recorder.CommentAuthor.ID {
-		return Comment{}, false, &TransportFailure{
+		return Comment{}, &TransportFailure{
 			Class:     FailurePermission,
 			Operation: "POST comment",
 			Message:   "created comment の author が configured recorder identity と一致しない",
 		}
 	}
-	return comment, true, nil
+	return comment, nil
 }
 
 // EnsureCheckRun は head 上の同名 check run を全 page から検索し、同じ marker が
@@ -190,6 +210,231 @@ func (g *Gateway) EnsureLabel(ctx context.Context, issueNumber int64, label stri
 		return false, err
 	}
 	return true, nil
+}
+
+// ConvergeLabels は current label set を一度だけ読み、add が無ければ付け、
+// remove にある label が付いていれば外す。
+//
+// 一覧の読み取りを 1 回にまとめているのは、label 単位の primitive を並べると
+// 同じ Issue の label を 3〜4 回読み直すためである。polling は rate limit 予算の
+// 制約下にある回復経路であり、収束済みの Run を毎 cycle 記録するこの経路の
+// 読み取りは定常的な支出になる。
+//
+// 削除は観測した label name をそのまま使う。GitHub の label identity は
+// case-insensitive だが、DELETE の path は表記が一致しないと対象を解決できず、
+// 設定値で消しにいくと `AI-Ready` が付いた Issue で 404 になり、外れていないのに
+// 収束済みとして報告される。
+//
+// 戻り値は「この呼び出しが変えたか」である。既に収束している状態は成功であり、
+// 失敗ではない。add と remove に同じ label を渡す呼び出しは、収束先が定義できないため
+// 拒否する。
+func (g *Gateway) ConvergeLabels(ctx context.Context, issueNumber int64, add string, remove []string) (bool, []string, error) {
+	if issueNumber <= 0 || !validLabelName(add) {
+		return false, nil, fmt.Errorf("Issue number または label name が不正")
+	}
+	for _, label := range remove {
+		if !validLabelName(label) {
+			return false, nil, fmt.Errorf("Issue number または label name が不正")
+		}
+		if strings.EqualFold(label, add) {
+			return false, nil, fmt.Errorf("label %q を同じ呼び出しで追加と削除の両方に指定できない", add)
+		}
+	}
+	labels, err := g.listLabels(ctx, issueNumber)
+	if err != nil {
+		return false, nil, err
+	}
+	present := make(map[string]string, len(labels))
+	for _, existing := range labels {
+		present[strings.ToLower(existing.Name)] = existing.Name
+	}
+
+	added := false
+	if _, exists := present[strings.ToLower(add)]; !exists {
+		if _, err := g.request(ctx, http.MethodPost, g.endpoint(g.issuePath(issueNumber)+"/labels", nil),
+			struct {
+				Labels []string `json:"labels"`
+			}{Labels: []string{add}}, http.StatusOK); err != nil {
+			return false, nil, err
+		}
+		added = true
+	}
+
+	var removed []string
+	for _, label := range remove {
+		observed, exists := present[strings.ToLower(label)]
+		if !exists {
+			continue
+		}
+		changed, err := g.deleteLabel(ctx, issueNumber, observed)
+		if err != nil {
+			return added, removed, err
+		}
+		if changed {
+			removed = append(removed, observed)
+		}
+	}
+	return added, removed, nil
+}
+
+// deleteLabel は観測済みの label name を外す。
+//
+// 404 を即座に成功へ写さないのは、この endpoint が「label が付いていない」と
+// 「repository / Issue が見えない」を同じ status で返すためである。並行 reconcile が
+// 先に外した場合は収束済みとして成功にしてよいが、権限喪失や repository transfer を
+// 収束として記録すると、label が残っているのに「外した」と報告し続ける。
+// branch 不在の確認（confirmBranchAbsent）と同じく、もう一度観測してから判断する。
+func (g *Gateway) deleteLabel(ctx context.Context, issueNumber int64, label string) (bool, error) {
+	response, err := g.request(ctx, http.MethodDelete,
+		g.endpoint(g.issuePath(issueNumber)+"/labels/"+url.PathEscape(label), nil), nil,
+		http.StatusOK, http.StatusNotFound)
+	if err != nil {
+		return false, err
+	}
+	if response.Status == http.StatusOK {
+		return true, nil
+	}
+	labels, err := g.listLabels(ctx, issueNumber)
+	if err != nil {
+		return false, err
+	}
+	for _, existing := range labels {
+		if strings.EqualFold(existing.Name, label) {
+			return false, &TransportFailure{
+				Class:      FailureNotFound,
+				Operation:  "DELETE label",
+				StatusCode: http.StatusNotFound,
+				Message:    "label 削除が 404 を返したが、再観測では label が残っている",
+			}
+		}
+	}
+	return false, nil
+}
+
+// EnsureIssueClosed は open な Issue だけを close する。
+//
+// merge completion の投影は label と close の両方であり、片方だけ成功した状態から
+// 次の reconcile が再開できなければならない。現在値を確認してから mutate するのは、
+// 人間が close した Issue を Kudo の完了として上書きしないためでもある。
+// 戻り値は「この呼び出しが close したか」である。
+func (g *Gateway) EnsureIssueClosed(ctx context.Context, issueNumber int64) (bool, error) {
+	if issueNumber <= 0 {
+		return false, fmt.Errorf("Issue number は正数でなければならない")
+	}
+	observed, err := g.getIssue(ctx, issueNumber)
+	if err != nil {
+		return false, err
+	}
+	if strings.EqualFold(observed.Issue.State, "closed") {
+		return false, nil
+	}
+	_, err = g.request(ctx, http.MethodPatch, g.endpoint(g.issuePath(issueNumber), nil), struct {
+		State       string `json:"state"`
+		StateReason string `json:"state_reason"`
+	}{State: "closed", StateReason: "completed"}, http.StatusOK)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// oldestComment は同じ marker を持つ comment 群から record の実体を選ぶ。
+//
+// 複数一致は、marker の確認と作成の間に並行 reconcile が割り込んだ痕跡である
+// （単一 process でも webhook と poll が同じ Issue を同時に投入し得る）。ここを失敗に
+// すると、以後その記録は更新も収束もできない。最古の 1 件を実体として扱えば収束は
+// 続く。重複の掃除は人間が行い、構造的な解決は reconcile core の Issue 単位
+// single-flight が担う。
+func oldestComment(matches []Comment) (Comment, bool) {
+	if len(matches) == 0 {
+		return Comment{}, false
+	}
+	oldest := matches[0]
+	for _, comment := range matches[1:] {
+		if comment.ID < oldest.ID {
+			oldest = comment
+		}
+	}
+	return oldest, true
+}
+
+// CommentChange は EnsureCommentContent が行った mutation の分類である。
+type CommentChange string
+
+const (
+	CommentUnchanged CommentChange = "unchanged"
+	CommentCreated   CommentChange = "created"
+	CommentUpdated   CommentChange = "updated"
+)
+
+// EnsureCommentContent は marker で既存 comment を特定し、本文が違う場合だけ更新する。
+//
+// EnsureComment との違いは、marker が一致する comment の本文を現在値へ収束させる点である。
+// 内容が変わり得る案内 comment では、本文の digest を marker へ入れて EnsureComment を
+// 使うと、文面を変えるたびに別 marker の comment が増える。marker を record の identity
+// （kind と対象）だけで固定し、本文の収束をこちらで行うことで重複を作らない。
+//
+// 戻り値は収束後の comment と、この呼び出しが行った mutation の分類である。
+func (g *Gateway) EnsureCommentContent(ctx context.Context, targetNumber int64, record CommentRecord) (Comment, CommentChange, error) {
+	if targetNumber <= 0 {
+		return Comment{}, CommentUnchanged, fmt.Errorf("comment target number は正数でなければならない")
+	}
+	if err := g.validateMarkerRepository(record.Marker); err != nil {
+		return Comment{}, CommentUnchanged, err
+	}
+	if g.recorder == nil {
+		return Comment{}, CommentUnchanged, ErrRecorderIdentityRequired
+	}
+	rendered, err := RenderComment(record.Body, record.Marker, record.MachineBlock)
+	if err != nil {
+		return Comment{}, CommentUnchanged, err
+	}
+	matches, err := g.findMarkedComments(ctx, targetNumber, record.Marker)
+	if err != nil {
+		return Comment{}, CommentUnchanged, err
+	}
+	if existing, found := oldestComment(matches); found {
+		if string(existing.Body) == rendered {
+			return existing, CommentUnchanged, nil
+		}
+		updated, updateErr := g.updateComment(ctx, existing.ID, rendered)
+		if updateErr != nil {
+			return Comment{}, CommentUnchanged, updateErr
+		}
+		return updated, CommentUpdated, nil
+	}
+	created, err := g.createComment(ctx, targetNumber, rendered)
+	if err != nil {
+		return Comment{}, CommentUnchanged, err
+	}
+	return created, CommentCreated, nil
+}
+
+func (g *Gateway) updateComment(ctx context.Context, commentID int64, body string) (Comment, error) {
+	response, err := g.request(ctx, http.MethodPatch,
+		g.endpoint(g.repositoryPath("issues/comments")+"/"+strconv.FormatInt(commentID, 10), nil),
+		struct {
+			Body string `json:"body"`
+		}{Body: body}, http.StatusOK)
+	if err != nil {
+		return Comment{}, err
+	}
+	var updated apiComment
+	if err := json.Unmarshal(response.Body, &updated); err != nil {
+		return Comment{}, invalidResponse("PATCH comment", "updated comment response を decode できない", err)
+	}
+	comment, err := convertComment(updated)
+	if err != nil {
+		return Comment{}, invalidResponse("PATCH comment", "updated comment body が不正", err)
+	}
+	if comment.Author.ID != g.recorder.CommentAuthor.ID {
+		return Comment{}, &TransportFailure{
+			Class:     FailurePermission,
+			Operation: "PATCH comment",
+			Message:   "updated comment の author が configured recorder identity と一致しない",
+		}
+	}
+	return comment, nil
 }
 
 func (g *Gateway) listLabels(ctx context.Context, issueNumber int64) ([]Label, error) {

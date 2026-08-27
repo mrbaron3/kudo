@@ -63,6 +63,8 @@ func TestObserveIssueSeparatesExactBodyAndBuildsSnapshot(t *testing.T) {
 			}
 			w.Header().Set("Link", `<`+server.URL+`/repos/acme/widgets/issues/16/sub_issues?per_page=100&page=2>; rel="next"`)
 			fmt.Fprint(w, `[{"id":161,"number":17,"state":"open","title":"sub one","repository_url":"`+server.URL+`/repos/acme/widgets"}]`)
+		case "/repos/acme/widgets/issues/16/events":
+			fmt.Fprint(w, `[{"id":1,"event":"labeled","actor":{"id":7,"login":"mrbaron3"},"label":{"name":"ai-ready"}}]`)
 		case "/repos/acme/widgets/issues/16/comments":
 			fmt.Fprint(w, `[{"id":1001,"node_id":"comment-node","body":"issue comment","user":{"id":3,"login":"coordinator"},"created_at":"2026-08-21T01:00:00Z","updated_at":"2026-08-21T01:00:00Z"}]`)
 		case "/repos/acme/widgets/branches/kudo/issue-16":
@@ -110,6 +112,12 @@ func TestObserveIssueSeparatesExactBodyAndBuildsSnapshot(t *testing.T) {
 	}
 	if len(snapshot.IssueComments) != 1 || string(snapshot.IssueComments[0].Body) != "issue comment" {
 		t.Fatalf("IssueComments = %#v", snapshot.IssueComments)
+	}
+	// 現在の label set では復元できない事実（誰がいつ付けたか）を snapshot が運ぶ。
+	// 直近の`ai-ready`付与は無人区間の起点、Kudo 名義の`ai-merged`付与は完了記録である。
+	if len(snapshot.LabelEvents) != 1 || snapshot.LabelEvents[0].Label != "ai-ready" ||
+		!snapshot.LabelEvents[0].Added || snapshot.LabelEvents[0].Actor.ID != 7 {
+		t.Fatalf("LabelEvents = %#v", snapshot.LabelEvents)
 	}
 	if len(snapshot.PullRequests) != 1 {
 		t.Fatalf("PullRequests = %#v", snapshot.PullRequests)
@@ -268,4 +276,30 @@ func assertRequestHeaders(t *testing.T, r *http.Request) {
 func pageLink(base string, path string, page int) string {
 	values := url.Values{"page": {fmt.Sprint(page)}, "per_page": {"100"}}
 	return fmt.Sprintf(`<%s%s?%s>; rel="next"`, base, path, values.Encode())
+}
+
+// state は「live state が open」という候補条件の判断材料である。欠落や語彙外を
+// そのまま通すと「open ではない」＝候補外という正常な no-op に潰れ、transport failure
+// としても escalation としても記録されないまま、再発見のたびに無言で捨てられる。
+func TestGetIssueRejectsMissingOrUnknownState(t *testing.T) {
+	t.Parallel()
+
+	for name, body := range map[string]string{
+		"state 欠落":  `{"id":160,"number":16,"title":"missing state","body":"body"}`,
+		"語彙外 state": `{"id":160,"number":16,"state":"archived","title":"unknown state","body":"body"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, body)
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := testGateway(server.Client(), server.URL).getIssue(t.Context(), 16)
+			var failure *TransportFailure
+			if !errors.As(err, &failure) || failure.Class != FailureInvalidResponse {
+				t.Fatalf("error = %v, want invalid response", err)
+			}
+		})
+	}
 }

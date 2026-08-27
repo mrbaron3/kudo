@@ -317,6 +317,45 @@ phase である。
 run が存在しないため、evidence の再記録と再 review が構造的に要求される。導出関数は上記いずれにも
 該当しない観測（branch はあるが commit が壊れている等）を`needs_human`へ写像し、黙って進行しない。
 
+### 表の評価規則を補足する条件
+
+上の表は verdict が`approve`の場合の phase 名だけを列挙した要約である。次の各項は表の行そのもの
+ではなく、**行を評価するときに併せて適用する条件**であり、本節と表を合わせて導出の正本とする。
+表の字面と食い違う箇所は本節が優先する。
+
+1. **`request_changes` / `needs_human` verdict の分岐**: 表は`approve`だけを列挙する。live head に
+   `request_changes`がある観測は、test gate なら`authoring_tests`（`revise_tests`）へ、final gate なら
+   `implementing`（`repair_implementation`）へ写す。`needs_human` verdict は`review_needs_human`の
+   escalation にする。verdict を読まずに次の行へ落とすと、差し戻しが観測から消えて無人 loop が止まらない。
+2. **未 review の RED evidence を系譜上の approve より優先する**: live head に RED evidence があり、
+   その head の test verdict がまだ無い間は、系譜上の古い approve を実装の根拠にしない。表では
+   `implementing`が`awaiting_test_review`より上にあるが、この条件では`awaiting_test_review`が成立する。
+   §GREEN and refactor が「変更後の test head と RED evidence を publish し、新しい`test_validity`
+   approval を得るまで implementation へ戻らない」と定めるためであり、表どおりに評価すると
+   `revise_tests`後の新しい test head を古い approve で通せてしまう。
+3. **`merged`行は merge intent と照合する**: 表の条件は「kudo PR が merged である」だけだが、
+   Implementer 名義で対象 head SHA へ束縛された merge intent marker と一致する merged だけを`merged`
+   phase とする。一致しない merged は`external_mutation_conflict`である。照合しないと、人間が未承認
+   head を手で merge した場合も完了として投影する。
+4. **live head に束縛された`test-revision-report`は`implementing`行より`authoring_tests`を優先する**:
+   implement lane が test を差し戻した記録がその head にある間、test gate は再び開いている。表の
+   `implementing`行（系譜に test approve があり final evidence がない）に一致していても、
+   `authoring_tests`（`revise_tests`）へ写す。項2 と同じ理由であり、marker は check run ではなく
+   comment なので項2 とは別条件になる。
+5. **`finalizing_pull_request` / `merging_pull_request`は final approve だけでは成立しない**: live head の
+   GREEN evidence と check evidence があり、かつ**系譜上でもっとも新しい test gate の記録が approve**
+   であることを併せて要求する。approve の存在だけを見ると、その後の`request_changes`や
+   `test-revision-report`で一度閉じた test gate を古い approve で開き直せる。要件を満たさない final
+   approve は phase を返さず`protocol_validation_failed`として止める。
+
+### `superseded`からの再 claim
+
+`superseded`は「merged 以外で closed な kudo PR が lineage として残る」観測である。closed な PR は
+Run の履歴であって現在の Run ではないため、後始末（PR close と branch 削除）が終わっていて Issue が
+candidate 条件を満たすなら、同じ Issue で新しい Run を開始できる。branch が残っている観測は後始末が
+未完了であり、`external_mutation_conflict`として人へ返す。closed lineage を理由に candidate 判定へ
+進まないと、人間が`ai-ready`を付け直しても Run が二度と再開しない。
+
 ## Retry and round budget
 
 retry 可能な transport / execution failure は quality state ではなく process-local な attempt 管理で

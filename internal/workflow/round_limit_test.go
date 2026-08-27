@@ -438,6 +438,7 @@ func TestHumanEscalationCannotForgeDerivedReasons(t *testing.T) {
 		EscalationReviewRoundLimitExceeded,
 		EscalationReviewNeedsHuman,
 		EscalationRetryBudgetExhausted,
+		EscalationProtocolValidationFailed,
 	} {
 		t.Run(string(reason), func(t *testing.T) {
 			requireRejected(t, run, HumanEscalated{Reason: reason}, TransitionGateUnsatisfied)

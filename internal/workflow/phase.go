@@ -1,9 +1,27 @@
-// Package workflow は Run の durable phase と、分類済み event から次 state と
-// 必要 action を決める pure な transition function を提供する。
+// Package workflow は workflow 状態の pure core を提供する。
 //
-// 正本は docs/spec/05_design/02_workflow.md の Durable states と docs/spec/05_design/01_architecture.md である。
+// 現在は二つの model が並存する。
+//
+//   - 導出 model（observation.go / derivation.go / round.go / derived_transition.go /
+//     candidate.go / escalation.go）: GitHub の観測 snapshot から phase、次 action、
+//     review round を導出する。phase も round も保存せず、process crash 後は再観測だけで
+//     同じ継続が再現される。ADR-0001 の stateless reconciler の中核であり、Controller が
+//     使うのはこちらである。
+//   - 実行の付帯（trigger.go / dispatch.go / retry.go）: reconcile の起動経路を閉じた
+//     語彙で表す入力型、Run 単位の単一 flight 排他、class 別 backoff。いずれも
+//     process-local であり workflow 状態ではない。attempt counter を保存しないのは
+//     ADR-0001 の帰結である（保存すると再起動が phase 導出へ影響する）。
+//   - durable model（phase.go / event.go / transition.go / run.go）: Run aggregate へ
+//     分類済み event を適用して次 state と action を決める。ADR-0001 より前の設計に由来し、
+//     現在の利用者は退役予定の PostgreSQL run store だけである。退役の時期は
+//     docs/spec/06_project/01_implementation-plan.md が別判断として記録している。
+//
+// 二つは action 語彙も別空間である（ReconcileAction と Action）。導出 model は「観測から
+// 見た次の一手」を、durable model は「保存済み state へ event を適用した結果」を表す。
+//
+// 正本は docs/spec/05_design/02_workflow.md と docs/spec/05_design/01_architecture.md である。
 // 本 package は network、clock、filesystem、Issue parser、canonical YAML reader を
-// 呼ばない。Run と event は解決済みの opaque な identity だけを運ぶ。
+// 呼ばない。Run、event、観測は解決済みの opaque な identity だけを運ぶ。
 package workflow
 
 import "slices"

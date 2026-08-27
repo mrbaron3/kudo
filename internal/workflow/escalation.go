@@ -19,6 +19,10 @@ const (
 	EscalationReviewRoundLimitExceeded EscalationReason = "review_round_limit_exceeded"
 	// EscalationRetryBudgetExhausted は bounded retry を使い切った execution failure を表す。
 	EscalationRetryBudgetExhausted EscalationReason = "retry_budget_exhausted"
+	// EscalationProtocolValidationFailed は、immutable な envelope / Result / ref / 記録が
+	// versioned protocol を満たさないことを表す。同じ input の retry では復旧しないため
+	// retry せず人へ返す。外部干渉と分けるのは、人間が取るべき対処が違うためである。
+	EscalationProtocolValidationFailed EscalationReason = "protocol_validation_failed"
 	// EscalationContractAuthorityConflict は Contract、Acceptance Criteria、authority の
 	// 矛盾・不足・曖昧さを表す。
 	EscalationContractAuthorityConflict EscalationReason = "contract_authority_conflict"
@@ -47,12 +51,14 @@ var derivedEscalationReasons = map[EscalationReason]bool{
 	EscalationReviewNeedsHuman:         true,
 	EscalationReviewRoundLimitExceeded: true,
 	EscalationRetryBudgetExhausted:     true,
+	EscalationProtocolValidationFailed: true,
 }
 
 var escalationReasons = map[EscalationReason]bool{
 	EscalationReviewNeedsHuman:              true,
 	EscalationReviewRoundLimitExceeded:      true,
 	EscalationRetryBudgetExhausted:          true,
+	EscalationProtocolValidationFailed:      true,
 	EscalationContractAuthorityConflict:     true,
 	EscalationExternalMutationConflict:      true,
 	EscalationMergeBlocked:                  true,

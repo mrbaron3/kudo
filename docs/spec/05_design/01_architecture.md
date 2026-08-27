@@ -458,13 +458,19 @@ internal/
 ├─ issueworker/              claim、test、implement、workspace/PR use case
 ├─ reviewworker/             read-only review use case
 ├─ adapter/
-│  ├─ github/                webhook、polling、reader、check run/comment/label recorder、PR adapter
+│  ├─ github/                webhook署名検証・payload形式解釈、polling、reader、check run/comment/label recorder、PR adapter
+│  ├─ httpingress/           HTTP ingress（webhook route、`healthz` / `readyz`、server timeout policy）
 │  ├─ gitworkspace/          clone/worktree/commit/command boundary
 │  └─ provider/
 │     ├─ codex/              Codex headless process adapter
 │     └─ claude/             Claude headless process adapter
 └─ telemetry/                structured log、metric、trace adapter
 ```
+
+HTTP ingress を`adapter/github`から分けるのは、`healthz` / `readyz`が GitHub 固有ではなく
+process と設定の状態を返す endpoint だからである。webhook の署名検証と payload 形式解釈は
+gateway の所有のまま`adapter/github`に残し、`adapter/httpingress`は route、HTTP status、
+server の timeout policy だけを持つ。
 
 依存方向は次を守る。
 
