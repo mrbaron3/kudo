@@ -74,6 +74,32 @@ var ErrUnknownLabelEvent = errors.New("label event が語彙に無い")
 // ErrIssueOutsideRepository は recorder が束縛していない repository の Issue を表す。
 var ErrIssueOutsideRepository = errors.New("Issue が recorder の repository に属さない")
 
+// LabelPolicy は label の記録と判定に必要な deployment 固定値である。
+//
+// label 名と記録者 identity を 1 つにまとめているのは、両方が揃って初めて
+// 「この label は Kudo が記録したものか」を判断できるからである。名前だけでは、
+// 人間が付けた同じ label と区別できない。
+type LabelPolicy struct {
+	Labels LabelSet
+	// Recorder は Kudo 所有 label を記録する actor の identity である。
+	// label event の作成者は GitHub user なので、CommentAuthorID（bot user）で照合する。
+	Recorder workflow.ActorIdentity
+}
+
+// Validate は label 名と記録者 identity が揃っているかを検査する。
+//
+// identity を必須にするのは、欠けた場合に「誰の付与か分からない」と「Kudo の付与」が
+// 同じ結果になり、人間が手で付けた`ai-merged`を完了記録として読んでしまうためである。
+func (p LabelPolicy) Validate() error {
+	if err := p.Labels.Validate(); err != nil {
+		return err
+	}
+	if p.Recorder.CommentAuthorID <= 0 {
+		return fmt.Errorf("label を記録する actor identity が確定していない")
+	}
+	return nil
+}
+
 // LabelSet は deployment が固定する 4 label の名前である。
 //
 // name を値として持つのは、`ai-ready`と assignee が configuration で上書き可能だからである
@@ -231,7 +257,7 @@ type LabelRecorder struct {
 //
 // owner / repository は GitHub の case-insensitive な identity に合わせて小文字で
 // 比較する。logger が nil のときは slog.Default を使う。
-func NewLabelRecorder(surface LabelSurface, repository contract.IssueRef, labels LabelSet,
+func NewLabelRecorder(surface LabelSurface, repository contract.IssueRef, policy LabelPolicy,
 	logger *slog.Logger) (*LabelRecorder, error) {
 	if surface == nil {
 		return nil, errors.New("LabelSurface は必須")
@@ -239,7 +265,7 @@ func NewLabelRecorder(surface LabelSurface, repository contract.IssueRef, labels
 	if strings.TrimSpace(repository.Owner) == "" || strings.TrimSpace(repository.Repository) == "" {
 		return nil, errors.New("recorder の repository identity は必須")
 	}
-	if err := labels.Validate(); err != nil {
+	if err := policy.Validate(); err != nil {
 		return nil, err
 	}
 	if logger == nil {
@@ -248,7 +274,7 @@ func NewLabelRecorder(surface LabelSurface, repository contract.IssueRef, labels
 	return &LabelRecorder{
 		surface:    surface,
 		repository: contract.IssueRef{Owner: strings.ToLower(repository.Owner), Repository: strings.ToLower(repository.Repository)},
-		labels:     labels,
+		labels:     policy.Labels,
 		logger:     logger,
 	}, nil
 }
@@ -382,13 +408,13 @@ func alreadyMergedGuidance(labels LabelSet) string {
 // Issue #19 の Decision Authority では扱えない（label 体系の変更）ため、別 Issue の
 // 判断に委ねている。
 func DeriveLabelEvent(derivation workflow.Derivation, issue workflow.IssueObservation,
-	labels LabelSet) (LabelEvent, bool) {
+	policy LabelPolicy) (LabelEvent, bool) {
 	switch derivation.Next.Kind {
 	case workflow.ReconcileRecordCompletion:
-		if !completionRecorded(issue, labels.Merged) {
+		if !completionRecorded(issue, policy) {
 			return LabelEventMergeCompleted, true
 		}
-		if hasLabel(issue.Labels, labels.Ready) {
+		if hasLabel(issue.Labels, policy.Labels.Ready) {
 			return LabelEventAlreadyMergedRequest, true
 		}
 		return LabelEventMergeRecorded, true
@@ -405,16 +431,19 @@ func DeriveLabelEvent(derivation workflow.Derivation, issue workflow.IssueObserv
 
 // completionRecorded は Kudo が merge completion を既に記録したかを返す。
 //
-// 現在値だけでなく付与履歴も見るのは、`ai-merged`が人間に外せるためである。履歴が
-// 観測されていない deployment（label event を集めない adapter）では現在値だけの判定に
-// 縮退する。その場合、人間が`ai-merged`を外して reopen した再依頼は初回完了として
-// 扱われ、Issue が閉じ直される。label の収束先と案内 comment は同じになる。
-func completionRecorded(issue workflow.IssueObservation, mergedLabel string) bool {
-	if hasLabel(issue.Labels, mergedLabel) {
-		return true
-	}
+// 判断の材料は「Kudo 名義の`ai-merged`付与が一度でもあったか」だけである。現在値を
+// 見ないのは、`ai-merged`が Kudo 所有でも人間に外せる label だからである
+// （docs/spec/05_design/04_github-routing.md の Transition rules）。付与履歴は現在値が
+// 消えても残る。
+//
+// actor を照合するのは、人間が merge 前に手で`ai-merged`を付けた場合に、その付与を
+// 「Kudo の完了記録」として読まないためである。読んでしまうと、正規の merge で
+// Task Issue が close されないまま open で残る。記録の作成者を identity で確かめる
+// のは、comment や PR body と同じ理由である（AGENTS.md の Architecture boundaries）。
+func completionRecorded(issue workflow.IssueObservation, policy LabelPolicy) bool {
 	for _, event := range issue.LabelEvents {
-		if event.Added && strings.EqualFold(event.Label, mergedLabel) {
+		if event.Added && event.ActorID == policy.Recorder.CommentAuthorID &&
+			strings.EqualFold(event.Label, policy.Labels.Merged) {
 			return true
 		}
 	}

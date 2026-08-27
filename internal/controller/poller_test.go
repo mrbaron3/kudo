@@ -21,11 +21,11 @@ type fakeDiscovery struct {
 	candidates []contract.IssueRef
 	runs       []contract.IssueRef
 	// candidateErr / runErr は 1 回の呼び出しごとに先頭から消費する。
-	labeled      []contract.IssueRef
+	labeled      map[string][]contract.IssueRef
 	candidateErr []error
 	runErr       []error
 	labeledErr   []error
-	labeledFor   string
+	labeledFor   []string
 	calls        int
 }
 
@@ -51,17 +51,17 @@ func (d *fakeDiscovery) ListOpenRunIssueRefs(context.Context) ([]contract.IssueR
 	return slices.Clone(d.runs), nil
 }
 
-func (d *fakeDiscovery) ListLabeledIssueRefs(_ context.Context, label string) ([]contract.IssueRef, error) {
+func (d *fakeDiscovery) ListLabeledIssueRefs(_ context.Context, labels []string) ([]contract.IssueRef, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if label == "" {
+	if len(labels) == 0 {
 		return nil, errors.New("列挙する label が空である")
 	}
-	d.labeledFor = label
+	d.labeledFor = append(d.labeledFor, strings.Join(labels, "+"))
 	if err := next(&d.labeledErr); err != nil {
 		return nil, err
 	}
-	return slices.Clone(d.labeled), nil
+	return slices.Clone(d.labeled[strings.Join(labels, "+")]), nil
 }
 
 func next(queue *[]error) error {
@@ -530,19 +530,30 @@ func TestPollSourceRepositoryIsCanonicalizedForCorrelation(t *testing.T) {
 
 // 記録が途中で失敗した投影は、候補でも open PR でもない状態で残る。Kudo 所有の
 // status label が付いたまま open であることだけが、その Issue を再発見できる観測である。
-func TestPollCycleRediscoversIssuesLeftWithAnActiveRunLabel(t *testing.T) {
+func TestPollCycleRediscoversIssuesLeftWithKudoOwnedLabels(t *testing.T) {
 	t.Parallel()
 
-	discovery := &fakeDiscovery{labeled: issueRefs(19)}
+	// 進行中 label が残る Issue（記録が途中で失敗した投影）と、完了 label と ready label を
+	// 併せ持つ Issue（closed のままの再依頼）。どちらも候補でも open PR でもない。
+	discovery := &fakeDiscovery{labeled: map[string][]contract.IssueRef{
+		"ai-in-progress":     issueRefs(19),
+		"ai-merged+ai-ready": issueRefs(24),
+	}}
 	trigger := newRecordingTrigger()
 	poller := newTestPoller(t, testPollerConfig(discovery, trigger, newFakeClock()))
 
 	report := poller.runCycle(t.Context(), workflow.TriggerScheduledPoll)
-	if report.Submitted != 1 || trigger.count() != 1 || trigger.snapshot()[0].Issue.Number != 19 {
-		t.Fatalf("report = %#v, 投入 = %#v", report, trigger.snapshot())
+	var numbers []int
+	for _, request := range trigger.snapshot() {
+		numbers = append(numbers, request.Issue.Number)
 	}
-	if discovery.labeledFor != DefaultPollConfig().ActiveRunLabel {
-		t.Fatalf("列挙した label = %q, want %q", discovery.labeledFor, DefaultPollConfig().ActiveRunLabel)
+	slices.Sort(numbers)
+	if report.Submitted != 2 || !slices.Equal(numbers, []int{19, 24}) {
+		t.Fatalf("report = %#v, 投入 = %v", report, numbers)
+	}
+	slices.Sort(discovery.labeledFor)
+	if !slices.Equal(discovery.labeledFor, []string{"ai-in-progress", "ai-merged+ai-ready"}) {
+		t.Fatalf("列挙した label 条件 = %v", discovery.labeledFor)
 	}
 }
 
@@ -788,6 +799,8 @@ func TestNewPollerRejectsIncompleteWiring(t *testing.T) {
 		"interval が負":   func(c *PollerConfig) { c.Poll.Interval = -time.Second },
 		"interval が短い":  func(c *PollerConfig) { c.Poll.Interval = time.Second },
 		"filter が空":     func(c *PollerConfig) { c.Poll.Filter = workflow.CandidateFilter{} },
+		"再発見条件が空":       func(c *PollerConfig) { c.Poll.RecoveryQueries = nil },
+		"再発見条件に空 label": func(c *PollerConfig) { c.Poll.RecoveryQueries = [][]string{{""}} },
 		"backoff の逆転":   func(c *PollerConfig) { c.Poll.BackoffMax = c.Poll.BackoffInitial - time.Second },
 	} {
 		t.Run(name, func(t *testing.T) {

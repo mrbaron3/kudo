@@ -130,6 +130,14 @@ type apiCheckRun struct {
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
+type apiIssueEvent struct {
+	ID        int64     `json:"id"`
+	Event     string    `json:"event"`
+	Actor     apiUser   `json:"actor"`
+	Label     apiLabel  `json:"label"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type apiContent struct {
 	Type     string `json:"type"`
 	Path     string `json:"path"`
@@ -163,6 +171,10 @@ func (g *Gateway) ObserveIssue(ctx context.Context, number int64) (IssueSnapshot
 	if err != nil {
 		return IssueSnapshot{}, err
 	}
+	labelEvents, err := g.ListIssueLabelEvents(ctx, number)
+	if err != nil {
+		return IssueSnapshot{}, err
+	}
 	branchName := workflow.IssueBranchName(number)
 	branch, err := g.getBranch(ctx, branchName)
 	if err != nil {
@@ -190,6 +202,7 @@ func (g *Gateway) ObserveIssue(ctx context.Context, number int64) (IssueSnapshot
 		Parent:        parent,
 		SubIssues:     subIssues,
 		IssueComments: issueComments,
+		LabelEvents:   labelEvents,
 		Branch:        branch,
 		PullRequests:  pulls,
 	}, nil
@@ -231,6 +244,50 @@ func (g *Gateway) ListCandidateIssues(ctx context.Context, filter CandidateFilte
 			}
 			seen[value.Number] = struct{}{}
 			result = append(result, observed)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// ListIssueLabelEvents は Issue の label 付与・除去を発生順で返す。
+//
+// 現在の label set では復元できない事実（直近の`ai-ready`付与、Kudo 自身が完了を
+// 記録したか）を導出へ渡すために必要である。label 以外の event は落とし、workflow が
+// GitHub の event 語彙全体に依存しないようにする。
+func (g *Gateway) ListIssueLabelEvents(ctx context.Context, issueNumber int64) ([]IssueLabelEvent, error) {
+	if issueNumber <= 0 {
+		return nil, fmt.Errorf("Issue number は正数でなければならない")
+	}
+	seen := make(map[int64]struct{})
+	var result []IssueLabelEvent
+	err := g.paginate(ctx, g.issuePath(issueNumber)+"/events", nil, func(data []byte) error {
+		var page []apiIssueEvent
+		if err := json.Unmarshal(data, &page); err != nil {
+			return err
+		}
+		for _, value := range page {
+			added := value.Event == "labeled"
+			if !added && value.Event != "unlabeled" {
+				continue
+			}
+			if value.Label.Name == "" {
+				return fmt.Errorf("label event に label name が無い")
+			}
+			if _, exists := seen[value.ID]; exists {
+				continue
+			}
+			seen[value.ID] = struct{}{}
+			result = append(result, IssueLabelEvent{
+				ID:         value.ID,
+				Label:      value.Label.Name,
+				Added:      added,
+				Actor:      Actor{ID: value.Actor.ID, Login: value.Actor.Login},
+				OccurredAt: value.CreatedAt,
+			})
 		}
 		return nil
 	})

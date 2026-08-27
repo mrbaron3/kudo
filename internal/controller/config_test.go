@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ func TestLoadPollConfigAppliesTheDeclaredDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPollConfig() error = %v", err)
 	}
-	if config != DefaultPollConfig() {
+	if !reflect.DeepEqual(config, DefaultPollConfig()) {
 		t.Fatalf("config = %#v, want %#v", config, DefaultPollConfig())
 	}
 	if config.Interval != 15*time.Minute {
@@ -50,8 +51,12 @@ func TestLoadPollConfigOverridesEachKey(t *testing.T) {
 	}
 	want.Filter.Assignee = "octocat"
 	want.Filter.ReadyLabel = "ready-for-ai"
-	want.ActiveRunLabel = DefaultPollConfig().ActiveRunLabel
-	if config != want {
+	// 再発見の label 条件も同じ ready label から導く。ここがずれると、完了済み Issue への
+	// 再依頼を polling が見つけられない。
+	overridden := DefaultLabelSet()
+	overridden.Ready = "ready-for-ai"
+	want.RecoveryQueries = DefaultRecoveryQueries(overridden)
+	if !reflect.DeepEqual(config, want) {
 		t.Fatalf("config = %#v, want %#v", config, want)
 	}
 }

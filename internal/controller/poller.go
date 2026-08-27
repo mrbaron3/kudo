@@ -84,13 +84,14 @@ type Discovery interface {
 	// ListOpenRunIssueRefs は open な kudo Pull Request を持つ Issue を列挙する。
 	// 途中 phase の Run は候補条件を満たさないため、この列挙だけが再開の入口になる。
 	ListOpenRunIssueRefs(ctx context.Context) ([]contract.IssueRef, error)
-	// ListLabeledIssueRefs は指定 label を持つ open な Issue を列挙する。
+	// ListLabeledIssueRefs は指定 label をすべて持つ Issue を state を問わず列挙する。
 	//
 	// candidate 条件と open PR のどちらにも現れない状態が存在するため必要である。
 	// 例えば merge 完了の投影が途中で失敗した Issue は、`ai-ready`が無いので候補ではなく、
-	// PR は merged なので open PR の列挙にも出ない。Kudo 所有の status label が付いたまま
-	// open であることが、その未完の投影を再発見できる唯一の観測になる。
-	ListLabeledIssueRefs(ctx context.Context, label string) ([]contract.IssueRef, error)
+	// PR は merged なので open PR の列挙にも出ない。完了済み Issue への再依頼も、Issue が
+	// closed のままなら候補条件（open）を満たさない。Kudo 所有 label の組合せだけが、
+	// これらを再発見できる観測になる。
+	ListLabeledIssueRefs(ctx context.Context, labels []string) ([]contract.IssueRef, error)
 }
 
 // ReconcileTrigger は poll 結果を ReconcileIssue へ投入する境界である。
@@ -118,9 +119,12 @@ type PollConfig struct {
 	BackoffMax            time.Duration
 	CapacityRetryInterval time.Duration
 	Filter                workflow.CandidateFilter
-	// ActiveRunLabel は Kudo が進行中の Run へ記録する label である。この label が
-	// 付いたまま open な Issue を列挙することで、記録が途中で失敗した投影を回収する。
-	ActiveRunLabel string
+	// RecoveryQueries は candidate でも open Run でもない Issue を再発見するための
+	// label 条件である。各要素の label は AND で評価する。
+	//
+	// 完了済み Issue 全体のような増え続ける集合を毎 cycle 列挙しないよう、条件は
+	// 「対応が必要な組合せ」まで絞る。
+	RecoveryQueries [][]string
 }
 
 // DefaultPollConfig は spec が定める既定値を返す。
@@ -131,7 +135,19 @@ func DefaultPollConfig() PollConfig {
 		BackoffMax:            DefaultPollBackoffMax,
 		CapacityRetryInterval: DefaultCapacityRetryInterval,
 		Filter:                workflow.DefaultCandidateFilter(),
-		ActiveRunLabel:        string(workflow.StatusInProgress),
+		RecoveryQueries:       DefaultRecoveryQueries(DefaultLabelSet()),
+	}
+}
+
+// DefaultRecoveryQueries は再発見が必要な 2 つの状態の label 条件を返す。
+//
+//   - 進行中 label が残る Issue: 記録が途中で失敗した投影、または PR を失った Run。
+//   - 完了 label と ready label を併せ持つ Issue: 完了済みへの再依頼。Issue が closed の
+//     ままなら候補条件（open）を満たさないため、この組合せでしか観測できない。
+func DefaultRecoveryQueries(labels LabelSet) [][]string {
+	return [][]string{
+		{labels.InProgress},
+		{labels.Merged, labels.Ready},
 	}
 }
 
@@ -155,8 +171,18 @@ func (c PollConfig) Validate() error {
 		return fmt.Errorf("capacity 再投入間隔が poll interval を超えている: %s > %s",
 			c.CapacityRetryInterval, c.Interval)
 	}
-	if strings.TrimSpace(c.ActiveRunLabel) == "" {
-		return fmt.Errorf("進行中 Run の label が空である")
+	if len(c.RecoveryQueries) == 0 {
+		return fmt.Errorf("再発見のための label 条件が無い")
+	}
+	for _, query := range c.RecoveryQueries {
+		if len(query) == 0 {
+			return fmt.Errorf("再発見のための label 条件が空である")
+		}
+		for _, label := range query {
+			if strings.TrimSpace(label) == "" {
+				return fmt.Errorf("再発見のための label 条件に空の label がある")
+			}
+		}
 	}
 	return c.Filter.Validate()
 }
@@ -423,23 +449,28 @@ func (p *Poller) discover(ctx context.Context, source PollSource,
 		return nil, err
 	}
 	counts.OpenRuns = len(runs)
-	// 記録が途中で失敗した投影は、候補でも open PR でもない状態で残る。Kudo 所有の
-	// status label が付いたまま open であることだけが、その Issue を再発見できる観測である。
-	recording, err := source.Discovery.ListLabeledIssueRefs(ctx, p.poll.ActiveRunLabel)
-	if err != nil {
-		p.logSource(ctx, source, trigger, counts, err)
-		return nil, err
+	// 記録が途中で失敗した投影と、完了済み Issue への再依頼は、候補でも open PR でも
+	// ない状態で残る。Kudo 所有 label の組合せだけが、それらを再発見できる観測である。
+	var recovered []contract.IssueRef
+	for _, query := range p.poll.RecoveryQueries {
+		refs, listErr := source.Discovery.ListLabeledIssueRefs(ctx, query)
+		if listErr != nil {
+			p.logSource(ctx, source, trigger, counts, listErr)
+			return nil, listErr
+		}
+		recovered = append(recovered, refs...)
 	}
-	counts.ActiveRunLabel = len(recording)
+	counts.Recovered = len(recovered)
 	p.logSource(ctx, source, trigger, counts, nil)
-	return slices.Concat(candidates, runs, recording), nil
+	return slices.Concat(candidates, runs, recovered), nil
 }
 
 // sourceCounts は 1 repository の列挙結果の内訳である。
 type sourceCounts struct {
-	Candidates     int
-	OpenRuns       int
-	ActiveRunLabel int
+	Candidates int
+	OpenRuns   int
+	// Recovered は Kudo 所有 label の組合せから再発見した件数である（重複排除前）。
+	Recovered int
 }
 
 // submit は 1 件の IssueRef を投入する。
@@ -501,7 +532,7 @@ func (p *Poller) logSource(ctx context.Context, source PollSource, trigger workf
 		telemetry.Trigger(trigger),
 		slog.Int(telemetry.FieldCandidates, counts.Candidates),
 		slog.Int(telemetry.FieldOpenRuns, counts.OpenRuns),
-		slog.Int(telemetry.FieldActiveRunLabel, counts.ActiveRunLabel),
+		slog.Int(telemetry.FieldRecovered, counts.Recovered),
 	}
 	if source.RateLimit != nil {
 		if remaining, observed := source.RateLimit(); observed {

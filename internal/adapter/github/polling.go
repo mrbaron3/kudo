@@ -136,7 +136,11 @@ func (g *Gateway) ListOpenRunIssueRefs(ctx context.Context) ([]contract.IssueRef
 	return result, nil
 }
 
-// ListLabeledIssueRefs は指定 label を持つ Issue を state を問わず列挙する。
+// ListLabeledIssueRefs は指定 label をすべて持つ Issue を state を問わず列挙する。
+//
+// 複数 label は AND 条件である（GitHub の issues list endpoint の`labels`は AND）。
+// 組合せで絞れると、恒久的に増え続ける集合（例: 完了済み Issue 全部）ではなく、
+// 対応が必要な組合せ（例: 完了済み かつ 再依頼あり）だけを列挙できる。
 //
 // assignee で絞らないのは、対象が Kudo 自身が付けた status label だからである。
 // candidate query（人間所有の`ai-ready`）と違い、この label は Kudo の記録であり、
@@ -147,13 +151,18 @@ func (g *Gateway) ListOpenRunIssueRefs(ctx context.Context) ([]contract.IssueRef
 // 組合せで残り、candidate query にも open PR の列挙にも現れない。
 //
 // Pull Request は除外する（issues list endpoint は PR も返す）。
-func (g *Gateway) ListLabeledIssueRefs(ctx context.Context, label string) ([]contract.IssueRef, error) {
-	if strings.TrimSpace(label) == "" {
+func (g *Gateway) ListLabeledIssueRefs(ctx context.Context, labels []string) ([]contract.IssueRef, error) {
+	if len(labels) == 0 {
 		return nil, fmt.Errorf("列挙する label は必須")
+	}
+	for _, label := range labels {
+		if strings.TrimSpace(label) == "" || strings.Contains(label, ",") {
+			return nil, fmt.Errorf("列挙する label が不正: %q", label)
+		}
 	}
 	query := url.Values{
 		"state":     {"all"},
-		"labels":    {label},
+		"labels":    {strings.Join(labels, ",")},
 		"sort":      {"created"},
 		"direction": {"asc"},
 	}

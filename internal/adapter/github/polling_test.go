@@ -287,6 +287,84 @@ func TestListOpenRunIssueRefsExcludesForkHeadBranches(t *testing.T) {
 	}
 }
 
+// 複数 label は AND 条件で送る。組合せで絞れないと、完了済み Issue 全体のような
+// 増え続ける集合を毎 cycle 列挙することになる。
+func TestListLabeledIssueRefsSendsMultipleLabelsAsAConjunction(t *testing.T) {
+	t.Parallel()
+
+	var query string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Query().Get("labels")
+		fmt.Fprint(w, `[]`)
+	}))
+	t.Cleanup(server.Close)
+
+	if _, err := testGateway(server.Client(), server.URL).ListLabeledIssueRefs(t.Context(),
+		[]string{"ai-merged", "ai-ready"}); err != nil {
+		t.Fatalf("ListLabeledIssueRefs() error = %v", err)
+	}
+	if query != "ai-merged,ai-ready" {
+		t.Fatalf("labels = %q, want ai-merged,ai-ready", query)
+	}
+}
+
+func TestListLabeledIssueRefsRejectsAmbiguousLabelInput(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		t.Errorf("検証前に request を送った: %s", r.URL.String())
+	}))
+	t.Cleanup(server.Close)
+
+	gateway := testGateway(server.Client(), server.URL)
+	for name, labels := range map[string][]string{
+		"空":       nil,
+		"空 label": {"ai-merged", " "},
+		"区切り文字混入": {"ai-merged,ai-ready"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := gateway.ListLabeledIssueRefs(t.Context(), labels); err == nil {
+				t.Fatalf("不正な label 条件 %v を受理した", labels)
+			}
+		})
+	}
+}
+
+// 現在の label set では復元できない事実（誰がいつ付けたか）を運ぶ。
+func TestListIssueLabelEventsKeepsOnlyLabelChangesWithTheirActor(t *testing.T) {
+	t.Parallel()
+
+	occurred := time.Date(2026, 8, 27, 3, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/widgets/issues/19/events" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "event": "labeled", "created_at": occurred,
+				"actor": map[string]any{"id": 101, "login": "kudo-actor[bot]"},
+				"label": map[string]any{"name": "ai-merged"}},
+			{"id": 2, "event": "closed", "created_at": occurred,
+				"actor": map[string]any{"id": 101, "login": "kudo-actor[bot]"}},
+			{"id": 3, "event": "unlabeled", "created_at": occurred,
+				"actor": map[string]any{"id": 7, "login": "mrbaron3"},
+				"label": map[string]any{"name": "ai-merged"}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	events, err := testGateway(server.Client(), server.URL).ListIssueLabelEvents(t.Context(), 19)
+	if err != nil {
+		t.Fatalf("ListIssueLabelEvents() error = %v", err)
+	}
+	want := []IssueLabelEvent{
+		{ID: 1, Label: "ai-merged", Added: true, Actor: Actor{ID: 101, Login: "kudo-actor[bot]"}, OccurredAt: occurred},
+		{ID: 3, Label: "ai-merged", Actor: Actor{ID: 7, Login: "mrbaron3"}, OccurredAt: occurred},
+	}
+	if !slices.Equal(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
 func ownedRepository() map[string]any {
 	return map[string]any{"full_name": "acme/widgets"}
 }
@@ -327,7 +405,7 @@ func TestListLabeledIssueRefsCoversClosedIssuesAndExcludesPullRequests(t *testin
 	}))
 	t.Cleanup(server.Close)
 
-	refs, err := testGateway(server.Client(), server.URL).ListLabeledIssueRefs(t.Context(), "ai-in-progress")
+	refs, err := testGateway(server.Client(), server.URL).ListLabeledIssueRefs(t.Context(), []string{"ai-in-progress"})
 	if err != nil {
 		t.Fatalf("ListLabeledIssueRefs() error = %v", err)
 	}

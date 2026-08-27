@@ -17,8 +17,10 @@ import (
 // fakeLabelSurface は GitHub 上の label / comment / Issue state を、adapter と同じ
 // 「現在値を確認してから mutate する」性質で模す。
 type fakeLabelSurface struct {
-	mu       sync.Mutex
-	labels   []string
+	mu     sync.Mutex
+	labels []string
+	// events は GitHub 上の label timeline を模す。現在値が消えても履歴は残る。
+	events   []workflow.LabelEventObservation
 	closed   bool
 	comments map[string]string
 	calls    []string
@@ -51,6 +53,9 @@ func (f *fakeLabelSurface) ConvergeLabels(_ context.Context, issue int64, add st
 	added := false
 	if !slices.Contains(f.labels, add) {
 		f.labels = append(f.labels, add)
+		f.events = append(f.events, workflow.LabelEventObservation{
+			Label: add, Added: true, ActorID: coordinatorActorID,
+		})
 		added = true
 	}
 	var removed []string
@@ -63,6 +68,7 @@ func (f *fakeLabelSurface) ConvergeLabels(_ context.Context, issue int64, add st
 			continue
 		}
 		f.labels = slices.Delete(f.labels, index, index+1)
+		f.events = append(f.events, workflow.LabelEventObservation{Label: label, ActorID: coordinatorActorID})
 		removed = append(removed, label)
 	}
 	return added, removed, nil
@@ -102,6 +108,19 @@ func (f *fakeLabelSurface) removeByHuman(label string) {
 	if index := slices.Index(f.labels, label); index >= 0 {
 		f.labels = slices.Delete(f.labels, index, index+1)
 	}
+	f.events = append(f.events, workflow.LabelEventObservation{Label: label, ActorID: humanActorID})
+}
+
+// observe は現在の label set と timeline から Issue の観測を組み立てる。
+func (f *fakeLabelSurface) observe(state workflow.IssueState) workflow.IssueObservation {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return workflow.IssueObservation{
+		Number:      19,
+		State:       state,
+		Labels:      slices.Clone(f.labels),
+		LabelEvents: slices.Clone(f.events),
+	}
 }
 
 func (f *fakeLabelSurface) snapshot() []string {
@@ -132,9 +151,22 @@ func testIssueRef() contract.IssueRef {
 	return contract.IssueRef{Owner: "mrbaron3", Repository: "kudo", Number: 19}
 }
 
+// testLabelPolicy は既定 label と Coordinator identity を束ねた policy である。
+func testLabelPolicy() LabelPolicy {
+	return LabelPolicy{
+		Labels:   DefaultLabelSet(),
+		Recorder: workflow.ActorIdentity{CommentAuthorID: coordinatorActorID, CheckRunAppID: 202},
+	}
+}
+
+const (
+	coordinatorActorID = 101
+	humanActorID       = 7
+)
+
 func newTestLabelRecorder(t *testing.T, surface LabelSurface) *LabelRecorder {
 	t.Helper()
-	recorder, err := NewLabelRecorder(surface, testIssueRef(), DefaultLabelSet(), slog.New(slog.DiscardHandler))
+	recorder, err := NewLabelRecorder(surface, testIssueRef(), testLabelPolicy(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("NewLabelRecorder() error = %v", err)
 	}
@@ -444,7 +476,9 @@ func TestNewLabelRecorderRejectsAmbiguousLabelSets(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := NewLabelRecorder(newFakeLabelSurface(), testIssueRef(), labels, nil); err == nil {
+			policy := testLabelPolicy()
+			policy.Labels = labels
+			if _, err := NewLabelRecorder(newFakeLabelSurface(), testIssueRef(), policy, nil); err == nil {
 				t.Fatalf("不正な LabelSet %#v を受理した", labels)
 			}
 		})
@@ -480,28 +514,43 @@ func TestDeriveLabelEventMapsDerivationsToRecordedEvents(t *testing.T) {
 	}
 	superseded := workflow.Derivation{Phase: workflow.PhaseSuperseded}
 
+	recordedByKudo := []workflow.LabelEventObservation{
+		{Label: "ai-merged", Added: true, ActorID: coordinatorActorID},
+	}
 	closedRecorded := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateClosed, Labels: []string{"ai-merged"},
+		LabelEvents: recordedByKudo,
 	}
 	openWithReady := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-ready"},
 	}
 	reopenedRequest := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"AI-Merged", "AI-Ready"},
+		LabelEvents: recordedByKudo,
 	}
 	reopenedQuiet := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-merged"},
+		LabelEvents: recordedByKudo,
 	}
 	// 人間が ai-merged を外して reopen し、ai-ready を付け直した再依頼。現在値からは
 	// 完了記録が消えているが、付与履歴が残る。
 	mergedLabelRemoved := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-ready"},
-		LabelEvents: []workflow.LabelEventObservation{{Label: "ai-merged", Added: true}},
+		LabelEvents: append(slices.Clone(recordedByKudo),
+			workflow.LabelEventObservation{Label: "ai-merged", ActorID: humanActorID}),
+	}
+	// 人間が merge 前に手で ai-merged を付けた場合。付与履歴はあるが Kudo 名義ではない。
+	humanAppliedMerged := workflow.IssueObservation{
+		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-merged", "ai-in-progress"},
+		LabelEvents: []workflow.LabelEventObservation{
+			{Label: "ai-merged", Added: true, ActorID: humanActorID},
+		},
 	}
 	// reopen せずに ai-ready だけを付け直した再依頼。GitHub は closed な Issue にも
 	// label を付けられる。
 	closedRerequest := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateClosed, Labels: []string{"ai-merged", "ai-ready"},
+		LabelEvents: recordedByKudo,
 	}
 	openRun := workflow.IssueObservation{
 		Number: 19, State: workflow.IssueStateOpen, Labels: []string{"ai-in-progress"},
@@ -521,6 +570,7 @@ func TestDeriveLabelEventMapsDerivationsToRecordedEvents(t *testing.T) {
 		"再依頼を処理した後の reopen 済み Issue": {merged, reopenedQuiet, LabelEventMergeRecorded, true},
 		"ai-merged を外した再依頼":          {merged, mergedLabelRemoved, LabelEventAlreadyMergedRequest, true},
 		"closed のままの再依頼":             {merged, closedRerequest, LabelEventAlreadyMergedRequest, true},
+		"人間が手で付けた ai-merged":         {merged, humanAppliedMerged, LabelEventMergeCompleted, true},
 		"escalation":                 {needsHuman, openRun, LabelEventRunNeedsHuman, true},
 		"停止中の再観測":                    {awaitHuman, openRun, LabelEventNeedsHumanRecorded, true},
 		"claim 前の候補":                 {candidate, openWithReady, "", false},
@@ -529,7 +579,7 @@ func TestDeriveLabelEventMapsDerivationsToRecordedEvents(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			got, ok := DeriveLabelEvent(testCase.derivation, testCase.issue, DefaultLabelSet())
+			got, ok := DeriveLabelEvent(testCase.derivation, testCase.issue, testLabelPolicy())
 			if got != testCase.want || ok != testCase.wantOK {
 				t.Fatalf("DeriveLabelEvent() = %q, %v, want %q, %v", got, ok, testCase.want, testCase.wantOK)
 			}
@@ -542,24 +592,25 @@ func TestDeriveLabelEventMapsDerivationsToRecordedEvents(t *testing.T) {
 func TestDeriveLabelEventIsAFixedPointAfterRecordingAlreadyMergedRequest(t *testing.T) {
 	t.Parallel()
 
-	surface := newFakeLabelSurface("ai-merged", "ai-ready")
+	// Kudo が完了を記録して close 済みの Issue を、人間が reopen して ai-ready を付け直した状態。
+	surface := newFakeLabelSurface()
+	surface.events = []workflow.LabelEventObservation{
+		{Label: "ai-merged", Added: true, ActorID: coordinatorActorID},
+	}
+	surface.labels = []string{"ai-merged", "ai-ready"}
 	recorder := newTestLabelRecorder(t, surface)
 	derivation := workflow.Derivation{
 		Phase: workflow.PhaseMerged,
 		Next:  workflow.ReconcileAction{Kind: workflow.ReconcileRecordCompletion},
 	}
-	observation := workflow.IssueObservation{
-		Number: 19, State: workflow.IssueStateOpen, Labels: surface.snapshot(),
-	}
 	for round := range 3 {
-		event, ok := DeriveLabelEvent(derivation, observation, DefaultLabelSet())
+		event, ok := DeriveLabelEvent(derivation, surface.observe(workflow.IssueStateOpen), testLabelPolicy())
 		if !ok {
 			t.Fatalf("round %d: label event を導出できない", round)
 		}
 		if _, err := recorder.Record(t.Context(), testIssueRef(), event); err != nil {
 			t.Fatalf("round %d: Record() error = %v", round, err)
 		}
-		observation.Labels = surface.snapshot()
 		if surface.closedIssue() {
 			t.Fatalf("round %d: reopen された Issue を close した", round)
 		}

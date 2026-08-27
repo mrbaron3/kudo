@@ -69,6 +69,13 @@ func LoadPollConfig(lookup Lookup) (PollConfig, error) {
 	}
 	config.Filter.Assignee = assignee
 	config.Filter.ReadyLabel = readyLabel
+	labels, err := LoadLabelSet(lookup)
+	if err != nil {
+		return PollConfig{}, err
+	}
+	// 再発見の label 条件を同じ loader から導くのは、候補を見つける側と記録する側で
+	// ready label がずれないようにするためである。
+	config.RecoveryQueries = DefaultRecoveryQueries(labels)
 	if err := config.Validate(); err != nil {
 		return PollConfig{}, fmt.Errorf("polling 設定が不正: %w", err)
 	}

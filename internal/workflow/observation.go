@@ -101,6 +101,11 @@ type IssueObservation struct {
 
 type LabelEventObservation struct {
 	Label string
+	// ActorID は label を操作した GitHub user の numeric identity である。
+	// Kudo 所有 label の付与を「Kudo が記録した」と読むには、名前だけでは足りない。
+	// 人間も同じ label を付けられるため、記録の作成者を identity で確かめる
+	// （docs/spec/05_design/01_architecture.md の Actor model）。
+	ActorID int64
 	// Added は付与なら true、除去なら false である。
 	Added      bool
 	OccurredAt time.Time
