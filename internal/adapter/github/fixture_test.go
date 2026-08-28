@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mrbaron3/kudo/internal/contract"
+	"github.com/mrbaron3/kudo/internal/issueworker"
 )
 
 const (
@@ -116,21 +117,6 @@ func TestEnsureDevelopmentFixtureHeadCreatesTestOnlyCommitAndConverges(t *testin
 			}
 			branchSHA = input.SHA
 			fmt.Fprint(w, `{"ref":"refs/heads/kudo/issue-71","object":{"type":"commit","sha":"`+input.SHA+`"}}`)
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/commits/"+fixtureTestHeadSHA:
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"sha": fixtureTestHeadSHA,
-				"files": []map[string]any{{
-					"filename": file.Path, "status": "added", "sha": fixtureBlobSHA,
-				}},
-			})
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/contents/"+file.Path:
-			if got := r.URL.Query().Get("ref"); got != fixtureTestHeadSHA {
-				t.Fatalf("content ref = %q", got)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"type": "file", "path": file.Path, "sha": fixtureBlobSHA,
-				"encoding": "base64", "content": base64.StdEncoding.EncodeToString(file.Data),
-			})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -202,7 +188,10 @@ func TestEnsureUnmarkedCommentConvergesByExactAuthoredBody(t *testing.T) {
 	}
 }
 
-func TestEnsureDevelopmentFixtureHeadRejectsResidueThatChangesAnotherFile(t *testing.T) {
+// 同じ branch を別 commit が使っていた場合、seeder はそれを fixture として採用してはならない。
+// 使い捨ての開発用 repository が前提なので、同定は commit message と bootstrap lineage で行い、
+// tree や blob が期待 payload と一致するかまでは確認しない。
+func TestEnsureDevelopmentFixtureHeadRejectsForeignResidue(t *testing.T) {
 	t.Parallel()
 
 	file := DevelopmentFixtureFile{
@@ -218,19 +207,7 @@ func TestEnsureDevelopmentFixtureHeadRejectsResidueThatChangesAnotherFile(t *tes
 		case "/repos/acme/widgets/branches/kudo/issue-71":
 			fmt.Fprint(w, `{"name":"kudo/issue-71","commit":{"sha":"`+fixtureTestHeadSHA+`"}}`)
 		case "/repos/acme/widgets/git/commits/" + fixtureTestHeadSHA:
-			fmt.Fprint(w, `{"sha":"`+fixtureTestHeadSHA+`","message":"fixture: reviewer test-only #71","tree":{"sha":"`+fixtureTestTreeSHA+`"},"parents":[{"sha":"`+fixtureBootstrapSHA+`"}]}`)
-		case "/repos/acme/widgets/git/commits/" + fixtureBootstrapSHA:
-			fmt.Fprint(w, `{"sha":"`+fixtureBootstrapSHA+`","message":"claim: #71","tree":{"sha":"`+adapterTreeSHA+`"},"parents":[{"sha":"`+adapterBaseSHA+`"}]}`)
-		case "/repos/acme/widgets/git/commits/" + adapterBaseSHA:
-			fmt.Fprint(w, `{"sha":"`+adapterBaseSHA+`","tree":{"sha":"`+adapterTreeSHA+`"}}`)
-		case "/repos/acme/widgets/commits/" + fixtureTestHeadSHA:
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"sha": fixtureTestHeadSHA,
-				"files": []map[string]any{
-					{"filename": file.Path, "status": "added", "sha": fixtureBlobSHA},
-					{"filename": "internal/production.go", "status": "modified", "sha": adapterTreeSHA},
-				},
-			})
+			fmt.Fprint(w, `{"sha":"`+fixtureTestHeadSHA+`","message":"feat: 無関係な実装","tree":{"sha":"`+fixtureTestTreeSHA+`"},"parents":[{"sha":"`+fixtureBootstrapSHA+`"}]}`)
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -239,8 +216,7 @@ func TestEnsureDevelopmentFixtureHeadRejectsResidueThatChangesAnotherFile(t *tes
 
 	_, err := testGateway(server.Client(), server.URL).EnsureDevelopmentFixtureHead(t.Context(),
 		contract.IssueRef{Owner: "acme", Repository: "widgets", Number: 71}, file)
-	var failure *TransportFailure
-	if !errors.As(err, &failure) || failure.Class != FailureInvalidResponse {
-		t.Fatalf("error = %v, want invalid-response residue rejection", err)
+	if !errors.Is(err, issueworker.ErrClaimConflict) {
+		t.Fatalf("error = %v, want claim conflict", err)
 	}
 }

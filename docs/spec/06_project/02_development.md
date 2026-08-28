@@ -107,9 +107,14 @@ Review Worker の開発では、実 Implementer を待たずに claim checkpoint
 seeder は `cmd/kudo-reviewer-fixture` だけに置き、production image の `kudo` binary には含めない。
 
 対象 Issue の `kudo/issue-<number>` branch と open Pull Request が無い状態から開始する。既に seeder が
-作った同じ fixture がある場合は、branch lineage、Pull Request、marker、Implementer の comment author ID / check run App ID を照合して再利用する。別 commit や別 record が同じ branch を使っている場合は
-上書きせず conflict として停止する。実 GitHub を変更する opt-in 操作なので、fixture 専用 Issue と
-repository を指定する。
+作った fixture がある場合は、commit message、bootstrap lineage、Pull Request、marker、Implementer の
+comment author ID / check run App ID を照合して再利用し、重複 PR・重複 check run・重複 comment を作らない。
+無関係な commit が同じ branch を使っている場合は上書きせず停止する。
+
+ただし使い捨ての開発用 repository を前提とするため、既存 head の tree や blob が corpus の payload と
+一致するかまでは検証しない。corpus を変えて作り直すときは branch を削除してから実行する。並行実行も
+想定しないので、ref 更新が衝突した場合は回復せずエラーを返す。実 GitHub を変更する opt-in 操作なので、
+fixture 専用 Issue と repository を指定する。
 
 credential は `.env` へ保存せず、実行 process にだけ渡す。`KUDO_FIXTURE_GITHUB_TOKEN` には対象
 repository の Contents、Pull requests、Issues、Checks を書ける開発専用 credential を指定し、

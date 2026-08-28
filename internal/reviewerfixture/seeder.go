@@ -191,8 +191,9 @@ func (s *Seeder) Seed(ctx context.Context, request SeedRequest) (Result, error) 
 		request.Repository, request.Issue, pull.Number, head.HeadSHA,
 		contract.ArtifactNameTestPlan, contract.MediaTypeMarkdown, request.Fixture.TestPlan,
 	)
+	testPlanBody := testPlanCommentBody(request.Fixture.TestPlan)
 	if request.Fixture.Fault == FaultMissingMarker {
-		body, renderErr := renderWithoutMarker("Reviewer fixture の test plan です。", testPlanRecord)
+		body, renderErr := renderWithoutMarker(testPlanBody, testPlanRecord)
 		if renderErr != nil {
 			return Result{}, renderErr
 		}
@@ -200,7 +201,7 @@ func (s *Seeder) Seed(ctx context.Context, request SeedRequest) (Result, error) 
 	} else {
 		result.TestPlan, _, err = s.target.EnsureComment(ctx, int64(pull.Number), githubadapter.CommentRecord{
 			Marker:       testPlanRecord.Marker,
-			Body:         "Reviewer fixture の test plan です。",
+			Body:         testPlanBody,
 			MachineBlock: testPlanRecord.MachineBlock,
 		})
 	}
@@ -252,6 +253,13 @@ func artifactRecord(repository githubadapter.Repository, issue int64, pullNumber
 			Kind: string(name), MediaType: mediaType, Digest: string(digest), Payload: bytes.Clone(payload),
 		},
 	}
+}
+
+// testPlanCommentBody は test plan を人間向け本文にも展開する。record の同定と digest は
+// machine block の payload 側で行うので本文の重複は identity に影響せず、
+// Pull Request を開いた人間が base64 を復号せずに plan を読めることを優先する。
+func testPlanCommentBody(payload []byte) string {
+	return "Reviewer fixture の test plan です。\n\n" + string(payload)
 }
 
 func renderWithoutMarker(body string, record artifactSurface) (string, error) {

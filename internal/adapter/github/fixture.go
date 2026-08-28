@@ -1,7 +1,6 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -34,8 +33,10 @@ type DevelopmentFixtureHead struct {
 }
 
 // EnsureDevelopmentFixtureHead は branch、no-op bootstrap、test file 一件だけを追加する
-// commit を順に収束させる。既存 head は commit lineage、変更 file、content を照合し、
-// branch 名だけが一致する任意 commit を fixture として採用しない。
+// commit を順に収束させ、再実行で重複 commit を作らない。既存 head の同定は commit message と
+// bootstrap lineage で行うので、branch 名だけが一致する無関係な commit は採用しない。
+// 使い捨ての開発用 repository が前提のため、head の tree や blob が期待 payload と一致するか、
+// 並行実行が同じ branch を奪い合っていないかまでは保証しない。
 func (g *Gateway) EnsureDevelopmentFixtureHead(ctx context.Context, issue contract.IssueRef,
 	file DevelopmentFixtureFile) (DevelopmentFixtureHead, error) {
 	if err := g.validateDevelopmentFixture(issue, file); err != nil {
@@ -90,7 +91,7 @@ func (g *Gateway) EnsureDevelopmentFixtureHead(ctx context.Context, issue contra
 		}, nil
 	}
 
-	bootstrapSHA, baseSHA, err := g.validateDevelopmentFixtureCommit(ctx, issue, branch.SHA, file)
+	bootstrapSHA, baseSHA, err := g.resolveDevelopmentFixtureCommit(ctx, issue, branch.SHA)
 	if err != nil {
 		return DevelopmentFixtureHead{}, err
 	}
@@ -124,9 +125,9 @@ func (g *Gateway) ensureDevelopmentFixtureCommit(ctx context.Context, issue cont
 		return "", invalidResponse("GET fixture branch", "test commit 対象 branch が存在しない", nil)
 	}
 	if branch.SHA != bootstrapSHA {
-		observedBootstrap, _, validationErr := g.validateDevelopmentFixtureCommit(ctx, issue, branch.SHA, file)
-		if validationErr != nil {
-			return "", validationErr
+		observedBootstrap, _, resolveErr := g.resolveDevelopmentFixtureCommit(ctx, issue, branch.SHA)
+		if resolveErr != nil {
+			return "", resolveErr
 		}
 		if observedBootstrap != bootstrapSHA {
 			return "", fmt.Errorf("%w: fixture test commit の bootstrap が期待値と一致しない", issueworker.ErrClaimConflict)
@@ -196,6 +197,9 @@ func (g *Gateway) ensureDevelopmentFixtureCommit(ctx context.Context, issue cont
 		return "", invalidResponse("POST git commit", "fixture test commit response が不正", err)
 	}
 
+	// fast-forward 以外を拒否して、想定外の branch 状態へ上書きしないようにする。
+	// 衝突からの回復は試みない。開発者が一人で叩く前提の道具なので、
+	// 衝突は「branch を作り直せ」という合図として報告するほうが誤魔化すより安全である。
 	update, err := g.request(ctx, http.MethodPatch,
 		g.endpoint(g.repositoryPath("git/refs/heads")+"/"+url.PathEscape(branchName), nil),
 		struct {
@@ -207,16 +211,6 @@ func (g *Gateway) ensureDevelopmentFixtureCommit(ctx context.Context, issue cont
 		return "", err
 	}
 	if update.Status != http.StatusOK {
-		observed, readErr := g.getBranch(ctx, branchName)
-		if readErr != nil {
-			return "", readErr
-		}
-		if observed != nil {
-			observedBootstrap, _, validationErr := g.validateDevelopmentFixtureCommit(ctx, issue, observed.SHA, file)
-			if validationErr == nil && observedBootstrap == bootstrapSHA {
-				return observed.SHA, nil
-			}
-		}
 		return "", &TransportFailure{
 			Class: FailureConflict, Operation: "PATCH git ref", StatusCode: update.Status,
 			Message: responseMessage(update.Body),
@@ -226,18 +220,13 @@ func (g *Gateway) ensureDevelopmentFixtureCommit(ctx context.Context, issue cont
 	if err := json.Unmarshal(update.Body, &reference); err != nil || reference.Object.Type != "commit" || reference.Object.SHA != created.SHA {
 		return "", invalidResponse("PATCH git ref", "updated ref response が fixture commit と一致しない", err)
 	}
-	observedBootstrap, _, err := g.validateDevelopmentFixtureCommit(ctx, issue, created.SHA, file)
-	if err != nil {
-		return "", err
-	}
-	if observedBootstrap != bootstrapSHA {
-		return "", fmt.Errorf("%w: 作成した fixture test commit の bootstrap が期待値と一致しない", issueworker.ErrClaimConflict)
-	}
 	return created.SHA, nil
 }
 
-func (g *Gateway) validateDevelopmentFixtureCommit(ctx context.Context, issue contract.IssueRef,
-	headSHA string, file DevelopmentFixtureFile) (string, string, error) {
+// resolveDevelopmentFixtureCommit は既存 head が seeder の作った test commit かを
+// message と parent lineage で同定し、bootstrap と base の SHA を返す。
+func (g *Gateway) resolveDevelopmentFixtureCommit(ctx context.Context, issue contract.IssueRef,
+	headSHA string) (string, string, error) {
 	commit, err := g.getGitCommit(ctx, headSHA)
 	if err != nil {
 		return "", "", err
@@ -250,31 +239,6 @@ func (g *Gateway) validateDevelopmentFixtureCommit(ctx context.Context, issue co
 	baseSHA, err := g.validateClaimBootstrap(ctx, issue, bootstrapSHA, "")
 	if err != nil {
 		return "", "", err
-	}
-	response, err := g.request(ctx, http.MethodGet,
-		g.endpoint(g.repositoryPath("commits")+"/"+url.PathEscape(headSHA), nil), nil, http.StatusOK)
-	if err != nil {
-		return "", "", err
-	}
-	var observed struct {
-		SHA   string `json:"sha"`
-		Files []struct {
-			Filename string `json:"filename"`
-			Status   string `json:"status"`
-			SHA      string `json:"sha"`
-		} `json:"files"`
-	}
-	if err := json.Unmarshal(response.Body, &observed); err != nil || observed.SHA != headSHA ||
-		len(observed.Files) != 1 || observed.Files[0].Filename != file.Path ||
-		observed.Files[0].Status != "added" || !shaPattern.MatchString(observed.Files[0].SHA) {
-		return "", "", invalidResponse("GET fixture commit", "fixture commit は test file 一件だけを追加しなければならない", err)
-	}
-	content, err := g.ReadContent(ctx, file.Path, headSHA)
-	if err != nil {
-		return "", "", err
-	}
-	if content.Path != file.Path || content.SHA != observed.Files[0].SHA || !bytes.Equal(content.Data, file.Data) {
-		return "", "", fmt.Errorf("%w: fixture test file content が期待 payload と一致しない", issueworker.ErrClaimConflict)
 	}
 	return bootstrapSHA, baseSHA, nil
 }

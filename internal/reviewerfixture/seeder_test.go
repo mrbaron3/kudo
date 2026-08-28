@@ -299,3 +299,37 @@ func assertBoundPayload(t *testing.T, surface githubadapter.RecordSurface, want 
 		t.Fatalf("payload = %q, want %q", surface.MachineBlock.Payload, want)
 	}
 }
+
+// test plan は人間が Pull Request 上で読む artifact なので、machine block の base64 だけでなく
+// 可読な本文としても載っていなければならない。GitHub を single source of truth にする以上、
+// 記録面を開いた人間が中身を読めない状態は許容しない。
+func TestSeededTestPlanStaysHumanReadableInCommentBody(t *testing.T) {
+	t.Parallel()
+
+	target, err := NewMemoryTarget(fixtureRepository, fixtureIdentity, fixtureBaseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := LoadCase("valid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeder, err := NewSeeder(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := seeder.Seed(t.Context(), SeedRequest{
+		Repository: fixtureRepository, Issue: 71, Fixture: fixture,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	human, _, found := strings.Cut(string(result.TestPlan.Body), "<!-- kudo-marker ")
+	if !found {
+		t.Fatalf("test plan comment に marker が無い: %s", result.TestPlan.Body)
+	}
+	if !strings.Contains(human, string(fixture.TestPlan)) {
+		t.Fatalf("人間向け本文に test plan 本文が含まれていない:\n--- human ---\n%s", human)
+	}
+}
