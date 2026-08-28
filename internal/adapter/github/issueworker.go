@@ -448,10 +448,24 @@ func (g *Gateway) createDraftPullRequest(ctx context.Context, input issueworker.
 }
 
 func (g *Gateway) renderClaimPullRequestBody(issue contract.IssueRef, pullNumber int64, ref contract.ClaimCheckpointRef, payload contract.ArtifactPayload) (string, error) {
+	return renderClaimPullRequestBody(g.repository, issue, pullNumber, ref, payload)
+}
+
+// RenderClaimPullRequestBody は claim checkpoint の human body と record surface を返す。
+// 開発 fixture も production claim と同じ encoder を通すために公開している。
+func RenderClaimPullRequestBody(repository Repository, issue contract.IssueRef, pullNumber int64, checkpoint contract.ClaimCheckpoint) (string, error) {
+	ref, payload, err := contract.EncodeClaimCheckpoint(checkpoint)
+	if err != nil {
+		return "", err
+	}
+	return renderClaimPullRequestBody(repository, issue, pullNumber, ref, payload)
+}
+
+func renderClaimPullRequestBody(repository Repository, issue contract.IssueRef, pullNumber int64, ref contract.ClaimCheckpointRef, payload contract.ArtifactPayload) (string, error) {
 	return RenderComment(
 		fmt.Sprintf("Kudo が Issue #%d を claim しました。この Pull Request が Run #%d の記録面です。", issue.Number, pullNumber),
 		Marker{
-			Repository: g.repository, Issue: int64(issue.Number), Run: strconv.FormatInt(pullNumber, 10),
+			Repository: repository, Issue: int64(issue.Number), Run: strconv.FormatInt(pullNumber, 10),
 			Kind: string(contract.ArtifactKindClaimCheckpoint), Digest: string(ref.Digest),
 		},
 		&MachineBlock{

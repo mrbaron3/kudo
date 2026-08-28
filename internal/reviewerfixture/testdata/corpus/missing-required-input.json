@@ -1,0 +1,10 @@
+{
+  "name": "missing-required-input",
+  "fault": "missing-required-input",
+  "testFile": {
+    "path": "internal/reviewerfixtureseed/fixture_test.go",
+    "data": "package reviewerfixtureseed\n\nimport \"testing\"\n\nfunc TestSeededReviewerFixture(t *testing.T) {\n\tt.Fatal(\"fixture: implementation is intentionally absent\")\n}\n"
+  },
+  "testPlan": "# Test plan\n\n- AC-1: `TestSeededReviewerFixture` が対象機能の未実装を検出する。\n",
+  "redEvidence": "schema: kudo.fixture-red-evidence/v1alpha1\ncommand: go test ./internal/reviewerfixtureseed\nexitStatus: 1\noutput: fixture failure before implementation\nenvironment: kudo-reviewer-fixture/v1\n"
+}

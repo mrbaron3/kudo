@@ -35,6 +35,10 @@ run = "go test -tags=integration -count=1 ./test/integration/..."
 description = "Run GitHub App installation token live smoke tests (requires actor *_FILE settings)"
 run = "go test -tags=githublive -count=1 ./internal/adapter/github/... -run TestLiveGitHubAppInstallationTokens"
 
+[tasks."test:reviewer-fixture-live"]
+description = "Seed and re-seed a Reviewer fixture PR in the opt-in live repository"
+run = "go test -tags=githublive -count=1 ./internal/reviewerfixture -run TestLiveReviewerFixtureSeed"
+
 [tasks."compose:check"]
 description = "Run `mise run check` inside the Compose dev container"
 run = "docker compose run --build --rm check"

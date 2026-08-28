@@ -100,6 +100,48 @@ mise run test:github-live
 
 test は両 App installation に permission subset を指定して短命 token を発行し、それぞれが `mrbaron3/kudo` の `README.md` を読み取れることを確認する。token、秘密鍵、credential file path は出力しない。
 
+### Reviewer fixture PR seeder
+
+Review Worker の開発では、実 Implementer を待たずに claim checkpoint 付き draft PR、test-only head、
+`kudo/evidence-red` check run、test plan marker comment を開発専用 repository へ合成できる。
+seeder は `cmd/kudo-reviewer-fixture` だけに置き、production image の `kudo` binary には含めない。
+
+対象 Issue の `kudo/issue-<number>` branch と open Pull Request が無い状態から開始する。既に seeder が
+作った同じ fixture がある場合は、branch lineage、Pull Request、marker、Implementer の comment author ID / check run App ID を照合して再利用する。別 commit や別 record が同じ branch を使っている場合は
+上書きせず conflict として停止する。実 GitHub を変更する opt-in 操作なので、fixture 専用 Issue と
+repository を指定する。
+
+credential は `.env` へ保存せず、実行 process にだけ渡す。`KUDO_FIXTURE_GITHUB_TOKEN` には対象
+repository の Contents、Pull requests、Issues、Checks を書ける開発専用 credential を指定し、
+作成主体の bot user ID と GitHub App ID は引数で明示する。
+
+```sh
+export KUDO_FIXTURE_GITHUB_TOKEN='<development credential>'
+
+go run ./cmd/kudo-reviewer-fixture \
+  --repository owner/reviewer-fixtures \
+  --issue 71 \
+  --comment-author-id 123456 \
+  --check-run-app-id 789012 \
+  --case valid
+```
+
+`--case` は `valid`、`digest-mismatch`、`missing-required-input`、`missing-marker` のいずれかを取る。
+negative case は指定した record surface の欠陥以外を正常形のまま保つ。
+
+同じ操作を再実行して重複が生じないことまで live boundary で検証する場合は、次の環境変数を設定して
+opt-in test を実行する。
+
+```sh
+export KUDO_FIXTURE_REPOSITORY='owner/reviewer-fixtures'
+export KUDO_FIXTURE_ISSUE_NUMBER='71'
+export KUDO_FIXTURE_IMPLEMENTER_COMMENT_AUTHOR_ID='123456'
+export KUDO_FIXTURE_IMPLEMENTER_CHECK_RUN_APP_ID='789012'
+export KUDO_FIXTURE_GITHUB_TOKEN='<development credential>'
+
+mise run test:reviewer-fixture-live
+```
+
 ## Version の固定と更新手順
 
 再現性のため、外部 input はすべて version と digest/checksum で固定している。更新するときは対応する組を必ず同時に差し替える。
