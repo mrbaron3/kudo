@@ -81,6 +81,7 @@ CMD ["mise", "run", "check"]
 # --- runtime: binary と CA 証明書だけの最小 runtime image（nonroot）
 FROM ${RUNTIME_IMAGE} AS runtime
 COPY --from=build /out/kudo /usr/local/bin/kudo
+COPY --from=source /src/agent-packages /usr/local/share/kudo/agent-packages
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/kudo"]
 CMD ["help"]

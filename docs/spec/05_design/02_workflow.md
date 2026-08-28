@@ -183,7 +183,8 @@ truncate し、全文の digest を併記する。draft PR 上の CI が RED に
 ### 4. Test validity review
 
 Controller は published head へ束縛された`test_validity` Review Request を作り、
-[Test Validity Review Policy](review-policies/test-validity-v1alpha1.md) を`policyRefs`へ含める。
+[test_validity Agent Package instructions](../../../agent-packages/test_validity/v1alpha1/instructions.md) を
+`policyRefs`へ含め、検証済みPackage refもRequestへ固定する。
 required policy ref が欠落した Request は binding 境界で reject され、reviewer の推測で補わない。
 policy 取得の transport failure も quality verdict へ変換しない。
 

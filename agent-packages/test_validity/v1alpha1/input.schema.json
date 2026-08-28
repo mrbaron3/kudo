@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kudo.agent-input/test_validity/v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "requestDigest",
+    "agentPackage",
+    "headSha",
+    "policyRefs",
+    "taskContext",
+    "authorities",
+    "artifacts"
+  ],
+  "properties": {
+    "schema": {
+      "const": "kudo.agent-input/test_validity/v1alpha1"
+    },
+    "requestDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "agentPackage": {
+      "$ref": "#/$defs/versionedRef"
+    },
+    "headSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "policyRefs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "taskContext": {
+      "$ref": "#/$defs/material"
+    },
+    "authorities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/authority"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/namedMaterial"
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "versionedRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "digest"],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "material": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "digest", "mediaType", "encoding", "content"],
+      "properties": {
+        "schema": {
+          "type": "string"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "mediaType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "encoding": {
+          "enum": ["utf-8", "base64"]
+        },
+        "content": {
+          "type": "string"
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "digest", "mediaType", "encoding", "content"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "mediaType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "encoding": {
+          "enum": ["utf-8", "base64"]
+        },
+        "content": {
+          "type": "string"
+        }
+      }
+    },
+    "namedMaterial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest", "mediaType", "encoding", "content"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "mediaType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "encoding": {
+          "enum": ["utf-8", "base64"]
+        },
+        "content": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

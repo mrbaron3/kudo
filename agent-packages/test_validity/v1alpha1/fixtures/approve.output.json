@@ -1,0 +1,5 @@
+{
+  "schema": "kudo.agent-output/test_validity/v1alpha1",
+  "verdict": "approve",
+  "findings": []
+}

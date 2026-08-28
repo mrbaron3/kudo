@@ -1,0 +1,7 @@
+{
+  "schema": "kudo.agent-tool-profile/v1alpha1",
+  "capabilities": [
+    "repository:read"
+  ],
+  "network": "none"
+}

@@ -197,7 +197,9 @@ Review Worker は read-only evaluator である。
 - request が指す live PR の open / draft 状態・head・base を照合する
 - `headSha`を検証した disposable checkout を read-only clone から構築する
 - 一致確認済みの in-memory canonical Task Context、固定 base から取得した authority / source、
-  head に束縛された evidence check run、明示された policy だけを fresh provider session へ渡す
+  head に束縛された evidence check run、明示された policy だけからimmutable Agent Package inputを構築する
+- Review Requestへbindされたrepository所有Agent Packageを検証し、provider固有Skill/agent定義ではなく
+  packageのinstructions/input-output schema/tool profileをfresh provider sessionへ渡す
 - 条件付き観点の applicability 宣言を含む versioned`approve`、`request_changes`、`needs_human`
   Result を構築し、宣言の完全性を binding 境界で検証する
 - verdict check run と finding comment を**自分の App 名義で**対象 head へ記録し（report）、Result を
@@ -218,9 +220,10 @@ Review Worker の handler は1つの Request を次の pipeline で処理する�
    close / merge は品質 verdict を返さず人間へ escalate する。
 3. **Checkout**: read-only clone から`headSha`検証済み disposable checkout を構築する。
 4. **Deterministic prerequisites**: policy の機械検証（evidence check run の head binding、
-   approved-test lineage、bound 宣言時の測定 evidence の数値照合）。
-5. **Session**: fresh provider process へ組み立てた context を渡す。structured output を strict parse
-   し、不正 output は bounded retry 後に execution failure とする。
+   approved-test lineage、bound 宣言時の測定 evidence の数値照合）とAgent Package closureの検証。
+5. **Session**: digest照合済みcontext/artifactからpackage input schemaに一致するimmutable requestを作り、
+   fresh provider processへ渡す。package output schemaとReview Result contractでstrict parseし、不正outputは
+   bounded retry後にexecution failureとする。
 6. **Result 構築と report**: verdict / finding 整合（`approve`に blocking なし、`request_changes` /
    `needs_human`に blocking 必須）と、条件付き観点の applicability 宣言の完全性を検証し、verdict
    check run と finding comment を自分の名義で記録してから返す。
@@ -257,9 +260,10 @@ gate 判定を gateway に持ち込まない。Issue Worker の claim は event 
 
 ### Provider and process adapters
 
-Codex と Claude は共通の Operation contract を実装する交換可能な adapter である。adapter は provider
-ごとの CLI invocation、structured output parsing、timeout、signal、exit status、stdout/stderr capture
-を担当する。
+Codex と Claude は共通の Agent Package invocation を実装する交換可能なadapterである。adapterはprovider
+ごとのCLI invocation、transport wrapperの除去、timeout、signal、exit status、stdout/stderr captureを
+担当し、review観点やpromptの正本を持たない。正本は
+[Agent Package Protocol](contracts/agent-package-protocol-v1alpha1.md)とrepository内packageに置く。
 
 deployment は Issue Worker 用と Review Worker 用の provider を明示的に設定する。同じ provider を
 選んでもよいが、fresh session、read-only review context、credential 分離は緩和しない。Controller は
@@ -268,7 +272,8 @@ Operation と Review Request をその digest へ bind する。Issue 本文か�
 
 provider を呼ぶたびに新しい process と operation-scoped state directory を作る。前 Operation の
 resume token、conversation database、transcript を渡さない。認証 material は read-only secret から
-供給し、成果として保存しない。
+供給し、成果として保存しない。Package tool profileのcapabilityはExecution Policyのtool permissionを
+超えられず、adapterがCodex/Claudeのread-only toolへ写像する。
 
 ## Application boundaries
 
@@ -448,6 +453,8 @@ top-level の`pkg/`や`package/` directory は作らない。Kudo は外部 modu
 で追加する。
 
 ```text
+agent-packages/                repository所有のportable Agent Package正本
+└─ test_validity/v1alpha1/     instructions、schemas、tool profile、fixtures
 cmd/
 └─ kudo/                     CLI、composition root
 internal/
@@ -455,15 +462,15 @@ internal/
 ├─ workflow/                 phase 導出（pure）、許可 transition、error/result taxonomy
 ├─ controller/               reconcile、dispatch、retry、record use caseと利用側interface
 ├─ livecontext/              Context Resolver、live再取得・再compile、freshness guard
+├─ agentpackage/             Package closure loader、JSON schema validator
+├─ reviewagent/              immutable package input構築、output→Review Result binding
 ├─ issueworker/              claim、test、implement、workspace/PR use case
 ├─ reviewworker/             read-only review use case
 ├─ adapter/
 │  ├─ github/                webhook署名検証・payload形式解釈、polling、reader、check run/comment/label recorder、PR adapter
 │  ├─ httpingress/           HTTP ingress（webhook route、`healthz` / `readyz`、server timeout policy）
 │  ├─ gitworkspace/          clone/worktree/commit/command boundary
-│  └─ provider/
-│     ├─ codex/              Codex headless process adapter
-│     └─ claude/             Claude headless process adapter
+│  └─ provider/              Codex/Claude headless launcher、fresh state/process boundary
 └─ telemetry/                structured log、metric、trace adapter
 ```
 

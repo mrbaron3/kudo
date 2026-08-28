@@ -152,6 +152,10 @@ Execution Policy として固定し、その digest を claim checkpoint へ記�
 review round 上限は Escalation Policy として同時に pin するが、semantic input ではないため値の変更は
 進行中 Run を supersede せず、次の claim から有効になる。
 
+repository所有のAgent Packageはruntime imageの`/usr/local/share/kudo/agent-packages`へ同梱する。起動時や
+dispatch時にmanifest closureを検証し、image外のCodex Skill、Claude設定、user homeからinstructionsを
+補わない。Package refはReview Requestへ固定し、Execution Policyとは独立したsemantic inputとして扱う。
+
 タスク種別ごとの model 割り当てなど、設定が構造化されて environment 変数で表現しきれなくなった
 場合は、versioned configuration file または設定用 database の導入を検討する。設定は正本性を持つ
 workflow state ではないため、database の利用は [ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md)
@@ -172,6 +176,8 @@ operation 用の短命 token（`GH_TOKEN`）だけで、App private key と`*_FI
 Worker role は provider CLI と test command を direct child process として起動し、次を保証する。
 
 - Operation ごとに fresh process、working directory、temporary state を作る。
+- Agent Packageのtool profileがExecution Policyのtool permissionを超えないことを起動前に検証する。
+- host environment全体を継承せず、明示credentialとoperation-scoped state pathだけをchildへ渡す。
 - stdout/stderr を bounded streaming capture し、evidence には secret redaction 後の抜粋を記録する。
 - deadline 超過または shutdown 時は process group へ graceful signal を送り、猶予後に終了させる。
 - child exit と record surface への書き込みが完了するまで Operation を succeeded にしない。

@@ -16,7 +16,8 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 | Context compilation | [Task Context Protocol](contracts/task-context-v1alpha1.md) | Observation、Task Context、Manifest、Policy |
 | Worker messaging | [Worker Operation Protocol](contracts/operation-protocol-v1alpha1.md) | Operation / Result、Attempt、artifact logical name |
 | Review messaging | [Implementation–Review Protocol](contracts/review-protocol-v1alpha1.md) | Request / Result、manifest、verdict、staleness |
-| Test review policy | [Test Validity Review Policy](review-policies/test-validity-v1alpha1.md) | RED と test validity の評価観点 |
+| Agent Package contract | [Agent Package Protocol](contracts/agent-package-protocol-v1alpha1.md) | provider非依存package、immutable input、structured output |
+| Test review policy | [Test Validity Review Policy](review-policies/test-validity-v1alpha1.md) | `test_validity` Agent Package正本への入口 |
 | Final review policy | [Final Implementation Review Policy](review-policies/final-implementation-v1alpha1.md) | final head の必須 / 条件付き評価観点 |
 | GitHub SSOT / reconciler | [ADR-0001](../../adr/0001-github-ssot-stateless-reconciler.md) | GitHubを唯一の正本とし、独自永続層を持たない判断 |
 
@@ -30,6 +31,7 @@ handling は対応する機能ディレクトリに置き、ここへ複製し�
 ├── contracts/
 │   ├── issue-contract-v1alpha1.md
 │   ├── task-context-v1alpha1.md
+│   ├── agent-package-protocol-v1alpha1.md
 │   ├── operation-protocol-v1alpha1.md
 │   └── review-protocol-v1alpha1.md
 └── review-policies/
@@ -47,7 +49,8 @@ ADR は [docs/adr/](../../adr/) に置く。
 | 一機能の Operation、sequence、failure、検証方法 | `04_features/<feature>/02_design.md` |
 | 複数機能が共有する architecture、workflow、runtime、GitHub 規約 | `05_design/01`〜`04` |
 | machine-readable protocol と canonical encoding | `05_design/contracts/` |
-| Review Request が参照する versioned 品質基準 | `05_design/review-policies/` |
+| Review Request が参照する provider非依存の実行可能な品質基準 | `agent-packages/<operation>/<version>/` |
+| package化前のreview policyとhuman-readable入口 | `05_design/review-policies/` |
 | 新しい技術選択と採用理由 | `docs/adr/` |
 
 迷う場合は、まず機能の `02_design.md` に責務を書き、同じ定義を複数機能が必要とすることが確認できた

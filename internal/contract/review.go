@@ -52,6 +52,7 @@ type ReviewRequest struct {
 	HeadSHA                string
 	ContextManifest        ContextManifestRef
 	ExecutionPolicy        ExecutionPolicyRef
+	AgentPackage           AgentPackageRef
 	ArtifactManifest       ArtifactManifestRef
 	PolicyRefs             []string
 
@@ -100,6 +101,9 @@ func ValidateReviewRequest(req ReviewRequest) error {
 		return err
 	}
 	if err := validateVersionedRef("executionPolicy", req.ExecutionPolicy.Schema, req.ExecutionPolicy.Digest, executionPolicySchemaPrefix); err != nil {
+		return err
+	}
+	if err := validateVersionedRef("agentPackage", req.AgentPackage.Schema, req.AgentPackage.Digest, agentPackageSchemaPrefix); err != nil {
 		return err
 	}
 	if err := validateVersionedRef("artifactManifest", req.ArtifactManifest.Schema, req.ArtifactManifest.Digest, artifactManifestSchemaPrefix); err != nil {
@@ -170,6 +174,7 @@ func encodeReviewRequestIdentity(req ReviewRequest) []byte {
 	writeYAMLString(&b, 0, "headSha", req.HeadSHA)
 	writeYAMLRef(&b, 0, "contextManifest", req.ContextManifest.Schema, req.ContextManifest.Digest)
 	writeYAMLRef(&b, 0, "executionPolicy", req.ExecutionPolicy.Schema, req.ExecutionPolicy.Digest)
+	writeYAMLRef(&b, 0, "agentPackage", req.AgentPackage.Schema, req.AgentPackage.Digest)
 	writeYAMLRef(&b, 0, "artifactManifest", req.ArtifactManifest.Schema, req.ArtifactManifest.Digest)
 	writeYAMLStringList(&b, 0, "policyRefs", canonicalStringSet(req.PolicyRefs))
 	return []byte(b.String())
@@ -181,7 +186,7 @@ func encodeReviewRequestIdentity(req ReviewRequest) []byte {
 // provider へ渡ってしまう。語彙は artifact logical name と同じ理由で pure core に置く。
 // policy の意味を変えるときは新しい versioned path を追加し、ここも同じ change で差し替える。
 var requiredReviewPolicyRefs = map[ReviewKind][]string{
-	ReviewTestValidity:        {"docs/spec/05_design/review-policies/test-validity-v1alpha1.md"},
+	ReviewTestValidity:        {"agent-packages/test_validity/v1alpha1/instructions.md"},
 	ReviewFinalImplementation: {"docs/spec/05_design/review-policies/final-implementation-v1alpha1.md"},
 }
 
@@ -548,7 +553,7 @@ func requireResultPerspectives(kind ReviewKind, decisions []PerspectiveDecision)
 }
 
 // BindReviewResult は Result が参照する Review Request identity を再計算して照合する。
-// Context Manifest ref、Execution Policy ref、head、artifact manifest、policy ref、
+// Context Manifest ref、Execution Policy ref、Agent Package ref、head、artifact manifest、policy ref、
 // PR ref のいずれかが変われば digest が変わり、以前の verdict は新しい入力へ再利用できない。
 //
 // applicability 宣言の完全性は kind に依存し Result 単体では決まらないため、ここで

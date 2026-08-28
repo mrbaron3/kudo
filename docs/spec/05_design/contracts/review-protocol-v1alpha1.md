@@ -16,9 +16,21 @@ branch、PR の状態・本文）に不可侵である。
 修正を同じ論理作業 lane へ差し戻す場合も、以前の session ID、resume token、conversation transcript、
 private memory を入力にしない。
 
+Review の判断内容は provider 固有定義ではなく
+[Agent Package Protocol](agent-package-protocol-v1alpha1.md) の repository 所有 package を正本とする。
+Review Worker は deterministic prerequisite を完了してから package input を構築し、Codex/Claude の薄い
+launcherを通して実行し、package output schemaと本protocolの両方でResultを検証する。
+
 ## Review Request
 
 Review Request は`kudo.review-request/v1alpha1`として version 付けする。
+
+### v1alpha1 compatibility note
+
+Issue #85時点ではReview Requestのproduction producer/consumerとdurable review recordがまだ存在しないため、
+`agentPackage`必須化と`inputs`から`artifactManifest`への実装済み表現の同期をpre-releaseのv1alpha1へ
+取り込む。旧shapeはstrict validatorで拒否し、fieldを推測して補わない。productionで発行済みRequestとの
+互換が必要になった後のrequired field変更は新しいschema versionを作る。
 
 ```yaml
 schema: kudo.review-request/v1alpha1
@@ -31,6 +43,9 @@ pullRequest: github://owner/repository/pull/57
 issueObservation:
   schema: kudo.issue-observation/v1alpha1
   digest: sha256:<digest>
+pullRequestObservation:
+  schema: kudo.pull-request-observation/v1alpha1
+  digest: sha256:<digest>
 headSha: <git-commit-sha>
 contextManifest:
   schema: kudo.context-manifest/v1alpha1
@@ -38,13 +53,14 @@ contextManifest:
 executionPolicy:
   schema: kudo.execution-policy/v1alpha1
   digest: sha256:<digest>
-inputs:
-  - name: test-plan
-    digest: sha256:<digest>
-  - name: red-evidence
-    digest: sha256:<digest>
+agentPackage:
+  schema: kudo.agent-package/v1alpha1
+  digest: sha256:<digest>
+artifactManifest:
+  schema: kudo.artifact-manifest/v1alpha1
+  digest: sha256:<digest>
 policyRefs:
-  - docs/spec/05_design/review-policies/test-validity-v1alpha1.md
+  - agent-packages/test_validity/v1alpha1/instructions.md
 createdAt: 2026-08-11T00:00:00Z
 ```
 
@@ -69,25 +85,32 @@ checkpoint の`baseSha`と一致することを確認する。保存済みの観
 Review Worker が source tree を必要とする場合、read-only clone から`headSha`を検証した disposable
 checkout を構築する。Issue Worker の worktree path を Request へ含めず、mutable worktree を参照しない。
 
-`inputs`は logical name で引く table であり、名前の語彙・形式規則・記録先は
+`artifactManifest`は logical name で引く immutable artifact table のversioned refであり、名前の語彙・
+形式規則・記録先は
 [Worker Operation Protocol](operation-protocol-v1alpha1.md) の Record surface vocabulary を正とする。
-Review Worker は各 input の payload を record surface（check run output、marker comment）から取得し、
-digest を照合してから使う。digest の一致しない payload は改竄または欠落であり、品質 verdict を返さず
-protocol violation として返す。
+Review Worker はmanifest自体のschema/digestを照合してから、各entryのpayloadをrecord surface（check
+run output、marker comment）から取得し、name、media type、length、digest、bytesを照合する。digest の
+一致しないpayloadは改竄または欠落であり、品質verdictを返さずprotocol violationとして返す。
+
+`agentPackage`はreview観点、instructions、input/output schema、tool profile、fixturesのclosure identity
+である。Review kindとpackageの`operation`が一致しなければならない。Package refの解決・component
+digest検証をproviderに任せず、Kudo runtimeが開始前に行う。
 
 Request identity は、schema、kind、repository、Issue reference、Pull Request reference、head SHA、
-Context Manifest ref、Execution Policy ref、inputs、policy refs から決まる。同じ`requestId`でも
+Context Manifest ref、Execution Policy ref、Agent Package ref、Artifact Manifest ref、policy refs から
+決まる。同じ`requestId`でも
 これらが異なる入力を同一 request として扱ってはならない。versioned ref は schema と digest を組で
 比較し、digest が同じでも schema が異なる ref を同一視しない。同じ head でも別 PR への request は別
 identity である。
 
-`requestId`、`producerRunId`、`createdAt`、`issueObservation`は identity に含めない。observation は
+`requestId`、`producerRunId`、`createdAt`、`issueObservation`、`pullRequestObservation`は identity に
+含めない。observation は
 exact 観測の audit 情報であり、raw body の非意味的差分や PR body・draft/ready 状態の変化だけで
 request identity と既存 approval を stale にしない。意味のある変更は Task Context ref を通じて
 Context Manifest ref を変えるため、semantic staleness は Context Manifest ref の比較で判定できる。
 `policyRefs`は順序を持たない集合として canonical 順へ正規化し、重複を拒否する。reviewer が評価基準を
-推測しないよう、`policyRefs`は1件以上必須とする。`inputs`は name の lexicographic 順へ正規化し、name
-の重複を拒否する。
+推測しないよう、`policyRefs`は1件以上必須とする。Artifact Manifest entryはnameのlexicographic順へ
+正規化し、nameの重複を拒否する。
 
 ### Required policy refs
 
@@ -97,7 +120,7 @@ policy だけを積んだ request が provider へ渡ってしまう。
 
 | Review kind | 必須 policy ref |
 | --- | --- |
-| `test_validity` | `docs/spec/05_design/review-policies/test-validity-v1alpha1.md` |
+| `test_validity` | `agent-packages/test_validity/v1alpha1/instructions.md` |
 | `final_implementation` | `docs/spec/05_design/review-policies/final-implementation-v1alpha1.md` |
 
 repository 固有 policy の追加は妨げない。欠落は request を reject し、欠落した path をすべて error へ
@@ -109,13 +132,13 @@ local path、provider session ID、会話履歴、application-private state、cr
 
 ### Required inputs
 
-kind ごとに、次の logical name をすべて`inputs`へ含めなければならない。Task Context と authority
-content は`inputs`へ含めず、live source から再生成・再取得して期待 digest と比較する。source snapshot
-も含めない。head SHA の git commit そのものが snapshot であり、checkout 時に SHA を検証する。
+kind ごとに、次の logical name をすべて`artifactManifest.entries`へ含めなければならない。Task Context
+とauthority contentはmanifestへ含めず、live sourceから再生成・再取得して期待digestと比較する。
+`source-bundle`はhead SHAを再構築できるimmutable payloadであり、checkout時にSHAを検証する。
 
 | Review kind | 必須 logical name |
 | --- | --- |
-| `test_validity` | `test-plan`、`red-evidence` |
+| `test_validity` | `test-plan`、`red-evidence`、`source-bundle`、`pull-request-observation` |
 | `final_implementation` | 上記すべて、および`test-validity-result`、`green-evidence`、`check-evidence`、`pull-request-draft` |
 
 `test-validity-result`は approved test head の`kudo/test-validity` verdict check run に記録された
@@ -262,9 +285,9 @@ timeout、rate limit、network error、provider crash、invalid response は tra
 transport failure であり、保存済み本文だけで review を続けない。execution failure は quality verdict
 の field を持たない別の型で表現し、1回の attempt の結末は verdict か failure のどちらか一方だけを持つ。
 
-Context Manifest ref、Execution Policy ref、commit SHA、input digest、policy ref、Pull Request ref の
-いずれかが変わった時点で既存 Result は stale になる。Issue の raw body だけの非意味的差分、PR body の
-編集、draft/ready の状態遷移は stale にせず、観測を telemetry に残す。
+Context Manifest ref、Execution Policy ref、Agent Package ref、commit SHA、Artifact Manifest ref、policy
+ref、Pull Request ref のいずれかが変わった時点で既存 Result は stale になる。Issue の raw body だけの
+非意味的差分、PR body の編集、draft/ready の状態遷移は stale にせず、観測を telemetry に残す。
 
 live PR の head が request の`headSha`と一致しない場合、または base が claim checkpoint の`baseSha`と
 一致しない場合は品質 verdict を返さず、stale input として Controller へ返す。Kudo 自身の merge

@@ -104,10 +104,14 @@ func sampleReviewRequest(t *testing.T) ReviewRequest {
 		HeadSHA:                sampleHeadSHA,
 		ContextManifest:        manifestRef,
 		ExecutionPolicy:        policyRef,
-		ArtifactManifest:       requireArtifactManifestRef(t, sampleArtifactManifest(t)),
+		AgentPackage: AgentPackageRef{
+			Schema: AgentPackageSchemaV1Alpha1,
+			Digest: SHA256([]byte("test_validity agent package")),
+		},
+		ArtifactManifest: requireArtifactManifestRef(t, sampleArtifactManifest(t)),
 		PolicyRefs: []string{
 			"docs/spec/05_design/contracts/issue-contract-v1alpha1.md",
-			"docs/spec/05_design/review-policies/test-validity-v1alpha1.md",
+			"agent-packages/test_validity/v1alpha1/instructions.md",
 		},
 		CreatedAt: sampleCreatedAt,
 	}
@@ -242,6 +246,8 @@ func TestReviewRequestValidation(t *testing.T) {
 		"pr observation digest": func(r *ReviewRequest) { r.PullRequestObservation.Digest = "sha256:nope" },
 		"manifest schema":       func(r *ReviewRequest) { r.ContextManifest.Schema = "kudo.artifact-manifest/v1alpha1" },
 		"policy schema":         func(r *ReviewRequest) { r.ExecutionPolicy.Schema = "" },
+		"agent package schema":  func(r *ReviewRequest) { r.AgentPackage.Schema = "kudo.agent-package/" },
+		"agent package digest":  func(r *ReviewRequest) { r.AgentPackage.Digest = "sha256:nope" },
 		"artifact manifest schema": func(r *ReviewRequest) {
 			r.ArtifactManifest.Schema = "kudo.context-manifest/v1alpha1"
 		},

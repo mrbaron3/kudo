@@ -10,6 +10,11 @@ Review Worker への品質評価依頼は [Implementation–Review Protocol](rev
 Review Request / Result を使う。本 protocol の execution failure と review の quality verdict を
 混在させない。
 
+provider非依存のinstructions/schema/tool profile/fixturesは
+[Agent Package Protocol](agent-package-protocol-v1alpha1.md)を正本とする。本changeではReview Operation
+`test_validity`だけをPackage化し、そのidentityはReview Requestへ固定する。Issue Worker Operationへ
+Agent Package refを追加することや観点別fan-outは本protocol v1alpha1の範囲外である。
+
 本 protocol における**artifact**とは、canonical encoding と SHA-256 digest で identity が決まる
 versioned payload である。bytes の永続表現は専用 store ではなく GitHub 上の record surface（check
 run output、marker 付き comment、PR body の machine block）であり、**その発話の主体（payload の
@@ -122,7 +127,8 @@ GitHub 側でも弾く。
 
 model-bearing Operation は、同じ Run / worktree を扱う場合も fresh provider process/session を作る。
 継続に必要な情報は current commit、input payload、versioned Review Result として渡し、resume token や
-conversation transcript を渡さない。
+conversation transcript を渡さない。provider固有Skill/agent定義をhandoffの正本にせず、Packageを導入
+したkindではKudo runtimeがimmutable requestを構築し、Package outputとversioned Resultをstrictにbindする。
 
 ## Operation Result
 

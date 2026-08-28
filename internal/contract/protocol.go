@@ -21,6 +21,7 @@ const (
 	escalationPolicySchemaPrefix       = "kudo.escalation-policy/"
 	claimCheckpointSchemaPrefix        = "kudo.claim-checkpoint/"
 	artifactManifestSchemaPrefix       = "kudo.artifact-manifest/"
+	agentPackageSchemaPrefix           = "kudo.agent-package/"
 	pullRequestObservationSchemaPrefix = "kudo.pull-request-observation/"
 )
 

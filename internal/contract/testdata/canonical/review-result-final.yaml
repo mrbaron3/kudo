@@ -1,5 +1,5 @@
 schema: "kudo.review-result/v1alpha1"
-requestDigest: "sha256:8a1d105fc7c7844c0df011ea59e637f3c5bc67155c2dc02c37cb7efe0e9ddbad"
+requestDigest: "sha256:45f2c063c368a06d1b531d12480d62354c28e72967ddf3ab6c3310ac9f0cbcda"
 verdict: "approve"
 perspectives:
   - perspective: "accessibility"

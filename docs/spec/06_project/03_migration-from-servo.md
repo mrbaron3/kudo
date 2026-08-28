@@ -49,7 +49,7 @@ Servoで使われていたfunctionality、code quality、test quality、UX、acc
 - UX、accessibility、type designはTaskと変更面が該当する場合だけfinal reviewへ追加する。
 - performanceはServoの固定perspectiveを流用せず、要件が明示された場合と、frontendやbatch/jobのような性能が問題になりやすい実行surfaceを変更する場合に評価する。
 
-Kudoの正本は[Test Validity Review Policy](../05_design/review-policies/test-validity-v1alpha1.md)と[Final Implementation Review Policy](../05_design/review-policies/final-implementation-v1alpha1.md)である。一つのfresh sessionが複数観点を評価でき、全観点一律panel、観点ごとのsession、score、重み、provider/effort routing、合議を要求しない。
+Kudoのtest review正本は[test_validity Agent Package instructions](../../../agent-packages/test_validity/v1alpha1/instructions.md)、final review正本は[Final Implementation Review Policy](../05_design/review-policies/final-implementation-v1alpha1.md)である。一つのfresh sessionが複数観点を評価でき、全観点一律panel、観点ごとのsession、score、重み、provider/effort routing、合議を要求しない。
 
 ## Deliberately not migrated
 

@@ -227,7 +227,7 @@ M6区間（#27 `implement`以降）の実行順は、Iの実測を見てから�
 | checkpoint commitのidentity固定（author/committer name・emailと`GIT_AUTHOR_DATE` / `GIT_COMMITTER_DATE`） | 既定に任せるとhead SHAがwall clockとhost git configに依存する。head SHAはOperation Result、Review Request binding、check runへ焼き込まれるため、規則を後から変えると過去RunのSHAが再現しない |
 | RED evidenceに`headSha`を含めること | 含めないと同一bytesのevidenceが別headへ流用可能になり、stalenessをdigest比較で検出できない |
 | RED evidenceに未切り詰めstdout/stderrのdigestとlengthを含めること | inlineだけにすると、truncation上限の変更で同一実行のevidence identityが変わり、reviewerが「全部を見たか」を判定できない |
-| RED evidenceの`runs[]`複数化と`exited` / `signaled` / `timed_out`の区別 | 「1 name = 1 command」は複数commandを後から表現できずschema bumpになる。exit codeだけではtimeoutとtest failureを区別できず[test-validity policy](../05_design/review-policies/test-validity-v1alpha1.md) §5を満たせない |
+| RED evidenceの`runs[]`複数化と`exited` / `signaled` / `timed_out`の区別 | 「1 name = 1 command」は複数commandを後から表現できずschema bumpになる。exit codeだけではtimeoutとtest failureを区別できず[test_validity Agent Package instructions](../../../agent-packages/test_validity/v1alpha1/instructions.md)のDiscovery and RED causalityを満たせない |
 | 記録前のpayload size制約（record surfaceの64KiB上限に収まるcanonical構成） | 記録後のtruncationはdigestとbytesの対応を壊す。上限超過はprotocol境界で弾く形を最初から取る |
 | GitHub bodyを正規化しないこと | `bodyDigest`は監査に使うidentityであり、正規化方針を後から変えると過去のdigestが再現しない |
 | base commit SHAの固定とauthority pathのそのSHAでの解決 | baseと別時点でrefを解決するとmanifestが「base上のclosure」でなくなり、identityの意味が静かに変わる |

@@ -390,6 +390,7 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 		Schema           string    `json:"schema"`
 		Kind             string    `json:"kind"`
 		HeadSHA          string    `json:"headSha"`
+		AgentPackage     oracleRef `json:"agentPackage"`
 		ArtifactManifest oracleRef `json:"artifactManifest"`
 		PolicyRefs       []string  `json:"policyRefs"`
 	}](t, yamlOracle(t, encodeReviewRequestIdentity(req)))
@@ -398,6 +399,9 @@ func TestProtocolIdentityParsesWithExternalYAMLParser(t *testing.T) {
 	}
 	if request.ArtifactManifest.Digest != string(req.ArtifactManifest.Digest) {
 		t.Fatalf("artifactManifest = %+v", request.ArtifactManifest)
+	}
+	if request.AgentPackage.Digest != string(req.AgentPackage.Digest) {
+		t.Fatalf("agentPackage = %+v", request.AgentPackage)
 	}
 
 	result := decodeOracle[struct {

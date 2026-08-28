@@ -1,0 +1,16 @@
+{
+  "schema": "kudo.agent-output/test_validity/v1alpha1",
+  "verdict": "request_changes",
+  "findings": [
+    {
+      "id": "F-1",
+      "severity": "blocking",
+      "summary": "AC-2を検証するtestがない",
+      "expected": "全Acceptance Criteriaをtestへ対応付ける",
+      "observed": "test planはAC-1だけを参照している",
+      "evidenceRefs": [
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    }
+  ]
+}

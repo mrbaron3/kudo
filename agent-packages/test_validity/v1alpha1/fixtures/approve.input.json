@@ -1,0 +1,29 @@
+{
+  "schema": "kudo.agent-input/test_validity/v1alpha1",
+  "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "agentPackage": {
+    "schema": "kudo.agent-package/v1alpha1",
+    "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "headSha": "3333333333333333333333333333333333333333",
+  "policyRefs": [
+    "agent-packages/test_validity/v1alpha1/instructions.md"
+  ],
+  "taskContext": {
+    "schema": "kudo.task-context/v1alpha1",
+    "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "mediaType": "application/yaml; charset=utf-8",
+    "encoding": "utf-8",
+    "content": "schema: kudo.task-context/v1alpha1\n"
+  },
+  "authorities": [],
+  "artifacts": [
+    {
+      "name": "test-plan",
+      "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "mediaType": "text/markdown; charset=utf-8",
+      "encoding": "utf-8",
+      "content": "- AC-1を検証する\n"
+    }
+  ]
+}

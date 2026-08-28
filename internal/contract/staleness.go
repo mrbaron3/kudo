@@ -22,6 +22,7 @@ const (
 const (
 	fieldContextManifest  = "contextManifest"
 	fieldExecutionPolicy  = "executionPolicy"
+	fieldAgentPackage     = "agentPackage"
 	fieldHeadSHA          = "headSha"
 	fieldInputArtifacts   = "inputArtifacts"
 	fieldPolicyRefs       = "policyRefs"
@@ -69,6 +70,7 @@ type LatestReviewInput struct {
 	PullRequestObservation PullRequestObservationRef
 	ContextManifest        ContextManifestRef
 	ExecutionPolicy        ExecutionPolicyRef
+	AgentPackage           AgentPackageRef
 	HeadSHA                string
 	PullRequest            PullRequestRef
 	ArtifactManifest       ArtifactManifestRef
@@ -130,6 +132,9 @@ func CompareReviewInput(req ReviewRequest, latest LatestReviewInput) (SemanticDi
 	if err := validateVersionedRef("artifactManifest", latest.ArtifactManifest.Schema, latest.ArtifactManifest.Digest, artifactManifestSchemaPrefix); err != nil {
 		return SemanticDifference{}, err
 	}
+	if err := validateVersionedRef("agentPackage", latest.AgentPackage.Schema, latest.AgentPackage.Digest, agentPackageSchemaPrefix); err != nil {
+		return SemanticDifference{}, err
+	}
 	if !validPullRequestRef(latest.PullRequest) {
 		return SemanticDifference{}, protocolErr(ProtocolFieldInvalid, "pullRequest", "Pull Request reference が不正")
 	}
@@ -143,6 +148,9 @@ func CompareReviewInput(req ReviewRequest, latest LatestReviewInput) (SemanticDi
 	}
 	if req.ExecutionPolicy != latest.ExecutionPolicy {
 		changed = append(changed, fieldExecutionPolicy)
+	}
+	if req.AgentPackage != latest.AgentPackage {
+		changed = append(changed, fieldAgentPackage)
 	}
 	if req.HeadSHA != latest.HeadSHA {
 		changed = append(changed, fieldHeadSHA)

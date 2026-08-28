@@ -10,9 +10,12 @@ contextManifest:
 executionPolicy:
   schema: "kudo.execution-policy/v1alpha1"
   digest: "sha256:3b9f2163726f0420bc286602bea5ad9acb7085aba4a6bdc935138cd0d488feec"
+agentPackage:
+  schema: "kudo.agent-package/v1alpha1"
+  digest: "sha256:34cb666fc7ac906fdd34584b0627d165dffb2b11e0ef8515d8d17fc5129bda38"
 artifactManifest:
   schema: "kudo.artifact-manifest/v1alpha1"
   digest: "sha256:731d494480b2ecb3988612defb0927462f2445380c157f60099e435fcec9c4ce"
 policyRefs:
+  - "agent-packages/test_validity/v1alpha1/instructions.md"
   - "docs/spec/05_design/contracts/issue-contract-v1alpha1.md"
-  - "docs/spec/05_design/review-policies/test-validity-v1alpha1.md"

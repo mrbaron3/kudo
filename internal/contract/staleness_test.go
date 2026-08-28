@@ -38,6 +38,7 @@ func latestFromRequest(req ReviewRequest) LatestReviewInput {
 		PullRequestObservation: req.PullRequestObservation,
 		ContextManifest:        req.ContextManifest,
 		ExecutionPolicy:        req.ExecutionPolicy,
+		AgentPackage:           req.AgentPackage,
 		HeadSHA:                req.HeadSHA,
 		PullRequest:            req.PullRequest,
 		ArtifactManifest:       req.ArtifactManifest,
@@ -343,6 +344,9 @@ func reviewIdentityCases(t *testing.T) []identityCase[ReviewRequest, LatestRevie
 		{field: "ExecutionPolicy", role: roleSemanticInput, compared: fieldExecutionPolicy,
 			mutate: func(r *ReviewRequest) { r.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) },
 			latest: func(l *LatestReviewInput) { l.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) }},
+		{field: "AgentPackage", role: roleSemanticInput, compared: fieldAgentPackage,
+			mutate: func(r *ReviewRequest) { r.AgentPackage.Digest = SHA256([]byte("別 package")) },
+			latest: func(l *LatestReviewInput) { l.AgentPackage.Digest = SHA256([]byte("別 package")) }},
 		{field: "HeadSHA", role: roleSemanticInput, compared: fieldHeadSHA,
 			mutate: func(r *ReviewRequest) { r.HeadSHA = sampleNextSHA },
 			latest: func(l *LatestReviewInput) { l.HeadSHA = sampleNextSHA }},
@@ -360,10 +364,10 @@ func reviewIdentityCases(t *testing.T) []identityCase[ReviewRequest, LatestRevie
 		// 標準 policy は kind の必須 ref なので、追加 policy の差分で比較する。
 		{field: "PolicyRefs", role: roleSemanticInput, compared: fieldPolicyRefs,
 			mutate: func(r *ReviewRequest) {
-				r.PolicyRefs = []string{"docs/spec/05_design/review-policies/test-validity-v1alpha1.md", "docs/spec/05_design/02_workflow.md"}
+				r.PolicyRefs = []string{"agent-packages/test_validity/v1alpha1/instructions.md", "docs/spec/05_design/02_workflow.md"}
 			},
 			latest: func(l *LatestReviewInput) {
-				l.PolicyRefs = []string{"docs/spec/05_design/review-policies/test-validity-v1alpha1.md", "docs/spec/05_design/02_workflow.md"}
+				l.PolicyRefs = []string{"agent-packages/test_validity/v1alpha1/instructions.md", "docs/spec/05_design/02_workflow.md"}
 			}},
 		{field: "Observation", role: roleAuditLineage,
 			mutate: func(r *ReviewRequest) { r.Observation.Digest = SHA256([]byte("別 raw body")) },
@@ -525,6 +529,10 @@ func TestReviewSemanticDifferenceMatrix(t *testing.T) {
 		"execution policy": {
 			func(l *LatestReviewInput) { l.ExecutionPolicy.Digest = SHA256([]byte("別 policy")) },
 			[]string{"executionPolicy"},
+		},
+		"agent package": {
+			func(l *LatestReviewInput) { l.AgentPackage.Digest = SHA256([]byte("別 package")) },
+			[]string{"agentPackage"},
 		},
 		"head": {
 			func(l *LatestReviewInput) { l.HeadSHA = sampleNextSHA },

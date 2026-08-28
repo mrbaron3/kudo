@@ -1,0 +1,54 @@
+{
+  "schema": "kudo.agent-package/v1alpha1",
+  "name": "test_validity",
+  "version": "v1alpha1",
+  "operation": "test_validity",
+  "instructions": {
+    "path": "instructions.md",
+    "mediaType": "text/markdown; charset=utf-8",
+    "digest": "sha256:af13b77bf9b81162cb6211fe1529deec15b141aa07e2658d6451e3977051d331"
+  },
+  "inputSchema": {
+    "path": "input.schema.json",
+    "mediaType": "application/json",
+    "digest": "sha256:bd9ef0c1d4e25e8d4bdacbda3f830764b668abaf4d50b0fb67a21ca9f48ce6f0"
+  },
+  "outputSchema": {
+    "path": "output.schema.json",
+    "mediaType": "application/json",
+    "digest": "sha256:963ce4f6a7bca0cb7d3798cf76fc5e33a14a27312d181b23f4b49ffdc74cd9a7"
+  },
+  "toolProfile": {
+    "path": "tool-profile.json",
+    "mediaType": "application/json",
+    "digest": "sha256:fdb1a1eba9612a9673e0fbbf66a2b9a633b7d781495c38b1d71c8847a029b038"
+  },
+  "fixtures": [
+    {
+      "name": "approve",
+      "input": {
+        "path": "fixtures/approve.input.json",
+        "mediaType": "application/json",
+        "digest": "sha256:9a1d3e1845355b6a591f71752b6c3c3f1054bafb80a10f06c1520871f3368a37"
+      },
+      "output": {
+        "path": "fixtures/approve.output.json",
+        "mediaType": "application/json",
+        "digest": "sha256:d33777c3de746733c7b3e97f4440db829b46a003dbf96f50a119b47c4991bfbc"
+      }
+    },
+    {
+      "name": "request-changes",
+      "input": {
+        "path": "fixtures/request-changes.input.json",
+        "mediaType": "application/json",
+        "digest": "sha256:38da66ffbb3327470db55608cdff0e516337f335bc244933b72521286c72cea5"
+      },
+      "output": {
+        "path": "fixtures/request-changes.output.json",
+        "mediaType": "application/json",
+        "digest": "sha256:1f0f164fe908a3a9b22b852d5c07cac2d25de7d31dc354e7aa0be9304ba96cd5"
+      }
+    }
+  ]
+}

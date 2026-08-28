@@ -221,6 +221,11 @@ reviewWorker:
 
 tool permissionは順序を持たない集合としてlexicographic順にencodeし、重複を拒否する。timeoutは正のGo duration canonical stringとする。credential、token、secret path、provider session ID、workspace pathはfieldとして持たない。provider、model、adapter、adapter version、tool permission、timeoutのいずれかが変われば`ExecutionPolicyRef{schema,digest}`だけが変わり、Task ContextまたはContext Manifestへ波及させない。
 
+Execution Policyは「deploymentが許可する上限」、Agent Package tool profileは「Operationが要求する最小
+capability」である。provider起動前にPackage capabilityが該当workerの`toolPermissions`の部分集合である
+ことを検証する。review観点、instructions、input/output schema、fixturesはExecution Policyへ入れず、
+[Agent Package Protocol](agent-package-protocol-v1alpha1.md)のPackage refをReview Requestへ別に固定する。
+
 ## Escalation Policy
 
 Escalation PolicyはRun開始時に、Controllerが自動継続をやめて人間へ渡すまでの予算を固定する。
