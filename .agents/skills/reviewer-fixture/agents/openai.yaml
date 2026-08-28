@@ -1,0 +1,6 @@
+# Codex用設定。$reviewer-fixture の明示的メンションでのみ起動し、
+# ユーザーpromptとdescriptionの一致による暗黙起動を禁止する
+# （Claude Code側の disable-model-invocation: true と対になる設定）。
+# 実GitHubのrepositoryへ書き込む操作なので、暗黙起動を許さない。
+policy:
+  allow_implicit_invocation: false
